@@ -70,6 +70,8 @@ fn cycle(id: &str, number: u64, state: WorkItemState, minutes: i64) -> WorkItem 
 
 fn campaign(status: CampaignStatus) -> Campaign {
     Campaign {
+        initiative: None,
+        providers: foundry_sdk::gateway::StageProviders::default(),
         name: CAMPAIGN.into(),
         project: PROJECT.into(),
         mission: "recover from transient faults".into(),
@@ -112,6 +114,8 @@ impl Fixture {
         .save(&ledger)
         .unwrap();
         CampaignStore {
+            findings: vec![],
+            initiatives: vec![],
             version: 1,
             campaigns: vec![campaign],
         }
@@ -140,6 +144,8 @@ impl Fixture {
 
     fn set_campaign(&self, campaign: Campaign) {
         CampaignStore {
+            findings: vec![],
+            initiatives: vec![],
             version: 1,
             campaigns: vec![campaign],
         }
@@ -515,4 +521,35 @@ async fn a_terminal_campaign_settles_its_open_formation_runs() {
         "campaign transient-recovery completed: done evidence met",
     );
     assert_announced(&events, &[&leftover], &ledger);
+}
+
+#[tokio::test]
+async fn initiative_source_keeps_member_cycles_separate_when_carried_forward() {
+    let mut old = cycle("old-member", 1, WorkItemState::Preserved, 1);
+    let mut next = cycle("new-member", 2, WorkItemState::Running, 2);
+    let mut other = cycle("other-member", 1, WorkItemState::Preserved, 1);
+    for (item, member, number) in [
+        (&mut old, CAMPAIGN, 1),
+        (&mut next, CAMPAIGN, 2),
+        (&mut other, "other-campaign", 1),
+    ] {
+        item.source = Some(WorkSource::initiative("shared", number));
+        item.started_root = Some(Event::new(
+            EventType::ExecutionRequested,
+            PROJECT.into(),
+            Throttle::Full,
+            serde_json::json!({"workflow":"task","campaign":member,"campaign_cycle":number}),
+        ));
+    }
+    let fixture = Fixture::new(&[old, next.clone(), other], campaign(CampaignStatus::Active));
+    let event = super::super::event_from_infallible_payload(
+        EventType::WorkItemStarted,
+        PROJECT,
+        Throttle::Full,
+        &WorkItemEventPayload::from_item(&next),
+    );
+    let events = fixture.run(&event).await;
+    assert_eq!(events.len(), 1);
+    assert_eq!(fixture.ledger().find("old-member").unwrap().state, WorkItemState::Cancelled);
+    assert_eq!(fixture.ledger().find("other-member").unwrap().state, WorkItemState::Preserved);
 }

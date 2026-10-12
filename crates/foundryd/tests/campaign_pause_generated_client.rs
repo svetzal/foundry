@@ -161,6 +161,8 @@ fn make_service_with_campaigns_path(
 
 fn seed_campaign(tmp: &NamedTempFile, campaign: Campaign) {
     CampaignStore {
+        findings: vec![],
+        initiatives: vec![],
         version: 1,
         campaigns: vec![campaign],
     }
@@ -170,6 +172,8 @@ fn seed_campaign(tmp: &NamedTempFile, campaign: Campaign) {
 
 fn seed_campaigns(tmp: &NamedTempFile, campaigns: Vec<Campaign>) {
     CampaignStore {
+        findings: vec![],
+        initiatives: vec![],
         version: 1,
         campaigns,
     }
@@ -179,6 +183,8 @@ fn seed_campaigns(tmp: &NamedTempFile, campaigns: Vec<Campaign>) {
 
 fn active_campaign(name: &str) -> Campaign {
     Campaign {
+        initiative: None,
+        providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),
         project: "test-project".to_string(),
         mission: "Test mission".to_string(),
@@ -659,6 +665,8 @@ async fn generated_client_pause_persist_failure_returns_internal_and_store_uncha
     let campaigns_dir = tempfile::tempdir().expect("campaigns tempdir");
     let campaigns_path = campaigns_dir.path().join("campaigns.json");
     CampaignStore {
+        findings: vec![],
+        initiatives: vec![],
         version: 1,
         campaigns: vec![active_campaign("c")],
     }

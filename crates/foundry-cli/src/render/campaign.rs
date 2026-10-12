@@ -25,6 +25,16 @@ pub fn campaign_detail_proto(detail: &crate::proto::CampaignDetail) -> String {
         &detail.agent_provider
     };
     let _ = writeln!(out, "Agent:      {agent}");
+    if let Some(initiative) = &detail.initiative {
+        let _ = writeln!(out, "Initiative: {initiative}");
+    }
+    if let Some(providers) = &detail.providers {
+        out.push_str(&provider_overrides([
+            ("formation", providers.formation.as_deref()),
+            ("execution", providers.execution.as_deref()),
+            ("review", providers.review.as_deref()),
+        ]));
+    }
     let _ = writeln!(
         out,
         "Cycles:     {}/{} ({} landed)",
@@ -164,13 +174,46 @@ pub fn campaign_options(
 }
 
 fn detail_options(detail: &crate::proto::CampaignDetail) -> Vec<OwnerOption> {
-    campaign_options(
+    let mut options = campaign_options(
         &detail.name,
         &detail.status,
         &detail.authorized_by,
         detail.cycles_completed,
         detail.max_cycles,
-    )
+    );
+    if let Some(initiative) = &detail.initiative {
+        options.retain(|option| !option.command.contains("--add-cycles"));
+        if !matches!(detail.status.as_str(), "completed" | "cancelled") {
+            options.push(OwnerOption {
+                control: "show".into(),
+                command: format!("foundry initiative show {initiative}"),
+                effect: "Inspect the initiative that owns this member's cycle budget".into(),
+            });
+        }
+    }
+    options
+}
+
+fn provider_overrides<const N: usize>(overrides: [(&str, Option<&str>); N]) -> String {
+    let overrides = overrides
+        .into_iter()
+        .filter_map(|(stage, provider)| provider.map(|provider| format!("{stage}={provider}")))
+        .collect::<Vec<_>>();
+    if overrides.is_empty() {
+        String::new()
+    } else {
+        format!("Providers:  {}\n", overrides.join(", "))
+    }
+}
+
+#[derive(Serialize)]
+struct JsonStageProviders<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    formation: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    review: Option<&'a str>,
 }
 
 /// JSON projection of an open escalation, shared by `campaign show --json` and
@@ -235,6 +278,10 @@ struct JsonCampaignShow<'a> {
     authorized_by: &'a str,
     #[serde(skip_serializing_if = "str::is_empty")]
     agent_provider: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    initiative: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    providers: Option<JsonStageProviders<'a>>,
     cycles_completed: u64,
     cycles_landed: u64,
     max_cycles: u64,
@@ -267,6 +314,20 @@ pub fn campaign_show_json(
         status: &detail.status,
         authorized_by: &detail.authorized_by,
         agent_provider: &detail.agent_provider,
+        initiative: detail.initiative.as_deref(),
+        providers: detail
+            .providers
+            .as_ref()
+            .filter(|providers| {
+                providers.formation.is_some()
+                    || providers.execution.is_some()
+                    || providers.review.is_some()
+            })
+            .map(|providers| JsonStageProviders {
+                formation: providers.formation.as_deref(),
+                execution: providers.execution.as_deref(),
+                review: providers.review.as_deref(),
+            }),
         cycles_completed: detail.cycles_completed,
         cycles_landed: detail.cycles_landed,
         max_cycles: detail.max_cycles,
@@ -387,6 +448,23 @@ pub fn campaign_detail(campaign: &Campaign) -> String {
     let _ = writeln!(out, "Authorized: {}", campaign.authorized_by.as_deref().unwrap_or("no"));
     let _ =
         writeln!(out, "Agent:      {}", campaign.agent_provider.as_deref().unwrap_or("default"));
+    if let Some(initiative) = &campaign.initiative {
+        let _ = writeln!(out, "Initiative: {initiative}");
+    }
+    out.push_str(&provider_overrides([
+        (
+            "formation",
+            campaign.providers.formation.map(foundry_sdk::gateway::AgentProvider::as_str),
+        ),
+        (
+            "execution",
+            campaign.providers.execution.map(foundry_sdk::gateway::AgentProvider::as_str),
+        ),
+        (
+            "review",
+            campaign.providers.review.map(foundry_sdk::gateway::AgentProvider::as_str),
+        ),
+    ]));
     let _ = writeln!(
         out,
         "Cycles:     {}/{} ({} landed)",
@@ -428,6 +506,25 @@ pub fn campaign_detail(campaign: &Campaign) -> String {
             decision.authorized_by,
             decision.decision
         );
+    }
+    out
+}
+
+fn provider_usage_report(report: &foundry_sdk::campaign::report::CampaignReport) -> String {
+    let mut out = String::new();
+    for (stage, providers) in &report.providers_by_stage {
+        for (provider, usage) in providers {
+            let _ = writeln!(
+                out,
+                "  {stage} / {provider}: {} sessions, {} fresh input, {} cached input, {} output; {} running, {} unmeasured",
+                usage.sessions,
+                usage.input_tokens,
+                usage.cached_input_tokens,
+                usage.output_tokens,
+                usage.running_sessions,
+                usage.unmeasured_sessions
+            );
+        }
     }
     out
 }
@@ -481,6 +578,7 @@ pub fn report(report: &foundry_sdk::campaign::report::CampaignReport) -> String 
             let _ = writeln!(out, "  Pricing limitation: {limitation}");
         }
     }
+    out.push_str(&provider_usage_report(report));
     for session in &report.formation_sessions {
         let _ = writeln!(out, "Formation {}: {}", session.session_id, session.status);
         if let Some(tools) = &session.tool_activity {
@@ -643,6 +741,8 @@ mod tests {
             cycles_landed: 1,
             authorized_by: Some("stacey".to_string()),
             agent_provider: None,
+            providers: foundry_sdk::gateway::StageProviders::default(),
+            initiative: None,
             last_run_event_id: None,
             owner_decisions: vec![],
             pending_run_result: None,
@@ -663,6 +763,8 @@ mod tests {
             max_cycles: 5,
             authorized_by: "stacey".to_string(),
             agent_provider: String::new(),
+            providers: None,
+            initiative: None,
             last_run_event_id: String::new(),
             intent_refs: vec!["intent-1".to_string()],
             context_paths: vec!["src/auth".to_string()],
@@ -1021,6 +1123,63 @@ mod tests {
         let active: serde_json::Value =
             serde_json::from_str(&campaign_show_json(&proto_detail_fixture(), &[])).unwrap();
         assert!(active.get("open_escalation").is_none());
+    }
+
+    #[test]
+    fn member_details_expose_stage_overrides_and_the_initiative_budget_owner() {
+        let mut detail = escalated_detail(Some(logged_escalation()));
+        detail.initiative = Some("shared-outcome".into());
+        detail.providers = Some(crate::proto::StageProviders {
+            formation: Some("claude".into()),
+            execution: Some("codex".into()),
+            review: None,
+        });
+        let output = campaign_detail_proto(&detail);
+        assert!(output.contains("Initiative: shared-outcome"));
+        assert!(output.contains("Providers:  formation=claude, execution=codex"));
+        assert!(!output.contains("--add-cycles"));
+        assert!(output.contains("foundry initiative show shared-outcome"));
+        let json: serde_json::Value =
+            serde_json::from_str(&campaign_show_json(&detail, &[])).unwrap();
+        assert_eq!(json["initiative"], "shared-outcome");
+        assert_eq!(json["providers"]["formation"], "claude");
+        assert_eq!(json["providers"]["execution"], "codex");
+        assert!(json["providers"].get("review").is_none());
+        let independent = campaign_detail_proto(&escalated_detail(Some(logged_escalation())));
+        assert!(independent.contains("--add-cycles"));
+        assert!(!independent.contains("initiative show"));
+    }
+
+    #[test]
+    fn report_names_provider_token_totals_within_each_stage() {
+        let mut data = foundry_sdk::campaign::report::aggregate(&campaign_fixture(), &[]);
+        let claude = foundry_sdk::campaign::report::StageReport {
+            sessions: 1,
+            input_tokens: 11,
+            output_tokens: 7,
+            ..Default::default()
+        };
+        let codex = foundry_sdk::campaign::report::StageReport {
+            sessions: 2,
+            input_tokens: 22,
+            output_tokens: 9,
+            ..Default::default()
+        };
+        data.providers_by_stage.insert(
+            "execution".into(),
+            std::collections::BTreeMap::from([("claude".into(), claude), ("codex".into(), codex)]),
+        );
+        let output = report(&data);
+        assert!(
+            output.contains(
+                "execution / claude: 1 sessions, 11 fresh input, 0 cached input, 7 output"
+            )
+        );
+        assert!(
+            output.contains(
+                "execution / codex: 2 sessions, 22 fresh input, 0 cached input, 9 output"
+            )
+        );
     }
 
     #[test]

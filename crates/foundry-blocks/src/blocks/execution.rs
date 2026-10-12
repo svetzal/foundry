@@ -193,9 +193,40 @@ pub(crate) async fn execute_agent_block(
     ctx: &ExecutionContext<'_>,
     prompt: String,
 ) -> TaskBlockResult {
+    execute_agent_block_in_store(
+        agent,
+        shell,
+        entry,
+        ctx,
+        prompt,
+        &foundry_sdk::paths::campaigns_path(),
+    )
+    .await
+}
+
+async fn execute_agent_block_in_store(
+    agent: &dyn AgentGateway,
+    shell: &dyn ShellGateway,
+    entry: &ProjectEntry,
+    ctx: &ExecutionContext<'_>,
+    prompt: String,
+    store_path: &Path,
+) -> TaskBlockResult {
+    match initiative_stop_reason(ctx.payload, store_path) {
+        Ok(Some(reason)) => return stopped_before_agent(ctx, reason),
+        Err(error) => {
+            return stopped_before_agent(
+                ctx,
+                format!("initiative execution guard failed: {error:#}"),
+            );
+        }
+        Ok(None) => {}
+    }
     let project_path = PathBuf::from(&entry.path);
     let agent_file = super::resolve_agent_file(&entry.agent);
-    let provider = super::chain_agent_provider(ctx.payload);
+    let provider =
+        super::chain_stage_provider(ctx.payload, foundry_sdk::gateway::AgentStage::Execution);
+    let prompt = super::with_initiative_context(&prompt, ctx.payload);
     let on_suppression = suppression_policy(ctx.workflow);
     let run_base = match on_suppression {
         Some(_) => run_start(shell, &project_path, &entry.branch, ctx).await,
@@ -269,6 +300,62 @@ fn suppression_policy(workflow: WorkflowType) -> Option<OnSuppression> {
         WorkflowType::Maintain | WorkflowType::Iterate => Some(OnSuppression::Retry),
         WorkflowType::Task => Some(OnSuppression::Review),
         _ => None,
+    }
+}
+
+/// Refuse queued work after its initiative ends, before invoking an agent.
+fn initiative_stop_reason(
+    payload: &serde_json::Value,
+    store_path: &Path,
+) -> anyhow::Result<Option<String>> {
+    use anyhow::Context as _;
+    use foundry_sdk::{campaign::CampaignStore, initiative::InitiativeStatus};
+    let Some(name) = payload.get("initiative").and_then(serde_json::Value::as_str) else {
+        return Ok(None);
+    };
+    let store = CampaignStore::load(store_path)
+        .context("cannot read initiative state before agent execution")?;
+    let initiative = store
+        .find_initiative(name)
+        .with_context(|| format!("initiative '{name}' is missing before agent execution"))?;
+    Ok(match initiative.status {
+        InitiativeStatus::Completed | InitiativeStatus::Cancelled => Some(format!(
+            "initiative '{name}' is {}; queued member task skipped before agent execution",
+            initiative.status
+        )),
+        _ => None,
+    })
+}
+
+fn stopped_before_agent(ctx: &ExecutionContext<'_>, reason: String) -> TaskBlockResult {
+    use foundry_sdk::{
+        event::EventType,
+        payload::{TaskRunCompletedPayload, TaskVerdict},
+    };
+    let summary = format!("{}: {reason}", ctx.project);
+    let payload = TaskRunCompletedPayload {
+        project: ctx.project.into(),
+        success: false,
+        landed: false,
+        summary: reason.clone(),
+        preservation_ref: None,
+        land_blocked: None,
+        trunk_arrivals: Vec::new(),
+        proof_evidence: None,
+        uncommitted_artifacts: None,
+        verdict: TaskVerdict::RunnerError { detail: reason },
+        context: LoopContext::extract_from(ctx.payload),
+    };
+    TaskBlockResult {
+        success: false,
+        summary,
+        events: vec![super::event_from_infallible_payload(
+            EventType::TaskRunCompleted,
+            ctx.project,
+            ctx.throttle,
+            &payload,
+        )],
+        ..TaskBlockResult::default()
     }
 }
 
@@ -356,6 +443,97 @@ mod tests {
         ExecutionContext, build_agent_execution_result, build_execution_outcome,
         execution_environment,
     };
+
+    #[tokio::test]
+    async fn executor_receives_its_provider_and_shared_brief_identity() {
+        use crate::{blocks::test_helpers, gateway::fakes::FakeAgentGateway};
+        let agent = FakeAgentGateway::success_with("done");
+        let shell = test_helpers::passing_shell();
+        let entry = test_helpers::project_entry("p", "/repo/worktree");
+        let payload = serde_json::json!({"agent_provider":"claude", "providers":{"formation":"claude", "execution":"codex"},
+            "initiative_brief":{"path":"/brief/BRIEF.md", "hash":"abc123"},
+            "initiative_findings":[{"id":"fnd_1", "text":"shared failure diagnosis"}]});
+        let context = ExecutionContext {
+            project: "p",
+            trace_id: None,
+            workflow: WorkflowType::Prompt,
+            payload: &payload,
+            throttle: Throttle::Full,
+            label: "execution",
+            retry_count: None,
+            correction_needed: true,
+        };
+        super::execute_agent_block(&*agent, &*shell, &entry, &context, "fix the diagnosis".into())
+            .await;
+        let requests = agent.invocations();
+        assert_eq!(requests[0].provider, Some(AgentProvider::Codex));
+        assert!(requests[0].prompt.contains("/brief/BRIEF.md"));
+        assert!(requests[0].prompt.contains("abc123"));
+        assert!(requests[0].prompt.contains("shared failure diagnosis"));
+    }
+
+    #[tokio::test]
+    async fn terminal_or_unreadable_initiatives_settle_without_invoking_a_provider() {
+        use crate::{blocks::test_helpers, gateway::fakes::FakeAgentGateway};
+        use foundry_sdk::event::EventType;
+        let directory = tempfile::tempdir().unwrap();
+        let store_path = directory.path().join("campaigns.json");
+        for state in [
+            "completed",
+            "cancelled",
+            "invalid-json",
+            "missing",
+            "active",
+        ] {
+            if state == "invalid-json" {
+                std::fs::write(&store_path, "{").unwrap();
+            } else {
+                std::fs::write(&store_path, serde_json::json!({"initiatives": if state == "missing" { serde_json::json!([]) } else { serde_json::json!([{"name":"i", "outcome":"done", "projects":["p"], "done_evidence":[], "status":state}]) }}).to_string()).unwrap();
+            }
+            let agent = FakeAgentGateway::success_with("must not run");
+            let shell = test_helpers::passing_shell();
+            let entry = test_helpers::project_entry("p", "/repo/worktree");
+            let payload =
+                serde_json::json!({"initiative":"i", "campaign":"c", "campaign_limits":{}});
+            let context = ExecutionContext {
+                project: "p",
+                trace_id: None,
+                workflow: WorkflowType::Task,
+                payload: &payload,
+                throttle: Throttle::Full,
+                label: "execution",
+                retry_count: None,
+                correction_needed: true,
+            };
+            let result = super::execute_agent_block_in_store(
+                &*agent,
+                &*shell,
+                &entry,
+                &context,
+                "must not run".into(),
+                &store_path,
+            )
+            .await;
+            if state == "active" {
+                assert_eq!(
+                    agent.invocations().len(),
+                    1,
+                    "active initiative must reach its provider"
+                );
+                continue;
+            }
+            assert!(agent.invocations().is_empty());
+            assert_eq!(result.events[0].event_type, EventType::TaskRunCompleted);
+            assert_eq!(result.events[0].payload["verdict"], "runner_error");
+            assert_eq!(result.events[0].payload["initiative"], "i");
+            assert!(!result.success);
+            if matches!(state, "completed" | "cancelled") {
+                assert!(result.summary.contains(state));
+            } else {
+                assert!(result.summary.contains("guard failed"));
+            }
+        }
+    }
 
     fn trigger_payload() -> serde_json::Value {
         serde_json::json!({ "project": "p", "workflow": "iterate" })

@@ -24,6 +24,7 @@
 //! the campaign store and the event log, and it renders as its own row kind
 //! (and its own JSON array) beside the ledger items.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
@@ -63,6 +64,70 @@ fn render_list(
         (View::Open, false) => render::queue::open_only(items, escalated),
         (View::Open, true) => render::queue::open_json(items, escalated),
     }
+}
+
+fn render_with_initiatives(
+    items: &[ProtoWorkItem],
+    campaigns: &[ProtoCampaign],
+    initiatives: &[crate::proto::Initiative],
+    view: View,
+    json: bool,
+) -> Result<String> {
+    let members = initiatives
+        .iter()
+        .flat_map(|initiative| initiative.members.iter().map(|member| member.name.as_str()))
+        .collect::<Vec<_>>();
+    let campaigns = campaigns
+        .iter()
+        .filter(|campaign| !members.contains(&campaign.name.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let items = items
+        .iter()
+        .filter(|item| {
+            let open = matches!(item.state.as_str(), "preserved" | "needs_decision" | "failed");
+            !open
+                || !item.source.as_ref().is_some_and(|source| {
+                    (source.kind == "campaign" && members.contains(&source.r#ref.as_str()))
+                        || (source.kind == "initiative"
+                            && initiatives.iter().any(|initiative| initiative.name == source.r#ref))
+                })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut output = render_list(&items, &campaigns, view, json);
+    if json {
+        let mut value: serde_json::Value = serde_json::from_str(&output)?;
+        value["escalated_initiatives"] = serde_json::to_value(initiatives)?;
+        output = format!("{}\n", serde_json::to_string_pretty(&value)?);
+    } else if !initiatives.is_empty() {
+        let mut rows = String::new();
+        for initiative in initiatives {
+            let _ = writeln!(
+                rows,
+                "initiative {}  escalated  {} open question(s)\n  next: foundry initiative show {}",
+                initiative.name,
+                initiative.open_questions.len(),
+                initiative.name
+            );
+        }
+        let heading = format!("{}\n", render::queue::OPEN_HEADING);
+        let section_start =
+            output.find(&heading).context("queue output has no open section")? + heading.len();
+        let section_end =
+            output[section_start..].find("\n\n").context("queue open section has no end")?
+                + section_start;
+        if output[section_start..section_end] == *"  (none)" {
+            output.replace_range(section_start..=section_end, &rows);
+        } else {
+            output.insert_str(section_end + 1, &rows);
+        }
+    }
+    Ok(output)
+}
+
+fn admits_initiatives(source: Option<&SourceFilter>) -> bool {
+    source.is_none_or(|filter| filter.kind == WorkSourceKind::Initiative)
 }
 
 /// The client-side files `foundry queue --offline` reads.
@@ -143,12 +208,14 @@ impl SourceFilter {
         }
     }
 
-    /// Whether a wire record's recorded source is this one. A record with no
-    /// source never matches.
-    fn matches(&self, item: &ProtoWorkItem) -> bool {
+    /// Campaign filters select member identity even when its source is an initiative.
+    fn matches(&self, item: &WorkItem) -> bool {
+        if self.kind == WorkSourceKind::Campaign {
+            return item.campaign_name() == Some(self.reference.as_str());
+        }
         item.source
             .as_ref()
-            .is_some_and(|source| source.kind == self.kind.tag() && source.r#ref == self.reference)
+            .is_some_and(|source| source.kind == self.kind && source.reference == self.reference)
     }
 
     /// The `--source <kind>:<ref>` text that names this filter.
@@ -173,19 +240,34 @@ pub async fn list(
     source: Option<&str>,
 ) -> Result<()> {
     let source = source.map(SourceFilter::parse).transpose()?;
-    let (items, campaigns) = if offline {
+    let (items, campaigns, initiatives) = if offline {
         let campaigns = if admits_campaigns(source.as_ref()) {
             load_campaigns_offline(paths.campaigns, paths.events_dir)?
         } else {
             Vec::new()
         };
-        (filter_by_source(load_offline(paths.work_items)?, source.as_ref()), campaigns)
+        (
+            load_offline_selected(paths.work_items, source.as_ref())?,
+            campaigns,
+            if admits_initiatives(source.as_ref()) {
+                crate::initiative_commands::list_offline(paths.campaigns)?
+            } else {
+                vec![]
+            },
+        )
     } else {
         fetch_online(addr, view, source.as_ref()).await?
     };
     let escalated = select_escalated(campaigns, source.as_ref());
 
-    print!("{}", render_list(&items, &escalated, view, json));
+    let initiatives = initiatives
+        .into_iter()
+        .filter(|initiative| initiative.status == "escalated")
+        .filter(|initiative| {
+            source.as_ref().is_none_or(|filter| filter.reference == initiative.name)
+        })
+        .collect::<Vec<_>>();
+    print!("{}", render_with_initiatives(&items, &escalated, &initiatives, view, json)?);
     Ok(())
 }
 
@@ -208,9 +290,9 @@ fn load_campaigns_offline(campaigns_path: &Path, events_dir: &Path) -> Result<Ve
 /// The offline counterpart of the daemon's source filter, so `--offline`
 /// differs from the online path only in transport.
 pub(crate) fn filter_by_source(
-    items: Vec<ProtoWorkItem>,
+    items: Vec<WorkItem>,
     source: Option<&SourceFilter>,
-) -> Vec<ProtoWorkItem> {
+) -> Vec<WorkItem> {
     match source {
         Some(filter) => items.into_iter().filter(|item| filter.matches(item)).collect(),
         None => items,
@@ -224,7 +306,7 @@ async fn fetch_online(
     addr: &str,
     view: View,
     source: Option<&SourceFilter>,
-) -> Result<(Vec<ProtoWorkItem>, Vec<ProtoCampaign>)> {
+) -> Result<(Vec<ProtoWorkItem>, Vec<ProtoCampaign>, Vec<crate::proto::Initiative>)> {
     let suffix = match source {
         Some(filter) => format!("{} {}", view_suffix(view), filter.flag_text()),
         None => view_suffix(view).to_string(),
@@ -243,7 +325,17 @@ async fn fetch_online(
     } else {
         Vec::new()
     };
-    Ok((response.into_inner().items, campaigns))
+    let initiatives = if admits_initiatives(source) {
+        client
+            .list_initiatives(crate::proto::ListInitiativesRequest {})
+            .await
+            .map_err(status_to_anyhow)?
+            .into_inner()
+            .initiatives
+    } else {
+        vec![]
+    };
+    Ok((response.into_inner().items, campaigns, initiatives))
 }
 
 /// The `ListWorkItems` request selecting every project and state, and
@@ -352,10 +444,18 @@ fn view_suffix(view: View) -> &'static str {
 /// Read the ledger file directly and put it in the order `ListWorkItems`
 /// documents.
 pub(crate) fn load_offline(work_items_path: &Path) -> Result<Vec<ProtoWorkItem>> {
+    load_offline_selected(work_items_path, None)
+}
+
+/// Select typed records before their member identity is lost in wire conversion.
+pub(crate) fn load_offline_selected(
+    work_items_path: &Path,
+    source: Option<&SourceFilter>,
+) -> Result<Vec<ProtoWorkItem>> {
     let store = WorkItemStore::load(work_items_path).with_context(|| {
         format!("could not read the work-item ledger at {}", work_items_path.display())
     })?;
-    Ok(ordered(&store).iter().map(item_to_proto).collect())
+    Ok(filter_by_source(ordered(&store), source).iter().map(item_to_proto).collect())
 }
 
 /// Which ordering group an item's state puts it in.
@@ -585,6 +685,40 @@ pub async fn reconcile(addr: &str, offline: bool) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_escalated_initiative_suppresses_member_campaigns_and_open_items() {
+        let initiative = crate::proto::Initiative {
+            name: "shared".into(),
+            status: "escalated".into(),
+            members: vec![crate::proto::InitiativeMember {
+                name: "member".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let campaigns = vec![ProtoCampaign {
+            name: "member".into(),
+            status: "escalated".into(),
+            ..Default::default()
+        }];
+        let items = vec![ProtoWorkItem {
+            id: "wi_member".into(),
+            state: "preserved".into(),
+            source: Some(crate::proto::WorkSource {
+                kind: "initiative".into(),
+                r#ref: "shared".into(),
+                cycle: Some(1),
+            }),
+            ..Default::default()
+        }];
+        let output =
+            render_with_initiatives(&items, &campaigns, &[initiative], View::Open, true).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["escalated_initiatives"].as_array().unwrap().len(), 1);
+        assert!(value["escalated_campaigns"].as_array().unwrap().is_empty());
+        assert!(value["items"].as_array().unwrap().is_empty());
+    }
+
     use chrono::{DateTime, Utc};
     use foundry_sdk::work_item::{
         WorkDisposition, WorkItemKind, WorkItemSpec, WorkItemStore, WorkLane,
@@ -799,7 +933,9 @@ mod tests {
         assert!(no_colon.to_string().contains("<kind>:<ref>"), "got: {no_colon}");
         let unknown = SourceFilter::parse("dashboard:x").expect_err("unknown kind");
         assert!(
-            unknown.to_string().contains("campaign, sentinel, operator, work_item"),
+            unknown
+                .to_string()
+                .contains("campaign, initiative, sentinel, operator, work_item"),
             "got: {unknown}"
         );
         assert!(SourceFilter::parse("sentinel:").is_err(), "a blank ref names nothing");
@@ -825,14 +961,13 @@ mod tests {
         let mut nightly = item("wi_nightly", "alpha", WorkItemState::Running, 0);
         nightly.source = Some(WorkSource::sentinel("nightly-maintenance"));
         let unsourced = item("wi_old", "alpha", WorkItemState::Running, 0);
-        let items: Vec<ProtoWorkItem> =
-            ordered(&store(vec![cycle_one, cycle_two, nightly, unsourced]))
-                .iter()
-                .map(item_to_proto)
-                .collect();
+        let items = ordered(&store(vec![cycle_one, cycle_two, nightly, unsourced]));
 
         let cycles = filter_by_source(items.clone(), Some(&SourceFilter::campaign("tidy-cli")));
-        assert_eq!(ids(&cycles), vec!["wi_c2", "wi_c1"]);
+        assert_eq!(
+            cycles.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            vec!["wi_c2", "wi_c1"]
+        );
         assert_eq!(cycles[1].source.as_ref().map(|s| s.cycle), Some(Some(1)));
 
         assert_eq!(filter_by_source(items.clone(), None).len(), 4, "no filter, every item");
@@ -840,6 +975,65 @@ mod tests {
             filter_by_source(items, Some(&SourceFilter::campaign("tidy"))).is_empty(),
             "the ref is an exact match, not a prefix"
         );
+    }
+
+    #[test]
+    fn offline_campaign_selection_distinguishes_members_of_one_initiative() {
+        let tmp = NamedTempFile::new().expect("tempfile");
+        let mut alpha_new = item("wi_alpha_new", "project", WorkItemState::Running, 0);
+        let mut alpha_old = item("wi_alpha_old", "project", WorkItemState::Landed, 2_000);
+        let mut beta = item("wi_beta", "project", WorkItemState::Running, 0);
+        for (work, member, cycle) in [
+            (&mut alpha_new, "alpha", 2),
+            (&mut alpha_old, "alpha", 1),
+            (&mut beta, "beta", 1),
+        ] {
+            work.source = Some(WorkSource::initiative("shared", cycle));
+            let root = foundry_sdk::event::Event::new(
+                foundry_sdk::event::EventType::CampaignAdvanceRequested,
+                "project".into(),
+                foundry_sdk::throttle::Throttle::Full,
+                serde_json::json!({"campaign": member, "campaign_cycle": cycle}),
+            );
+            if work.state == WorkItemState::Running {
+                work.pending_root = Some(root);
+            } else {
+                work.started_root = Some(root);
+            }
+        }
+        store(vec![alpha_old, beta, alpha_new]).save(tmp.path()).expect("save ledger");
+        let alpha = load_offline_selected(tmp.path(), Some(&SourceFilter::campaign("alpha")))
+            .expect("select alpha cycles");
+        assert_eq!(ids(&alpha), vec!["wi_alpha_new", "wi_alpha_old"]);
+        assert!(alpha.iter().all(|item| item.source.as_ref().unwrap().r#ref == "shared"));
+        let beta = load_offline_selected(tmp.path(), Some(&SourceFilter::campaign("beta")))
+            .expect("select beta cycles");
+        assert_eq!(ids(&beta), vec!["wi_beta"]);
+        let initiative = load_offline_selected(
+            tmp.path(),
+            Some(&SourceFilter::parse("initiative:shared").expect("source filter")),
+        )
+        .expect("select shared initiative");
+        assert_eq!(ids(&initiative), vec!["wi_alpha_new", "wi_beta", "wi_alpha_old"]);
+    }
+
+    #[test]
+    fn initiative_questions_fill_the_open_section_in_both_human_views() {
+        let initiative = crate::proto::Initiative {
+            name: "shared".into(),
+            status: "escalated".into(),
+            ..Default::default()
+        };
+        for view in [View::Open, View::Overview] {
+            let output =
+                render_with_initiatives(&[], &[], std::slice::from_ref(&initiative), view, false)
+                    .expect("render queue");
+            let open_start = output.find(render::queue::OPEN_HEADING).expect("open heading");
+            let open_end = output.find("Settled (").unwrap_or(output.len());
+            let open = &output[open_start..open_end];
+            assert!(open.contains("initiative shared"), "{output}");
+            assert!(!open.contains("(none)"), "{output}");
+        }
     }
 
     #[tokio::test]
@@ -998,6 +1192,8 @@ mod tests {
             .expect("campaign");
         legacy.authorized_by = Some("owner".to_string());
         foundry_sdk::campaign::CampaignStore {
+            findings: vec![],
+            initiatives: vec![],
             version: 1,
             campaigns: vec![legacy],
         }

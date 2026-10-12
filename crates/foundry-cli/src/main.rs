@@ -10,6 +10,7 @@ mod daemon;
 mod event_commands;
 mod gates_commands;
 mod init_commands;
+mod initiative_commands;
 mod origin;
 mod pacing_commands;
 mod queue_commands;
@@ -325,6 +326,12 @@ enum Commands {
     /// Manage durable objective campaigns
     #[command(subcommand)]
     Campaign(CampaignCommands),
+    /// Manage outcomes shared across registered projects
+    #[command(subcommand)]
+    Initiative(initiative_commands::Commands),
+    /// Record and inspect findings shared by initiative members
+    #[command(subcommand)]
+    Finding(initiative_commands::FindingCommands),
 
     /// Inspect or control the pacing stage between admission and execution
     ///
@@ -1005,6 +1012,10 @@ async fn main() -> Result<()> {
         foundry_sdk::paths::daemon_url().as_deref(),
     );
 
+    dispatch_command(cli, &addr).await
+}
+
+async fn dispatch_command(cli: Cli, addr: &str) -> Result<()> {
     match cli.command {
         Commands::Capture { log_dir, command } => capture_commands::run(log_dir, command).await,
         Commands::Emit {
@@ -1013,41 +1024,41 @@ async fn main() -> Result<()> {
             throttle,
             payload,
             wait,
-        } => event_commands::emit(&addr, &event_type, &project, &throttle, payload, wait).await,
+        } => event_commands::emit(addr, &event_type, &project, &throttle, payload, wait).await,
         Commands::Status { workflow_id, span } => {
-            event_commands::status(&addr, workflow_id, span).await
+            event_commands::status(addr, workflow_id, span).await
         }
-        Commands::Watch { project } => event_commands::watch(&addr, project).await,
+        Commands::Watch { project } => event_commands::watch(addr, project).await,
         Commands::Trace {
             event_id,
             verbose,
             flat,
-        } => event_commands::trace(&addr, &event_id, verbose, flat).await,
+        } => event_commands::trace(addr, &event_id, verbose, flat).await,
         Commands::Run { project, throttle } => {
-            workflow_commands::run(&addr, project, &throttle).await
+            workflow_commands::run(addr, project, &throttle).await
         }
         Commands::Validate { projects, all } => {
-            workflow_commands::validate(&addr, projects, all, &foundry_sdk::paths::registry_path())
+            workflow_commands::validate(addr, projects, all, &foundry_sdk::paths::registry_path())
                 .await
         }
         Commands::Iterate { project, agent } => {
-            workflow_commands::iterate(&addr, &project, agent.as_deref()).await
+            workflow_commands::iterate(addr, &project, agent.as_deref()).await
         }
-        Commands::Task(args) => args.run(&addr).await,
+        Commands::Task(args) => args.run(addr).await,
         Commands::Deps { project, policy } => {
-            workflow_commands::deps(&addr, &project, policy.as_deref()).await
+            workflow_commands::deps(addr, &project, policy.as_deref()).await
         }
         Commands::Scout { project, agent } => {
-            workflow_commands::scout(&addr, &project, agent.as_deref()).await
+            workflow_commands::scout(addr, &project, agent.as_deref()).await
         }
         Commands::Pipeline { project, agent } => {
-            workflow_commands::pipeline(&addr, &project, agent.as_deref()).await
+            workflow_commands::pipeline(addr, &project, agent.as_deref()).await
         }
         Commands::Release { project, bump } => {
-            workflow_commands::release(&addr, &project, bump).await
+            workflow_commands::release(addr, &project, bump).await
         }
         Commands::History { date, project } => {
-            event_commands::history(&addr, cli.offline, date.as_deref(), project.as_deref()).await
+            event_commands::history(addr, cli.offline, date.as_deref(), project.as_deref()).await
         }
         Commands::Init {
             local,
@@ -1063,35 +1074,55 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Gates { project, dir, init } => {
-            let project_dir = gates_commands::resolve_project_dir(
-                project.as_deref(),
-                dir.as_deref(),
-                &foundry_sdk::paths::registry_path(),
-            )?;
-            if init {
-                gates_commands::init(&project_dir)
-            } else {
-                gates_commands::show(&project_dir)
-            }
+            handle_gates_command(project.as_deref(), dir.as_deref(), init)
         }
         Commands::Queue {
             command,
             json,
             source,
-        } => handle_queue_command(command, json, source.as_deref(), &addr, cli.offline).await,
+        } => handle_queue_command(command, json, source.as_deref(), addr, cli.offline).await,
         Commands::Registry(sub) => {
-            handle_registry_command(*sub, &foundry_sdk::paths::registry_path(), &addr, cli.offline)
+            handle_registry_command(*sub, &foundry_sdk::paths::registry_path(), addr, cli.offline)
                 .await
+        }
+        Commands::Initiative(sub) => {
+            initiative_commands::run(
+                sub,
+                &foundry_sdk::paths::campaigns_path(),
+                &foundry_sdk::paths::registry_path(),
+                addr,
+                cli.offline,
+            )
+            .await
+        }
+        Commands::Finding(sub) => {
+            initiative_commands::finding(
+                sub,
+                &foundry_sdk::paths::campaigns_path(),
+                addr,
+                cli.offline,
+            )
+            .await
         }
         Commands::Campaign(sub) => {
             let campaigns = foundry_sdk::paths::campaigns_path();
-            handle_campaign_command(sub, &campaigns, &addr, cli.offline).await
+            handle_campaign_command(sub, &campaigns, addr, cli.offline).await
         }
         Commands::Sentinel(sub) => {
-            handle_sentinel_command(sub, &foundry_sdk::paths::sentinels_path(), &addr, cli.offline)
+            handle_sentinel_command(sub, &foundry_sdk::paths::sentinels_path(), addr, cli.offline)
                 .await
         }
-        Commands::Pacing(sub) => handle_pacing_command(sub, &addr, cli.offline).await,
+        Commands::Pacing(sub) => handle_pacing_command(sub, addr, cli.offline).await,
+    }
+}
+
+fn handle_gates_command(project: Option<&str>, dir: Option<&str>, init: bool) -> Result<()> {
+    let project_dir =
+        gates_commands::resolve_project_dir(project, dir, &foundry_sdk::paths::registry_path())?;
+    if init {
+        gates_commands::init(&project_dir)
+    } else {
+        gates_commands::show(&project_dir)
     }
 }
 

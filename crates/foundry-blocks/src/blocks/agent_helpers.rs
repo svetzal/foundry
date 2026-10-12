@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -37,6 +38,46 @@ pub(crate) fn parse_agent_provider(s: Option<&str>) -> Option<AgentProvider> {
 /// `serde_json::Value` payload rather than a typed struct.
 pub(crate) fn chain_agent_provider(payload: &serde_json::Value) -> Option<AgentProvider> {
     parse_agent_provider(payload.get("agent_provider").and_then(serde_json::Value::as_str))
+}
+
+/// Resolve this block's stage before the legacy chain provider.
+pub(crate) fn chain_stage_provider(
+    payload: &serde_json::Value,
+    stage: foundry_sdk::gateway::AgentStage,
+) -> Option<AgentProvider> {
+    parse_agent_provider(
+        payload
+            .get("providers")
+            .and_then(|map| map.get(stage.as_str()))
+            .and_then(serde_json::Value::as_str),
+    )
+    .or_else(|| chain_agent_provider(payload))
+}
+
+/// Foundry-owned brief identity and findings carried by the chain. The
+/// formation bounds findings before dispatch, and executors see the same
+/// records when a preserved task resumes.
+pub(crate) fn with_initiative_context(prompt: &str, payload: &serde_json::Value) -> String {
+    let mut context = String::new();
+    if let Some(brief) = payload.get("initiative_brief").filter(|value| !value.is_null()) {
+        let _ = write!(
+            context,
+            "\n\nINITIATIVE BRIEF (read this Foundry-owned path; verify its recorded hash):\n{brief}"
+        );
+    }
+    if let Some(findings) = payload
+        .get("initiative_findings")
+        .and_then(serde_json::Value::as_array)
+        .filter(|findings| !findings.is_empty())
+    {
+        context.push_str(
+            "\n\nFINDINGS FROM THE INITIATIVE (ids remain attached to this objective):\n",
+        );
+        for finding in findings {
+            let _ = writeln!(context, "{finding}");
+        }
+    }
+    format!("{prompt}{context}")
 }
 
 /// Standing turn discipline for every prompt whose answer is parsed as typed
@@ -430,6 +471,34 @@ pub(crate) fn match_agent_text_outcome(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn stage_provider_selects_own_stage_and_inherits_legacy_provider() {
+        let payload = serde_json::json!({"agent_provider":"codex", "providers":{"formation":"claude", "review":"claude"}});
+        assert_eq!(
+            chain_stage_provider(&payload, foundry_sdk::gateway::AgentStage::Formation),
+            Some(AgentProvider::Claude)
+        );
+        assert_eq!(
+            chain_stage_provider(&payload, foundry_sdk::gateway::AgentStage::Execution),
+            Some(AgentProvider::Codex)
+        );
+        assert_eq!(
+            chain_stage_provider(&payload, foundry_sdk::gateway::AgentStage::Review),
+            Some(AgentProvider::Claude)
+        );
+    }
+
+    #[test]
+    fn initiative_context_carries_brief_identity_and_diagnosis() {
+        let payload = serde_json::json!({"initiative_brief":{"path":"/brief/BRIEF.md", "hash":"123"},"initiative_findings":[{"id":"fnd_1", "kind":"regression", "text":"resume must fix this diagnosis"}]});
+        let prompt = with_initiative_context("task", &payload);
+        assert!(prompt.contains("/brief/BRIEF.md"));
+        assert!(prompt.contains("123"));
+        assert!(prompt.contains("fnd_1"));
+        assert!(prompt.contains("resume must fix this diagnosis"));
+    }
+
     use super::*;
 
     #[test]

@@ -6,6 +6,7 @@
 //! work as running after another process settled it. Reads do not take the
 //! write gate; mutations serialize their load→modify→save sequences.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use tonic::{Request, Response, Status};
@@ -138,6 +139,12 @@ fn selected(
         .filter(|item| {
             source.is_none_or(|(kind, reference)| {
                 item.source.as_ref().is_some_and(|recorded| recorded.matches(*kind, reference))
+                    || (*kind == WorkSourceKind::Campaign
+                        && item
+                            .pending_root
+                            .as_ref()
+                            .or(item.started_root.as_ref())
+                            .is_some_and(|root| root.payload_str("campaign") == Some(reference)))
             })
         })
         .cloned()
@@ -486,10 +493,15 @@ pub(super) fn cancel_waiting_campaign_cycles(
     let mut cancelled = Vec::new();
     for item in store.items.iter_mut().filter(|item| {
         item.state.is_waiting()
-            && item
+            && (item
                 .source
                 .as_ref()
                 .is_some_and(|source| source.matches(WorkSourceKind::Campaign, campaign))
+                || item
+                    .pending_root
+                    .as_ref()
+                    .or(item.started_root.as_ref())
+                    .is_some_and(|root| root.payload_str("campaign") == Some(campaign)))
     }) {
         item.settle_cancelled(reason, None, now);
         item.pending_root = None;
@@ -501,6 +513,45 @@ pub(super) fn cancel_waiting_campaign_cycles(
     store
         .save(path)
         .map_err(|error| Status::internal(format!("failed to persist work-item state: {error}")))?;
+    Ok(cancelled)
+}
+
+/// Stop queued work belonging to a terminal initiative, retaining running work.
+/// The single ledger save covers every member and any direct initiative task.
+pub(super) fn cancel_waiting_initiative(
+    path: &Path,
+    initiative: &str,
+    members: &[String],
+    reason: &str,
+) -> Result<Vec<WorkItem>, Status> {
+    let _guard = foundry_sdk::work_item::ledger_write_gate()
+        .lock()
+        .map_err(|_| Status::internal("work-item ledger write gate poisoned"))?;
+    let mut store = load_store(path)?;
+    let now = chrono::Utc::now();
+    let mut cancelled = Vec::new();
+    for item in &mut store.items {
+        let source_matches = item.source.as_ref().is_some_and(|source| {
+            source.matches(WorkSourceKind::Initiative, initiative)
+                || (source.kind == WorkSourceKind::Campaign && members.contains(&source.reference))
+        });
+        let member_matches = item
+            .pending_root
+            .as_ref()
+            .or(item.started_root.as_ref())
+            .and_then(|root| root.payload_str("campaign"))
+            .is_some_and(|member| members.iter().any(|name| name == member));
+        if item.state.is_waiting() && (source_matches || member_matches) {
+            item.settle_cancelled(reason, None, now);
+            item.pending_root = None;
+            cancelled.push(item.clone());
+        }
+    }
+    if !cancelled.is_empty() {
+        store.save(path).map_err(|error| {
+            Status::internal(format!("failed to persist work-item state: {error}"))
+        })?;
+    }
     Ok(cancelled)
 }
 
@@ -657,14 +708,23 @@ pub(super) fn require_open_continuations(
 #[tracing::instrument(skip_all, fields(item_id = %id))]
 pub(super) async fn resume_item(
     path: &Path,
+    campaigns_path: &Path,
     ctx: &super::RuntimeContext,
     pacing: &foundry_sdk::pacing::PacingPaths,
     id: String,
     operator_origin: String,
     hints: ScheduleHints,
 ) -> Result<ProtoWorkItem, Status> {
-    let item =
-        admit_resume(path, ctx, pacing, id, ResumeSource::Owner(operator_origin), hints).await?;
+    let item = admit_resume_with_campaigns(
+        path,
+        campaigns_path,
+        ctx,
+        pacing,
+        id,
+        ResumeSource::Owner(operator_origin),
+        hints,
+    )
+    .await?;
     Ok(item_to_proto(&item))
 }
 
@@ -679,11 +739,41 @@ pub(super) async fn admit_resume(
     source: ResumeSource,
     hints: ScheduleHints,
 ) -> Result<WorkItem, Status> {
+    admit_resume_with_campaigns(
+        path,
+        &foundry_sdk::paths::campaigns_path(),
+        ctx,
+        pacing,
+        id,
+        source,
+        hints,
+    )
+    .await
+}
+
+pub(super) async fn admit_resume_with_campaigns(
+    path: &Path,
+    campaigns_path: &Path,
+    ctx: &super::RuntimeContext,
+    pacing: &foundry_sdk::pacing::PacingPaths,
+    id: String,
+    source: ResumeSource,
+    hints: ScheduleHints,
+) -> Result<WorkItem, Status> {
     if id.trim().is_empty()
         || matches!(&source, ResumeSource::Owner(origin) if origin.trim().is_empty())
     {
         return Err(Status::invalid_argument("id and operator origin must be nonblank"));
     }
+    // Atomic store reads do not take the ledger gate. Keep the campaign snapshot
+    // before admission, preserving the campaign-store then ledger lock order.
+    let campaigns_path = campaigns_path.to_path_buf();
+    let campaigns = tokio::task::spawn_blocking(move || {
+        foundry_sdk::campaign::CampaignStore::load(&campaigns_path)
+    })
+    .await
+    .map_err(|error| Status::internal(error.to_string()))?
+    .map_err(|error| Status::internal(error.to_string()))?;
     let path = path.to_path_buf();
     let admission_path = path.clone();
     let registry = std::sync::Arc::clone(&ctx.registry);
@@ -739,6 +829,7 @@ pub(super) async fn admit_resume(
                 ResumeSource::Nightly { .. } => None,
             },
         );
+        attach_initiative_context(parent, &campaigns, &mut child)?;
         child.depends_on.clone_from(&hints.depends_on);
         child.not_before = hints.not_before;
         store.upsert(staged_rejection(&child));
@@ -753,25 +844,90 @@ pub(super) async fn admit_resume(
     .map_err(|error| Status::internal(format!("resume admission did not finish: {error}")))??;
     persist_resume_lifecycle(&ctx.engine, &item).await?;
     let admitted = item.clone();
-    tokio::task::spawn_blocking(move || {
-        let _guard = foundry_sdk::work_item::ledger_write_gate()
-            .lock()
-            .map_err(|_| Status::internal("work-item ledger write gate poisoned"))?;
-        let mut store = load_store(&admission_path)?;
-        let current = store
-            .find(&admitted.id)
-            .ok_or_else(|| Status::internal("resume admission record disappeared"))?;
-        if current.state != WorkItemState::Failed {
-            return Err(Status::internal("resume admission record changed before dispatch"));
-        }
-        store.upsert(admitted);
-        store.save(&admission_path).map_err(|error| {
-            Status::internal(format!("failed to persist work-item state: {error}"))
-        })
-    })
-    .await
-    .map_err(|error| Status::internal(format!("resume admission did not finish: {error}")))??;
+    tokio::task::spawn_blocking(move || publish_resume_admission(&admission_path, admitted))
+        .await
+        .map_err(|error| Status::internal(format!("resume admission did not finish: {error}")))??;
     Ok(item)
+}
+
+/// Claim the queued continuation only after its lifecycle events are durable.
+fn publish_resume_admission(path: &Path, admitted: WorkItem) -> Result<(), Status> {
+    let _guard = foundry_sdk::work_item::ledger_write_gate()
+        .lock()
+        .map_err(|_| Status::internal("work-item ledger write gate poisoned"))?;
+    let mut store = load_store(path)?;
+    let current = store
+        .find(&admitted.id)
+        .ok_or_else(|| Status::internal("resume admission record disappeared"))?;
+    if current.state != WorkItemState::Failed {
+        return Err(Status::internal("resume admission record changed before dispatch"));
+    }
+    store.upsert(admitted);
+    store
+        .save(path)
+        .map_err(|error| Status::internal(format!("failed to persist work-item state: {error}")))
+}
+
+fn attach_initiative_context(
+    parent: &WorkItem,
+    campaigns: &foundry_sdk::campaign::CampaignStore,
+    child: &mut WorkItem,
+) -> Result<(), Status> {
+    let parent_root = parent.started_root.as_ref().or(parent.pending_root.as_ref());
+    let member = parent_root.and_then(|root| root.payload_str("campaign"));
+    let Some(member) = member else {
+        return Ok(());
+    };
+    let context = campaigns
+        .formation_context(member, 8192)
+        .map_err(super::initiative_ops::error)?;
+    let Some(context) = context else {
+        return Ok(());
+    };
+    let initiative = campaigns
+        .find_initiative(&context.initiative)
+        .ok_or_else(|| Status::failed_precondition("initiative disappeared"))?;
+    if initiative.status.is_terminal() {
+        return Err(Status::failed_precondition("a terminal initiative cannot resume work"));
+    }
+    let cycle = parent.campaign_cycle().ok_or_else(|| {
+        Status::failed_precondition("initiative work has no campaign cycle identity")
+    })?;
+    child.source = Some(WorkSource::initiative(context.initiative.clone(), cycle));
+    let findings = context.render_findings();
+    if !findings.is_empty() {
+        write!(child.objective, "\n\nFindings from the initiative:\n{findings}")
+            .map_err(|error| Status::internal(error.to_string()))?;
+    }
+    let root = child
+        .pending_root
+        .as_mut()
+        .ok_or_else(|| Status::internal("resume has no continuation root"))?;
+    if let Some(original) = parent_root {
+        for key in [
+            "campaign",
+            "campaign_cycle",
+            "agent_provider",
+            "writable_repositories",
+        ] {
+            if let Some(value) = original.payload.get(key) {
+                root.payload[key].clone_from(value);
+            }
+        }
+    }
+    root.payload["initiative"] = serde_json::json!(context.initiative);
+    root.payload["initiative_brief"] = serde_json::to_value(&context.brief)
+        .map_err(|error| Status::internal(error.to_string()))?;
+    let providers = campaigns
+        .find(member)
+        .map_or(context.providers, |campaign| campaign.providers.inherit(&context.providers));
+    root.payload["providers"] =
+        serde_json::to_value(providers).map_err(|error| Status::internal(error.to_string()))?;
+    root.payload["initiative_findings"] = serde_json::json!(findings);
+    root.payload["finding_ids"] = serde_json::json!(context.finding_ids());
+    root.payload["prompt"] = serde_json::json!(child.objective);
+    root.source.clone_from(&child.source);
+    Ok(())
 }
 
 /// The record a resume admission saves first, failing closed: until the
@@ -930,6 +1086,101 @@ mod tests {
     };
     use foundry_sdk::work_source::{WorkSource, WorkSourceKind};
 
+    #[test]
+    fn terminal_initiative_cancels_waiting_members_and_direct_tasks_but_keeps_running_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        let mut direct = item("wi_direct", "sample", WorkItemState::Queued);
+        direct.source = Some(WorkSource::initiative("shared", 1));
+        let mut legacy = item("wi_legacy", "sample", WorkItemState::Held);
+        legacy.source = Some(WorkSource::campaign("member", 1));
+        let mut rooted = item("wi_rooted", "sample", WorkItemState::Queued);
+        rooted.pending_root = Some(foundry_sdk::event::Event::new(
+            foundry_sdk::event::EventType::ExecutionRequested,
+            "sample".into(),
+            foundry_sdk::throttle::Throttle::Full,
+            serde_json::json!({"campaign":"member"}),
+        ));
+        let mut running = item("wi_running", "sample", WorkItemState::Running);
+        running.source = Some(WorkSource::initiative("shared", 1));
+        let other = item("wi_other", "sample", WorkItemState::Queued);
+        let store = WorkItemStore {
+            version: 1,
+            items: vec![direct, legacy, rooted, running, other],
+        };
+        store.save(&path).unwrap();
+        let cancelled = super::cancel_waiting_initiative(
+            &path,
+            "shared",
+            &["member".into()],
+            "Outcome stopped",
+        )
+        .unwrap();
+        assert_eq!(cancelled.len(), 3);
+        let current = WorkItemStore::load(&path).unwrap();
+        for id in ["wi_direct", "wi_legacy", "wi_rooted"] {
+            assert_eq!(current.find(id).unwrap().state, WorkItemState::Cancelled);
+            assert!(current.find(id).unwrap().pending_root.is_none());
+        }
+        assert_eq!(current.find("wi_running").unwrap().state, WorkItemState::Running);
+        assert_eq!(current.find("wi_other").unwrap().state, WorkItemState::Queued);
+        let before = std::fs::read(&path).unwrap();
+        assert!(
+            super::cancel_waiting_initiative(&path, "shared", &["member".into()], "Retry")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn resumed_initiative_work_receives_current_diagnosis_brief_and_member_providers() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("campaigns.json");
+        let mut guard = foundry_sdk::campaign::CampaignStore::lock_exclusive(&path).unwrap();
+        let campaign = serde_json::from_value(serde_json::json!({"name":"member","project":"sample","mission":"The member mission",
+            "authorized_by":"Stacey","providers":{"execution":"claude"},"done_evidence":[{"kind":"review","statement":"It works"}]})).unwrap();
+        guard.store.add(campaign).unwrap();
+        let initiative = serde_json::from_value(serde_json::json!({"name":"shared","outcome":"It works together","projects":["sample"],
+            "members":[{"kind":"campaign","name":"member"}],"authorized_by":"Stacey",
+            "providers":{"execution":"codex","review":"claude"},"done_evidence":[{"kind":"review","statement":"It works"}]})).unwrap();
+        guard.store.add_initiative(initiative, &["sample".into()]).unwrap();
+        let finding = foundry_sdk::initiative::Finding::new(
+            "shared",
+            foundry_sdk::initiative::FindingSource {
+                kind: "campaign_cycle".into(),
+                id: "wi_parent".into(),
+            },
+            vec!["member".into()],
+            foundry_sdk::initiative::FindingKind::Regression,
+            "The argument was lost",
+            vec![],
+        );
+        let finding_id = finding.id.clone();
+        guard.store.add_finding(finding).unwrap();
+        let brief = guard
+            .set_initiative_brief("shared", home.path(), "Use the corrected argument")
+            .unwrap();
+        let mut parent = item("wi_parent", "sample", WorkItemState::Preserved);
+        parent.source = Some(WorkSource::initiative("shared", 1));
+        parent.started_root = Some(foundry_sdk::event::Event::new(
+            foundry_sdk::event::EventType::ExecutionRequested,
+            "sample".into(),
+            foundry_sdk::throttle::Throttle::Full,
+            serde_json::json!({"campaign":"member","campaign_cycle":1,"agent_provider":"codex"}),
+        ));
+        let mut child = super::resume_child(&parent, "preserved-work", Some("owner host".into()));
+        super::attach_initiative_context(&parent, &guard.store, &mut child).unwrap();
+        let root = child.pending_root.as_ref().unwrap();
+        assert_eq!(root.payload["campaign"], "member");
+        assert_eq!(root.payload["campaign_cycle"], 1);
+        assert_eq!(root.payload["finding_ids"], serde_json::json!([finding_id]));
+        assert_eq!(root.payload["initiative_brief"]["hash"], brief.hash);
+        assert_eq!(root.payload["providers"]["execution"], "claude");
+        assert!(root.payload["prompt"].as_str().unwrap().contains("The argument was lost"));
+        assert_eq!(child.source, Some(WorkSource::initiative("shared", 1)));
+    }
+
     fn at(seconds: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(seconds, 0).expect("in-range timestamp")
     }
@@ -1074,7 +1325,7 @@ mod tests {
         };
         let status = super::source_from_proto(unknown).expect_err("unknown kind");
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
-        assert!(status.message().contains("campaign, sentinel, operator, work_item"));
+        assert!(status.message().contains("campaign, initiative, sentinel, operator, work_item"));
 
         let blank = crate::proto::WorkSource {
             kind: "sentinel".to_string(),

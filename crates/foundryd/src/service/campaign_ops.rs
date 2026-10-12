@@ -29,7 +29,7 @@ use crate::proto::{
     PauseCampaignRequest, PauseCampaignResponse, ResumeCampaignRequest, ResumeCampaignResponse,
 };
 
-fn campaign_to_proto(campaign: &foundry_sdk::campaign::Campaign) -> ProtoCampaign {
+pub(super) fn campaign_to_proto(campaign: &foundry_sdk::campaign::Campaign) -> ProtoCampaign {
     ProtoCampaign {
         name: campaign.name.clone(),
         project: campaign.project.clone(),
@@ -42,6 +42,8 @@ fn campaign_to_proto(campaign: &foundry_sdk::campaign::Campaign) -> ProtoCampaig
         agent_provider: campaign.agent_provider.clone().unwrap_or_default(),
         last_run_event_id: campaign.last_run_event_id.clone().unwrap_or_default(),
         open_escalation: campaign.open_escalation.as_ref().map(escalation_to_proto),
+        initiative: campaign.initiative.clone(),
+        providers: Some(super::initiative_ops::providers_to_proto(campaign.providers)),
     }
 }
 
@@ -174,6 +176,8 @@ fn campaign_to_detail(campaign: &foundry_sdk::campaign::Campaign) -> CampaignDet
         escalation: campaign.escalation.clone(),
         owner_decisions: campaign.owner_decisions.iter().map(owner_decision_to_proto).collect(),
         open_escalation: campaign.open_escalation.as_ref().map(escalation_to_proto),
+        initiative: campaign.initiative.clone(),
+        providers: Some(super::initiative_ops::providers_to_proto(campaign.providers)),
     }
 }
 
@@ -680,11 +684,11 @@ fn is_campaign_work_in_flight(item: &WorkItem, campaign: &str) -> bool {
         .as_ref()
         .is_some_and(|source| source.matches(WorkSourceKind::Campaign, campaign));
     // A manual advance records no source, so its root names the campaign.
-    let advances_campaign =
-        item.pending_root.as_ref().or(item.started_root.as_ref()).is_some_and(|root| {
-            root.event_type == EventType::CampaignAdvanceRequested
-                && root.payload_str("campaign") == Some(campaign)
-        });
+    let advances_campaign = item
+        .pending_root
+        .as_ref()
+        .or(item.started_root.as_ref())
+        .is_some_and(|root| root.payload_str("campaign") == Some(campaign));
     dispatched_by_campaign || advances_campaign
 }
 
@@ -804,6 +808,19 @@ pub(super) fn advance(
         }));
     }
 
+    let tracked = ctx.workflow_tracker.list();
+    let active_members = guard
+        .store
+        .campaigns
+        .iter()
+        .filter(|member| find_campaign_work_in_flight(&member.name, &ledger, &tracked).is_some())
+        .map(|member| member.name.clone())
+        .collect::<Vec<_>>();
+    guard
+        .store
+        .enforce_can_form(&name, &active_members)
+        .map_err(super::initiative_ops::error)?;
+
     // Emit CampaignAdvanceRequested through the existing engine path.
     let payload = Event::serialize_payload(&CampaignAdvanceRequestedPayload {
         campaign: name,
@@ -826,7 +843,14 @@ pub(super) fn advance(
     // longest-running workflow in the system the only one that cannot be
     // reconstructed — and forcing consumers to recover cycle boundaries by
     // sorting on time and guessing.
+    let source = campaign.initiative.as_ref().map(|initiative| {
+        foundry_sdk::work_source::WorkSource::initiative(
+            initiative,
+            campaign.cycles_completed.saturating_add(1),
+        )
+    });
     let event = Event::new(EventType::CampaignAdvanceRequested, project, Throttle::Full, payload)
+        .with_source(source)
         .with_trace_id(Some(foundry_sdk::event::mint_trace_id()))
         .with_span_ids(Some(foundry_sdk::event::mint_span_id()), None);
     let event_id = event.id.clone();
@@ -1050,6 +1074,8 @@ mod tests {
 
     fn sample_campaign(name: &str, project: &str) -> Campaign {
         Campaign {
+            initiative: None,
+            providers: foundry_sdk::gateway::StageProviders::default(),
             name: name.to_string(),
             project: project.to_string(),
             mission: format!("Mission for {name}"),
@@ -1099,6 +1125,8 @@ mod tests {
     fn write_store_with(campaigns: Vec<Campaign>) -> tempfile::NamedTempFile {
         let tmp = tempfile::NamedTempFile::new().expect("tempfile");
         let store = CampaignStore {
+            findings: vec![],
+            initiatives: vec![],
             version: 1,
             campaigns,
         };
@@ -1109,6 +1137,8 @@ mod tests {
     #[test]
     fn get_returns_full_detail_including_gate_and_review_evidence() {
         let campaign = Campaign {
+            initiative: None,
+            providers: foundry_sdk::gateway::StageProviders::default(),
             name: "my-campaign".to_string(),
             project: "my-project".to_string(),
             mission: "Prove quality.".to_string(),

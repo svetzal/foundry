@@ -48,6 +48,8 @@ const OFFLINE_COMPLETION_REASON: &str = "Production evidence confirms the missio
 
 fn make_campaign(name: &str, status: CampaignStatus) -> Campaign {
     Campaign {
+        initiative: None,
+        providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),
         project: "daemon-project".to_string(),
         mission: format!("Mission for {name}"),
@@ -89,6 +91,8 @@ fn make_campaign_with_mission(
 
 fn save_campaigns(path: &std::path::Path, campaigns: Vec<Campaign>) {
     CampaignStore {
+        findings: vec![],
+        initiatives: vec![],
         version: 1,
         campaigns,
     }

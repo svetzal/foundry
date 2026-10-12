@@ -117,6 +117,8 @@ fn make_service() -> (FoundryService, NamedTempFile, TempDir) {
 /// Write a single campaign to the temp store file.
 fn seed_campaign(tmp: &NamedTempFile, campaign: Campaign) {
     let store = CampaignStore {
+        findings: vec![],
+        initiatives: vec![],
         version: 1,
         campaigns: vec![campaign],
     };
@@ -125,6 +127,8 @@ fn seed_campaign(tmp: &NamedTempFile, campaign: Campaign) {
 
 fn active_campaign(name: &str) -> Campaign {
     Campaign {
+        initiative: None,
+        providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),
         project: "test-project".to_string(),
         mission: "Test mission".to_string(),

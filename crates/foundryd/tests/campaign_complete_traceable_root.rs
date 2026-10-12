@@ -96,6 +96,8 @@ fn make_service() -> (FoundryService, NamedTempFile, broadcast::Receiver<Event>,
 
 fn seed_campaign(tmp: &NamedTempFile, campaign: Campaign) {
     CampaignStore {
+        findings: vec![],
+        initiatives: vec![],
         version: 1,
         campaigns: vec![campaign],
     }
@@ -107,6 +109,8 @@ fn seed_campaign(tmp: &NamedTempFile, campaign: Campaign) {
 /// emit a terminal event.
 fn authorized_campaign(name: &str) -> Campaign {
     Campaign {
+        initiative: None,
+        providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),
         // Intentionally absent from the empty registry so the asynchronous
         // formation that may follow dispatch cannot perform a real land that

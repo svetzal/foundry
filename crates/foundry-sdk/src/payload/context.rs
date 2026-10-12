@@ -30,6 +30,24 @@ pub struct ChainContext {
     /// means "use the daemon's default provider".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_provider: Option<String>,
+    /// Per-stage provider choices carried through the task chain.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::gateway::StageProviders::is_empty"
+    )]
+    pub providers: crate::gateway::StageProviders,
+    /// Initiative that owns the task's member campaign.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initiative: Option<String>,
+    /// Foundry-owned brief and its content hash as shown at formation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initiative_brief: Option<crate::initiative::InitiativeBrief>,
+    /// Bounded findings shown at formation or continuation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub initiative_findings: Vec<crate::initiative::Finding>,
+    /// Exact findings the formation saw. Consumed only after landing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub finding_ids: Vec<String>,
     /// Campaign that owns this task run, when dispatched by a campaign.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub campaign: Option<String>,
@@ -67,6 +85,29 @@ impl ChainContext {
                 .get("agent_provider")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
+            providers: payload
+                .get("providers")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default(),
+            initiative: payload
+                .get("initiative")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            initiative_brief: payload
+                .get("initiative_brief")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok()),
+            initiative_findings: payload
+                .get("initiative_findings")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default(),
+            finding_ids: payload
+                .get("finding_ids")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default(),
             campaign: payload
                 .get("campaign")
                 .and_then(serde_json::Value::as_str)
@@ -113,6 +154,21 @@ impl ChainContext {
         if let Some(v) = &self.agent_provider {
             target["agent_provider"] = serde_json::json!(v);
         }
+        if !self.providers.is_empty() {
+            target["providers"] = serde_json::json!(self.providers);
+        }
+        if let Some(v) = &self.initiative {
+            target["initiative"] = serde_json::json!(v);
+        }
+        if let Some(v) = &self.initiative_brief {
+            target["initiative_brief"] = serde_json::json!(v);
+        }
+        if !self.initiative_findings.is_empty() {
+            target["initiative_findings"] = serde_json::json!(self.initiative_findings);
+        }
+        if !self.finding_ids.is_empty() {
+            target["finding_ids"] = serde_json::json!(self.finding_ids);
+        }
         if let Some(v) = &self.campaign {
             target["campaign"] = serde_json::json!(v);
         }
@@ -148,6 +204,24 @@ pub struct LoopContext {
     pub prompt: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_provider: Option<String>,
+    /// Per-stage provider choices carried through the task chain.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::gateway::StageProviders::is_empty"
+    )]
+    pub providers: crate::gateway::StageProviders,
+    /// Initiative that owns the task's member campaign.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initiative: Option<String>,
+    /// Foundry-owned brief and its content hash as shown at formation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initiative_brief: Option<crate::initiative::InitiativeBrief>,
+    /// Bounded findings shown at formation or continuation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub initiative_findings: Vec<crate::initiative::Finding>,
+    /// Exact findings the formation saw. Consumed only after landing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub finding_ids: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub campaign: Option<String>,
     /// Which cycle of its campaign this task belongs to, 1-based.
@@ -228,6 +302,29 @@ impl LoopContext {
                 .get("agent_provider")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
+            providers: payload
+                .get("providers")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default(),
+            initiative: payload
+                .get("initiative")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            initiative_brief: payload
+                .get("initiative_brief")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok()),
+            initiative_findings: payload
+                .get("initiative_findings")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default(),
+            finding_ids: payload
+                .get("finding_ids")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default(),
             campaign: payload
                 .get("campaign")
                 .and_then(serde_json::Value::as_str)
@@ -365,6 +462,25 @@ mod tests {
 
     /// `campaign_cycle` must survive every hop `campaign` survives, or an event
     /// can name its campaign but not which attempt produced it.
+    #[test]
+    fn initiative_context_survives_chain_and_loop_hops() {
+        let source = serde_json::json!({
+            "providers":{"formation":"claude","execution":"codex","review":"claude"},
+            "initiative":"shared", "initiative_brief":{"path":"/foundry/initiatives/shared/BRIEF.md","hash":"abc"},
+            "finding_ids":["fnd_one"],
+            "initiative_findings":[{"id":"fnd_one","initiative":"shared","from":{"kind":"owner","id":"owner"},"to":[],"kind":"blocker","text":"The parser still fails","refs":[]}]
+        });
+        let chain = ChainContext::extract_from(&source);
+        let mut next = serde_json::json!({});
+        chain.merge_into(&mut next);
+        let context = LoopContext::extract_from(&next);
+        assert_eq!(context.initiative.as_deref(), Some("shared"));
+        assert_eq!(context.finding_ids, ["fnd_one"]);
+        assert_eq!(context.initiative_findings[0].text, "The parser still fails");
+        assert_eq!(context.initiative_brief.as_ref().unwrap().hash, "abc");
+        assert_eq!(serde_json::to_value(context).unwrap()["providers"]["review"], "claude");
+    }
+
     #[test]
     fn chain_context_carries_the_campaign_cycle_wherever_it_carries_the_campaign() {
         let source = serde_json::json!({

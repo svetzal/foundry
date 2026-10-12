@@ -33,6 +33,12 @@ pub struct WorkItemEventPayload {
     /// What dispatched the work, typed. Absent when the item records none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<WorkSource>,
+    /// Member campaign identity, retained when the dispatcher is an initiative.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign: Option<String>,
+    /// Member campaign cycle, independent of the dispatcher's source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign_cycle: Option<u64>,
     /// How the item ended. Present only on a settlement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disposition: Option<WorkDisposition>,
@@ -67,6 +73,8 @@ impl WorkItemEventPayload {
             reason: item.reason.clone(),
             origin: item.origin.clone(),
             source: item.source.clone(),
+            campaign: item.campaign_name().map(str::to_string),
+            campaign_cycle: item.campaign_cycle(),
             disposition: item.disposition.clone(),
             operator_action: item.operator_action.clone(),
             resumes: item.resumes.clone(),

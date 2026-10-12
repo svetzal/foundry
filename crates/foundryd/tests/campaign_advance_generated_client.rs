@@ -98,6 +98,8 @@ fn make_service() -> (FoundryService, NamedTempFile, broadcast::Receiver<Event>,
 
 fn seed_campaign(tmp: &NamedTempFile, campaign: Campaign) {
     CampaignStore {
+        findings: vec![],
+        initiatives: vec![],
         version: 1,
         campaigns: vec![campaign],
     }
@@ -109,6 +111,8 @@ fn seed_campaign(tmp: &NamedTempFile, campaign: Campaign) {
 /// distinguishable from defaults.
 fn active_campaign(name: &str) -> Campaign {
     Campaign {
+        initiative: None,
+        providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),
         // "test-project" is intentionally absent from the empty registry so the
         // asynchronous formation that follows dispatch cannot perform a real land
@@ -256,6 +260,64 @@ async fn generated_client_advance_active_returns_pre_advance_state_and_dispatche
         saw_advance,
         "CampaignAdvanceRequested must be broadcast via the engine path; \
          not observed within 5 s"
+    );
+}
+
+/// Exhausting cycle budget still permits formation to assess done evidence.
+/// Manual formation retains the initiative source and exact campaign member.
+#[tokio::test]
+async fn initiative_member_at_cycle_limit_can_request_final_assessment_with_initiative_source() {
+    let (service, tmp_campaigns, mut rx, _tmp_traces) = make_service();
+    seed_campaign(&tmp_campaigns, active_campaign("member"));
+    let mut store = CampaignStore::load(tmp_campaigns.path()).expect("load campaigns");
+    let initiative = serde_json::from_value(serde_json::json!({
+        "name": "shared",
+        "outcome": "Verify the shared outcome",
+        "projects": ["test-project"],
+        "members": [{"kind": "campaign", "name": "member"}],
+        "done_evidence": [{"kind": "review", "statement": "done"}],
+        "budget": {"max_cycles": 3, "max_active_members": 2, "max_open_questions": 3},
+        "authorized_by": "owner"
+    }))
+    .expect("initiative definition");
+    store
+        .add_initiative(initiative, &["test-project".into()])
+        .expect("add initiative");
+    assert!(
+        store.enforce_can_advance("member", &[]).is_err(),
+        "another cycle must remain forbidden"
+    );
+    store.save(tmp_campaigns.path()).expect("save initiative");
+    let addr = start_server(service).await;
+    let mut client = FoundryClient::connect(addr).await.expect("connect");
+    let response = client
+        .advance_campaign(AdvanceCampaignRequest {
+            name: "member".into(),
+            operator_origin: String::new(),
+        })
+        .await
+        .expect("final evidence assessment must be admitted")
+        .into_inner();
+    let detail = response.campaign.expect("campaign detail");
+    assert_eq!(detail.cycles_completed, detail.max_cycles);
+    let root = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = rx.recv().await.expect("broadcast stays open");
+            if event.event_type == EventType::CampaignAdvanceRequested {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("manual formation must be broadcast");
+    assert_eq!(root.id, response.event_id);
+    assert_eq!(root.payload["campaign"], "member");
+    assert_eq!(root.source, Some(foundry_sdk::work_source::WorkSource::initiative("shared", 4)));
+    let after = CampaignStore::load(tmp_campaigns.path()).expect("reload campaigns");
+    assert_eq!(
+        after.find("member").unwrap().cycles_completed,
+        3,
+        "formation admission spends no cycle"
     );
 }
 

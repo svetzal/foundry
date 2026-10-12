@@ -142,6 +142,8 @@ fn make_service_with_campaigns_path(
 
 fn seed_campaign(tmp: &NamedTempFile, campaign: Campaign) {
     CampaignStore {
+        findings: vec![],
+        initiatives: vec![],
         version: 1,
         campaigns: vec![campaign],
     }
@@ -151,6 +153,8 @@ fn seed_campaign(tmp: &NamedTempFile, campaign: Campaign) {
 
 fn paused_campaign(name: &str, max_cycles: u64, cycles_completed: u64) -> Campaign {
     Campaign {
+        initiative: None,
+        providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),
         project: "test-project".to_string(),
         mission: "Test mission".to_string(),
@@ -180,6 +184,8 @@ fn paused_campaign(name: &str, max_cycles: u64, cycles_completed: u64) -> Campai
 
 fn escalated_campaign_with_pending_result(name: &str) -> Campaign {
     Campaign {
+        initiative: None,
+        providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),
         project: "test-project".to_string(),
         mission: "Escalated mission".to_string(),
@@ -460,6 +466,8 @@ async fn generated_client_resume_persist_failure_returns_internal_and_store_unch
     let campaigns_dir = tempfile::tempdir().expect("campaigns tempdir");
     let campaigns_path = campaigns_dir.path().join("campaigns.json");
     CampaignStore {
+        findings: vec![],
+        initiatives: vec![],
         version: 1,
         campaigns: vec![paused_campaign("c", 10, 3)],
     }

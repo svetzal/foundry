@@ -148,6 +148,8 @@ fn make_harness() -> Harness {
 
 fn active_campaign() -> Campaign {
     Campaign {
+        initiative: None,
+        providers: foundry_sdk::gateway::StageProviders::default(),
         name: "tidy-cli".to_string(),
         project: "test-project".to_string(),
         mission: "Test mission".to_string(),
@@ -234,6 +236,8 @@ async fn advance_the_campaign(
 async fn an_advance_with_an_origin_carries_it_to_the_cycle_and_into_the_ledger() {
     let harness = make_harness();
     CampaignStore {
+        findings: vec![],
+        initiatives: vec![],
         version: 1,
         campaigns: vec![active_campaign()],
     }
@@ -300,6 +304,8 @@ async fn an_advance_with_an_origin_carries_it_to_the_cycle_and_into_the_ledger()
 async fn an_advance_without_an_origin_dispatches_exactly_as_before() {
     let harness = make_harness();
     CampaignStore {
+        findings: vec![],
+        initiatives: vec![],
         version: 1,
         campaigns: vec![active_campaign()],
     }

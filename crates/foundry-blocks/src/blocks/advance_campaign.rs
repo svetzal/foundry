@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,6 +11,8 @@ use foundry_sdk::campaign::{
 };
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::gates::GateDefinition;
+use foundry_sdk::gateway::AgentStage;
+use foundry_sdk::initiative::{Finding, FindingKind, FindingSource, InitiativeContext};
 use foundry_sdk::payload::{
     CampaignAdvanceCompletedPayload, CampaignAdvanceOutcome, CampaignAdvanceRequestedPayload,
     CampaignDecision, CampaignStandDown, CampaignTerminalPayload, LandBlocked,
@@ -18,7 +21,7 @@ use foundry_sdk::payload::{
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::work_item::{WorkItemKind, WorkItemState, WorkItemStore};
-use foundry_sdk::work_source::{WorkSource, WorkSourceKind};
+use foundry_sdk::work_source::WorkSource;
 
 use crate::gateway::{
     AgentAccess, AgentFailureKind, AgentFailureMetadata, AgentGateway, AgentOutcome, AgentProvider,
@@ -219,10 +222,7 @@ fn settled_base(
         .filter(|item| {
             item.kind == WorkItemKind::CampaignCycle
                 && item.project == project
-                && item
-                    .source
-                    .as_ref()
-                    .is_some_and(|source| source.matches(WorkSourceKind::Campaign, campaign))
+                && item.campaign_name() == Some(campaign)
                 && item
                     .disposition
                     .as_ref()
@@ -678,6 +678,7 @@ impl AdvanceOutcome {
 /// already-terminal status, a verdict that decides on its own).
 #[derive(Default)]
 struct FormationRecord {
+    initiative_context: Option<InitiativeContext>,
     prompt: Option<String>,
     agent_provider: Option<String>,
     gate_results: Vec<foundry_sdk::gates::GateResult>,
@@ -887,6 +888,7 @@ fn execution_event(
     objective: &str,
     base_ref: Option<String>,
     operator_origin: Option<&str>,
+    initiative_context: Option<&InitiativeContext>,
 ) -> Event {
     // `cycles_completed` was incremented for this dispatch just above, so it is
     // the number of the cycle this task *is* — and it matches the count the
@@ -901,8 +903,23 @@ fn execution_event(
         "campaign_cycle": campaign.cycles_completed,
         "campaign_limits": campaign.budget.stages,
     });
-    payload["agent_provider"] =
-        serde_json::json!(campaign.agent_provider.as_deref().unwrap_or("codex"));
+    payload["agent_provider"] = serde_json::json!(
+        campaign
+            .agent_provider
+            .as_deref()
+            .or_else(|| initiative_context.and_then(|context| context.agent_provider.as_deref()))
+            .unwrap_or("codex")
+    );
+    payload["providers"] = serde_json::json!(initiative_context.map_or_else(
+        || campaign.providers,
+        |context| campaign.providers.inherit(&context.providers)
+    ));
+    if let Some(context) = initiative_context {
+        payload["initiative"] = serde_json::json!(context.initiative);
+        payload["initiative_brief"] = serde_json::json!(context.brief);
+        payload["initiative_findings"] = serde_json::json!(context.findings);
+        payload["finding_ids"] = serde_json::json!(context.finding_ids());
+    }
     if let Some(reference) = base_ref {
         payload["base_ref"] = serde_json::json!(reference);
     }
@@ -911,13 +928,14 @@ fn execution_event(
     if let Some(origin) = operator_origin {
         payload["operator_origin"] = serde_json::json!(origin);
     }
-    // The cycle's typed source is the campaign, whoever asked for the advance:
-    // set explicitly so a manual advance's operator-rooted trigger does not
-    // propagate its own source onto the cycle, and so the ledger records the
-    // campaign name and cycle number without reading them back out of the
-    // payload.
+    // The initiative is the dispatcher for a member cycle; otherwise the
+    // campaign is. The member name and cycle stay explicit in the payload.
+    // A manual advance's operator source must never replace that ownership.
     Event::new(EventType::ExecutionRequested, campaign.project.clone(), throttle, payload)
-        .with_source(Some(WorkSource::campaign(campaign.name.clone(), campaign.cycles_completed)))
+        .with_source(Some(campaign.initiative.as_ref().map_or_else(
+            || WorkSource::campaign(campaign.name.clone(), campaign.cycles_completed),
+            |initiative| WorkSource::initiative(initiative.clone(), campaign.cycles_completed),
+        )))
 }
 
 fn terminal_error_result(
@@ -986,19 +1004,35 @@ struct AdvanceExecution {
     /// Set by [`release_settled_base`] when the preserved work `request`
     /// would have continued from was settled outside the campaign.
     settled_base: Option<SettledBase>,
+    initiative_context: Option<InitiativeContext>,
     project: String,
     throttle: foundry_sdk::throttle::Throttle,
 }
 
 fn persist_or_terminal(
     execution: &AdvanceExecution,
-    guard: &CampaignStoreGuard,
+    guard: &mut CampaignStoreGuard,
     events: Vec<Event>,
     success_summary: String,
     failure_context: &str,
     cycles_completed: u64,
     cycles_landed: u64,
 ) -> TaskBlockResult {
+    if let Some(initiative) = guard
+        .store
+        .find(&execution.request.campaign)
+        .and_then(|campaign| campaign.initiative.clone())
+        && let Err(error) = guard.store.refresh_questions(&initiative)
+    {
+        return terminal_error_result(
+            &execution.request.campaign,
+            &execution.project,
+            execution.throttle,
+            cycles_completed,
+            cycles_landed,
+            format!("initiative questions could not be refreshed: {error}"),
+        );
+    }
     match guard.save() {
         Ok(()) => TaskBlockResult::success(success_summary, events),
         Err(error) => terminal_error_result(
@@ -1163,27 +1197,46 @@ fn enforce_done_gate_truth(
 }
 
 async fn derive_advance_outcome(
-    agent: &dyn AgentGateway,
-    shell: &dyn ShellGateway,
+    execution: &AdvanceExecution,
     entry: &foundry_sdk::registry::ProjectEntry,
     campaign: &Campaign,
-    request: &CampaignAdvanceRequestedPayload,
-    settled: Option<&SettledBase>,
-    trace_id: Option<String>,
 ) -> anyhow::Result<(AdvanceOutcome, FormationRecord)> {
+    let agent = &*execution.agent;
+    let shell = &*execution.shell;
+    let request = &execution.request;
+    let settled = execution.settled_base.as_ref();
+    let trace_id = execution.trace_id.clone();
+    let initiative_context = execution.initiative_context.as_ref();
     campaign.validate()?;
-    if campaign
+    let providers = initiative_context.map_or_else(
+        || campaign.providers,
+        |context| campaign.providers.inherit(&context.providers),
+    );
+    let fallback = campaign
         .agent_provider
         .as_deref()
-        .is_some_and(|p| !p.eq_ignore_ascii_case("codex"))
-    {
-        anyhow::bail!(
-            "campaign repository isolation currently requires agent_provider codex; other providers do not enforce this writable scope"
-        );
+        .or_else(|| initiative_context.and_then(|context| context.agent_provider.as_deref()))
+        .and_then(|value| super::parse_agent_provider(Some(value)))
+        .or(Some(AgentProvider::Codex));
+    let execution_provider = providers.resolve(AgentStage::Execution, fallback);
+    if !execution_provider.is_some_and(AgentProvider::enforces_writable_root) {
+        anyhow::bail!("campaign execution provider does not enforce a writable root");
     }
+    let formation_provider = providers.resolve(AgentStage::Formation, fallback);
     let repo = Path::new(&entry.path);
     let gate_results = run_done_gates(shell, repo, &campaign.done_evidence).await?;
-    let context = read_context_files(repo, &campaign.context_paths)?;
+    let mut context = read_context_files(repo, &campaign.context_paths)?;
+    if let Some(initiative) = initiative_context {
+        let _ = write!(context, "\n\nINITIATIVE: {}\n", initiative.initiative);
+        if let Some(brief) = &initiative.brief {
+            let _ = write!(
+                context,
+                "BINDING INITIATIVE BRIEF: {} (SHA-256 {})\nRead this brief before deciding.\n",
+                brief.path, brief.hash
+            );
+        }
+        context.push_str(&initiative.render_findings());
+    }
     let snapshot = repo_snapshot(shell, repo).await;
     let accumulated = accumulated_work(shell, repo, request, settled).await;
     // The gates, the snapshot, and the prompt are all deterministic for this
@@ -1200,11 +1253,7 @@ async fn derive_advance_outcome(
         ),
         working_dir: repo.to_path_buf(),
         agent_file: super::resolve_agent_file(&entry.agent),
-        provider: campaign
-            .agent_provider
-            .as_deref()
-            .and_then(|provider| super::parse_agent_provider(Some(provider)))
-            .or(Some(AgentProvider::Codex)),
+        provider: formation_provider,
         timeout: Duration::ZERO,
     };
     if decision_request.prompt.len() > campaign.budget.stages.formation_prompt_bytes {
@@ -1217,7 +1266,8 @@ async fn derive_advance_outcome(
     let outcome = ask_decision_agent(agent, &decision_request, &campaign.project).await?;
     let record = FormationRecord {
         prompt: Some(decision_request.prompt),
-        agent_provider: campaign.agent_provider.clone(),
+        agent_provider: formation_provider.map(|provider| provider.to_string()),
+        initiative_context: initiative_context.cloned(),
         gate_results: gate_results.clone(),
     };
     Ok((
@@ -1337,6 +1387,7 @@ fn apply_advance_outcome(
                     &objective,
                     base_ref,
                     request.operator_origin.as_deref(),
+                    record.initiative_context.as_ref(),
                 ),
             ]
         }
@@ -1369,24 +1420,16 @@ async fn choose_advance_outcome(
             );
         }
     };
-    derive_advance_outcome(
-        &*execution.agent,
-        &*execution.shell,
-        &entry,
-        campaign,
-        &execution.request,
-        execution.settled_base.as_ref(),
-        execution.trace_id.clone(),
-    )
-    .await
-    .unwrap_or_else(|error| {
-        (
-            AdvanceOutcome::Decided(CampaignDecision::Escalate {
-                reason: format!("campaign formation failed: {error}"),
-            }),
-            FormationRecord::default(),
-        )
-    })
+    derive_advance_outcome(execution, &entry, campaign)
+        .await
+        .unwrap_or_else(|error| {
+            (
+                AdvanceOutcome::Decided(CampaignDecision::Escalate {
+                    reason: format!("campaign formation failed: {error}"),
+                }),
+                FormationRecord::default(),
+            )
+        })
 }
 
 /// The advance to actually form from.
@@ -1410,6 +1453,7 @@ fn replay_pending_run(execution: &AdvanceExecution, campaign: &Campaign) -> Adva
         work_items_path: execution.work_items_path.clone(),
         formation_locks: Arc::clone(&execution.formation_locks),
         settled_base: execution.settled_base.clone(),
+        initiative_context: execution.initiative_context.clone(),
         project: execution.project.clone(),
         throttle: execution.throttle,
     }
@@ -1475,7 +1519,7 @@ async fn lock_store(store_path: &Path) -> anyhow::Result<CampaignStoreGuard> {
 /// without forming.
 fn stand_down_before_forming(
     execution: &AdvanceExecution,
-    guard: &CampaignStoreGuard,
+    guard: &mut CampaignStoreGuard,
     stopped: &Campaign,
 ) -> TaskBlockResult {
     let summary = format!(
@@ -1504,7 +1548,7 @@ enum Prepared {
     /// The advance ended without asking an agent.
     Finished(TaskBlockResult),
     /// Form from this record, which is also what was saved.
-    Form(Box<Campaign>),
+    Form(Box<Campaign>, Option<InitiativeContext>, Vec<Event>),
 }
 
 /// Whether a formed outcome may still be applied to the campaign.
@@ -1555,9 +1599,156 @@ fn same_record(left: &Campaign, right: &Campaign) -> bool {
 /// asks no agent and is applied before the flock is released. Otherwise the
 /// recorded run result is saved now, so it survives a formation that fails or
 /// is discarded, and the saved record is returned to form from.
-async fn prepare_formation(execution: &AdvanceExecution) -> Prepared {
-    let mut guard = match lock_store(&execution.store_path).await {
-        Ok(guard) => guard,
+/// Turn task-result learning into durable initiative facts under the campaign guard.
+fn record_initiative_result(
+    store: &mut CampaignStore,
+    execution: &AdvanceExecution,
+    work_item: &str,
+) -> anyhow::Result<Vec<Event>> {
+    let Some(run_id) = &execution.request.run_event_id else {
+        return Ok(Vec::new());
+    };
+    let Some(result) = &execution.request.run_result else {
+        return Ok(Vec::new());
+    };
+    let Some(campaign) = store.find(&execution.request.campaign) else {
+        return Ok(Vec::new());
+    };
+    if campaign.last_run_event_id.as_ref() == Some(run_id) {
+        return Ok(Vec::new());
+    }
+    let Some(initiative) = campaign.initiative.clone() else {
+        return Ok(Vec::new());
+    };
+    let mut events = Vec::new();
+    if result.landed {
+        for finding in store.consume_findings(
+            &initiative,
+            &execution.request.campaign,
+            work_item,
+            &result.context.finding_ids,
+        )? {
+            events.push(Event::new(EventType::FindingConsumed, result.project.clone(), execution.throttle, serde_json::json!({
+                "initiative": initiative, "finding_id": finding.id, "member": execution.request.campaign,
+                "work_item_id": work_item, "finding": finding,
+            })).with_source(Some(WorkSource::initiative(&initiative, result.context.campaign_cycle.unwrap_or(0)))));
+        }
+    }
+    let learned: Vec<(FindingKind, &str)> = match &result.verdict {
+        TaskVerdict::Remainder { gaps } if result.landed => {
+            gaps.iter().map(|gap| (FindingKind::Blocker, gap.as_str())).collect()
+        }
+        TaskVerdict::Defect { diagnosis } => vec![(FindingKind::Regression, diagnosis.as_str())],
+        _ => Vec::new(),
+    };
+    for (index, (kind, text)) in learned.into_iter().enumerate() {
+        let mut finding = Finding::new(
+            &initiative,
+            FindingSource {
+                kind: if work_item.starts_with("wi_") {
+                    "campaign_cycle"
+                } else {
+                    "task_result_event"
+                }
+                .into(),
+                id: work_item.to_string(),
+            },
+            Vec::new(),
+            kind,
+            text,
+            vec![
+                format!("campaign:{}", execution.request.campaign),
+                format!("event:{run_id}"),
+            ],
+        );
+        // A replay has the same result identity, so it must never duplicate learning.
+        finding.id = format!("fnd_{run_id}_{index}");
+        if store.find_finding(&finding.id).is_some() {
+            continue;
+        }
+        let finding = store.add_finding(finding)?;
+        let mut payload = serde_json::to_value(&finding)?;
+        payload["finding_id"] = serde_json::json!(finding.id);
+        events.push(
+            Event::new(
+                EventType::FindingRecorded,
+                result.project.clone(),
+                execution.throttle,
+                payload,
+            )
+            .with_source(Some(WorkSource::initiative(
+                &initiative,
+                result.context.campaign_cycle.unwrap_or(0),
+            ))),
+        );
+    }
+    Ok(events)
+}
+
+async fn result_work_item(execution: &AdvanceExecution) -> String {
+    let fallback = execution.request.run_event_id.clone().unwrap_or_default();
+    let Some(result) = &execution.request.run_result else {
+        return fallback;
+    };
+    let path = execution.work_items_path.clone();
+    let Ok(Ok(ledger)) = tokio::task::spawn_blocking(move || WorkItemStore::load(&path)).await
+    else {
+        return fallback;
+    };
+    let member_items = || {
+        ledger.items.iter().filter(|item| {
+            item.kind == WorkItemKind::CampaignCycle
+                && item.campaign_name() == Some(execution.request.campaign.as_str())
+        })
+    };
+    let exact = member_items()
+        .filter(|item| {
+            result.context.campaign_cycle.is_some()
+                && item.campaign_cycle() == result.context.campaign_cycle
+        })
+        .max_by_key(|item| item.submitted_at);
+    let found = exact.or_else(|| {
+        member_items()
+            .filter(|item| execution.trace_id.is_some() && item.trace_id == execution.trace_id)
+            .max_by_key(|item| item.submitted_at)
+    });
+    found.map_or(fallback, |item| item.id.clone())
+}
+
+async fn active_member_names(work_items_path: &Path) -> anyhow::Result<Vec<String>> {
+    let path = work_items_path.to_path_buf();
+    let ledger = tokio::task::spawn_blocking(move || WorkItemStore::load(&path)).await??;
+    Ok(ledger
+        .items
+        .iter()
+        .filter(|item| item.state.is_waiting() || item.state == WorkItemState::Running)
+        .filter_map(|item| item.campaign_name().map(str::to_string))
+        .collect())
+}
+
+async fn lock_formation_store(
+    execution: &AdvanceExecution,
+) -> anyhow::Result<(CampaignStoreGuard, Vec<String>)> {
+    let guard = lock_store(&execution.store_path).await?;
+    let members = if guard
+        .store
+        .find(&execution.request.campaign)
+        .is_some_and(|campaign| campaign.initiative.is_some())
+    {
+        active_member_names(&execution.work_items_path).await?
+    } else {
+        Vec::new()
+    };
+    Ok((guard, members))
+}
+
+async fn prepare_formation_inner(
+    execution: &AdvanceExecution,
+    recorded: &mut Vec<Event>,
+) -> Prepared {
+    let work_item = result_work_item(execution).await;
+    let (mut guard, active_members) = match lock_formation_store(execution).await {
+        Ok(locked) => locked,
         Err(error) => {
             return Prepared::Finished(terminal_error_result(
                 &execution.request.campaign,
@@ -1569,6 +1760,19 @@ async fn prepare_formation(execution: &AdvanceExecution) -> Prepared {
             ));
         }
     };
+    match record_initiative_result(&mut guard.store, execution, &work_item) {
+        Ok(events) => *recorded = events,
+        Err(error) => {
+            return Prepared::Finished(terminal_error_result(
+                &execution.request.campaign,
+                &execution.project,
+                execution.throttle,
+                0,
+                0,
+                format!("initiative result could not be recorded: {error}"),
+            ));
+        }
+    }
     let Some(campaign) = guard.store.find_mut(&execution.request.campaign) else {
         return Prepared::Finished(terminal_error_result(
             &execution.request.campaign,
@@ -1594,7 +1798,7 @@ async fn prepare_formation(execution: &AdvanceExecution) -> Prepared {
         let cycles_landed = campaign.cycles_landed;
         return Prepared::Finished(persist_or_terminal(
             execution,
-            &guard,
+            &mut guard,
             events,
             format!("campaign '{}' escalated", execution.request.campaign),
             "campaign invalid and escalation could not be saved",
@@ -1622,7 +1826,7 @@ async fn prepare_formation(execution: &AdvanceExecution) -> Prepared {
     // status.
     if campaign.status.halts_formation() {
         let stopped = campaign.clone();
-        return Prepared::Finished(stand_down_before_forming(execution, &guard, &stopped));
+        return Prepared::Finished(stand_down_before_forming(execution, &mut guard, &stopped));
     }
 
     if let Some(outcome) = forced {
@@ -1645,7 +1849,7 @@ async fn prepare_formation(execution: &AdvanceExecution) -> Prepared {
         let cycles_landed = campaign.cycles_landed;
         return Prepared::Finished(persist_or_terminal(
             execution,
-            &guard,
+            &mut guard,
             events,
             summary,
             "campaign decision could not be saved",
@@ -1655,6 +1859,15 @@ async fn prepare_formation(execution: &AdvanceExecution) -> Prepared {
     }
 
     let formed_from = campaign.clone();
+    save_formation_snapshot(execution, &guard, formed_from, &active_members)
+}
+
+fn save_formation_snapshot(
+    execution: &AdvanceExecution,
+    guard: &CampaignStoreGuard,
+    formed_from: Campaign,
+    active_members: &[String],
+) -> Prepared {
     if let Err(error) = guard.save() {
         return Prepared::Finished(terminal_error_result(
             &execution.request.campaign,
@@ -1665,7 +1878,46 @@ async fn prepare_formation(execution: &AdvanceExecution) -> Prepared {
             format!("campaign run result could not be saved before formation: {error}"),
         ));
     }
-    Prepared::Form(Box::new(formed_from))
+    if let Err(error) = guard.store.enforce_can_form(&formed_from.name, active_members) {
+        let reason = format!("initiative member stood down before formation: {error}");
+        return Prepared::Finished(TaskBlockResult::success(
+            reason.clone(),
+            vec![stood_down_event(
+                &formed_from,
+                execution.throttle,
+                reason,
+                &FormationRecord::default(),
+            )],
+        ));
+    }
+    let context = match guard.store.formation_context(&formed_from.name, FINDINGS_PACKET_BYTES) {
+        Ok(context) => context,
+        Err(error) => {
+            return Prepared::Finished(terminal_error_result(
+                &formed_from.name,
+                &formed_from.project,
+                execution.throttle,
+                formed_from.cycles_completed,
+                formed_from.cycles_landed,
+                format!("initiative context unavailable: {error}"),
+            ));
+        }
+    };
+    Prepared::Form(Box::new(formed_from), context, Vec::new())
+}
+
+async fn prepare_formation(execution: &AdvanceExecution) -> Prepared {
+    let mut recorded = Vec::new();
+    match prepare_formation_inner(execution, &mut recorded).await {
+        Prepared::Finished(mut result) => {
+            if result.success {
+                recorded.append(&mut result.events);
+                result.events = recorded;
+            }
+            Prepared::Finished(result)
+        }
+        Prepared::Form(campaign, context, _) => Prepared::Form(campaign, context, recorded),
+    }
 }
 
 /// How many times one advance forms before it gives up on a campaign that
@@ -1677,6 +1929,7 @@ async fn prepare_formation(execution: &AdvanceExecution) -> Prepared {
 /// during three formations in a row is something rewriting it continuously,
 /// and the advance fails visibly instead of spending more agent calls.
 const FORMATIONS_PER_ADVANCE: usize = 3;
+const FINDINGS_PACKET_BYTES: usize = 4096;
 
 /// What the second critical section did with a formed outcome.
 enum Applied {
@@ -1686,6 +1939,38 @@ enum Applied {
     /// The campaign can still advance but its record changed, so the outcome
     /// was discarded and nothing was written. Form again.
     Changed,
+}
+
+/// Recheck initiative admission under the store lock before dispatching a cycle.
+fn enforce_member_dispatch(
+    store: &CampaignStore,
+    execution: &AdvanceExecution,
+    formed_from: &Campaign,
+    outcome: AdvanceOutcome,
+    record: &FormationRecord,
+) -> Result<AdvanceOutcome, TaskBlockResult> {
+    if !matches!(outcome, AdvanceOutcome::Decided(CampaignDecision::Advance { .. })) {
+        return Ok(outcome);
+    }
+    let name = &execution.request.campaign;
+    if let Err(error) = store.enforce_can_form(name, &[]) {
+        let reason = format!("initiative member stood down before dispatch: {error}");
+        return Err(TaskBlockResult::success(
+            reason.clone(),
+            vec![stood_down_event(
+                formed_from,
+                execution.throttle,
+                reason,
+                record,
+            )],
+        ));
+    }
+    Ok(match store.enforce_can_advance(name, &[]) {
+        Ok(()) => outcome,
+        Err(error) => AdvanceOutcome::Decided(CampaignDecision::Escalate {
+            reason: error.to_string(),
+        }),
+    })
 }
 
 /// The second critical section: apply the formed outcome, unless the campaign
@@ -1720,6 +2005,29 @@ async fn apply_unless_changed(
             ));
         }
     };
+    let current_context = match guard.store.formation_context(name, FINDINGS_PACKET_BYTES) {
+        Ok(context) => context,
+        Err(error) => {
+            return Applied::Settled(terminal_error_result(
+                name,
+                &execution.project,
+                execution.throttle,
+                formed_from.cycles_completed,
+                formed_from.cycles_landed,
+                format!("initiative context unavailable after formation: {error}"),
+            ));
+        }
+    };
+    let context_changed = serde_json::to_value(&current_context).ok()
+        != serde_json::to_value(&record.initiative_context).ok();
+    if context_changed {
+        return Applied::Changed;
+    }
+    let outcome =
+        match enforce_member_dispatch(&guard.store, execution, formed_from, outcome, record) {
+            Ok(outcome) => outcome,
+            Err(result) => return Applied::Settled(result),
+        };
     let Some(campaign) = guard.store.find_mut(name) else {
         return Applied::Settled(terminal_error_result(
             name,
@@ -1739,7 +2047,7 @@ async fn apply_unless_changed(
             let cycles_landed = campaign.cycles_landed;
             Applied::Settled(persist_or_terminal(
                 execution,
-                &guard,
+                &mut guard,
                 events,
                 summary,
                 "campaign decision could not be saved",
@@ -1804,14 +2112,23 @@ fn formations_exhausted(execution: &AdvanceExecution) -> TaskBlockResult {
 /// the first pass made (status, authorization, forced outcomes, budget) against
 /// the edited record. It records the arriving run result at most once, because
 /// recording is keyed on the run's event id, so a cycle is never counted twice.
-async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResult {
+async fn execute_campaign_advance(mut execution: AdvanceExecution) -> TaskBlockResult {
     let formation = execution.formation_locks.for_campaign(&execution.request.campaign);
     let _formation_guard = formation.lock().await;
 
+    let mut recorded_events = Vec::new();
     for _ in 0..FORMATIONS_PER_ADVANCE {
         let formed_from = match prepare_formation(&execution).await {
-            Prepared::Finished(result) => return result,
-            Prepared::Form(campaign) => *campaign,
+            Prepared::Finished(mut result) => {
+                recorded_events.append(&mut result.events);
+                result.events = recorded_events;
+                return result;
+            }
+            Prepared::Form(campaign, context, mut events) => {
+                recorded_events.append(&mut events);
+                execution.initiative_context = context;
+                *campaign
+            }
         };
         let effective_execution =
             release_settled_base(replay_pending_run(&execution, &formed_from), &formed_from).await;
@@ -1828,11 +2145,17 @@ async fn execute_campaign_advance(execution: AdvanceExecution) -> TaskBlockResul
         )
         .await
         {
-            Applied::Settled(result) => return result,
+            Applied::Settled(mut result) => {
+                recorded_events.append(&mut result.events);
+                result.events = recorded_events;
+                return result;
+            }
             Applied::Changed => {}
         }
     }
-    formations_exhausted(&execution)
+    let mut result = formations_exhausted(&execution);
+    result.events = recorded_events;
+    result
 }
 
 impl SimulatedSuccess for AdvanceCampaign {
@@ -1873,6 +2196,7 @@ impl SimulatedSuccess for AdvanceCampaign {
                 &format!("Dry-run next objective for campaign '{}'.", campaign.name),
                 None,
                 request.operator_origin.as_deref(),
+                None,
             ),
         ]
     }
@@ -1914,6 +2238,7 @@ impl TaskBlock for AdvanceCampaign {
                 formation_locks,
                 request,
                 settled_base: None,
+                initiative_context: None,
                 project,
                 throttle,
             })
@@ -1924,6 +2249,7 @@ impl TaskBlock for AdvanceCampaign {
 
 #[cfg(test)]
 mod tests {
+    include!("advance_campaign/initiative_tests.rs");
     #[test]
     fn git_packet_compaction_is_bounded_unicode_safe_and_names_full_evidence() {
         let input = "界".repeat(4000);
@@ -2118,6 +2444,8 @@ mod tests {
             cycles_landed: 2,
             authorized_by: Some("owner".to_string()),
             agent_provider: None,
+            providers: foundry_sdk::gateway::StageProviders::default(),
+            initiative: None,
             last_run_event_id: Some("run-2".to_string()),
             owner_decisions: vec![],
             pending_run_result: None,
@@ -2213,6 +2541,8 @@ mod tests {
                 cycles_landed: 0,
                 authorized_by: Some("owner".to_string()),
                 agent_provider: None,
+                providers: foundry_sdk::gateway::StageProviders::default(),
+                initiative: None,
                 last_run_event_id: None,
                 owner_decisions: vec![],
                 pending_run_result: None,
@@ -2317,6 +2647,8 @@ mod tests {
                 cycles_landed: 0,
                 authorized_by: Some("owner".to_string()),
                 agent_provider: None,
+                providers: foundry_sdk::gateway::StageProviders::default(),
+                initiative: None,
                 last_run_event_id: None,
                 owner_decisions: vec![],
                 pending_run_result: None,
@@ -2404,6 +2736,8 @@ mod tests {
                 cycles_landed: 0,
                 authorized_by: Some("owner".to_string()),
                 agent_provider: None,
+                providers: foundry_sdk::gateway::StageProviders::default(),
+                initiative: None,
                 last_run_event_id: None,
                 owner_decisions: vec![],
                 pending_run_result: None,
@@ -2483,6 +2817,8 @@ mod tests {
                 cycles_landed: 0,
                 authorized_by: Some("owner".to_string()),
                 agent_provider: None,
+                providers: foundry_sdk::gateway::StageProviders::default(),
+                initiative: None,
                 last_run_event_id: None,
                 owner_decisions: vec![],
                 pending_run_result: None,
@@ -2556,6 +2892,8 @@ mod tests {
             cycles_landed: 0,
             authorized_by: Some("owner".to_string()),
             agent_provider: None,
+            providers: foundry_sdk::gateway::StageProviders::default(),
+            initiative: None,
             last_run_event_id: None,
             owner_decisions: vec![],
             pending_run_result: None,
@@ -2817,6 +3155,8 @@ mod tests {
                 cycles_landed: 1,
                 authorized_by: Some("owner".to_string()),
                 agent_provider: None,
+                providers: foundry_sdk::gateway::StageProviders::default(),
+                initiative: None,
                 last_run_event_id: Some("run-1".to_string()),
                 owner_decisions: vec![OwnerDecision {
                     decision: "Prefer the generated gRPC client path; do not add raw JSON shims."

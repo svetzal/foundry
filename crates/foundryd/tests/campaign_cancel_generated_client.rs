@@ -93,6 +93,8 @@ fn make_service() -> (FoundryService, NamedTempFile, broadcast::Receiver<Event>,
 
 fn seed_campaign(tmp: &NamedTempFile, campaign: Campaign) {
     CampaignStore {
+        findings: vec![],
+        initiatives: vec![],
         version: 1,
         campaigns: vec![campaign],
     }
@@ -102,6 +104,8 @@ fn seed_campaign(tmp: &NamedTempFile, campaign: Campaign) {
 
 fn campaign(name: &str, status: CampaignStatus, authorized: bool) -> Campaign {
     Campaign {
+        initiative: None,
+        providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),
         // Intentionally absent from the empty registry so any asynchronous
         // follow-on cannot perform real git work during the assertions.

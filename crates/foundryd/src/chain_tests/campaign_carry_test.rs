@@ -233,6 +233,8 @@ async fn a_gracefully_cancelled_campaigns_in_flight_cycle_settles_when_it_finish
         foundry_sdk::campaign::Transition::Applied
     );
     foundry_sdk::campaign::CampaignStore {
+        findings: vec![],
+        initiatives: vec![],
         version: 1,
         campaigns: vec![stopped],
     }

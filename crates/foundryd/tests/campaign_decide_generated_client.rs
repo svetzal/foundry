@@ -125,6 +125,8 @@ fn make_service_with_campaigns_path(
 
 fn escalated_campaign(name: &str) -> Campaign {
     Campaign {
+        initiative: None,
+        providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),
         project: "test-project".to_string(),
         mission: "Test mission".to_string(),
@@ -172,6 +174,8 @@ fn escalated_campaign(name: &str) -> Campaign {
 
 fn seed_campaign(tmp: &NamedTempFile, campaign: Campaign) {
     CampaignStore {
+        findings: vec![],
+        initiatives: vec![],
         version: 1,
         campaigns: vec![campaign],
     }
@@ -314,6 +318,8 @@ async fn generated_client_decide_campaign_persist_failure_returns_internal_and_s
     let campaigns_dir = tempfile::tempdir().expect("campaigns tempdir");
     let campaigns_path = campaigns_dir.path().join("campaigns.json");
     CampaignStore {
+        findings: vec![],
+        initiatives: vec![],
         version: 1,
         campaigns: vec![escalated_campaign("c")],
     }

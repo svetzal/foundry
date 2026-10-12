@@ -78,6 +78,8 @@ fn make_service() -> (FoundryService, NamedTempFile, TempDir) {
 
 fn sample_campaign(name: &str, project: &str) -> Campaign {
     Campaign {
+        initiative: None,
+        providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),
         project: project.to_string(),
         mission: format!("Mission for {name}"),
@@ -107,6 +109,8 @@ fn sample_campaign(name: &str, project: &str) -> Campaign {
 
 fn write_campaigns(file: &NamedTempFile, campaigns: Vec<Campaign>) {
     let store = CampaignStore {
+        findings: vec![],
+        initiatives: vec![],
         version: 1,
         campaigns,
     };

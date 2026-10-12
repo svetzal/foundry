@@ -359,6 +359,8 @@ message Campaign {
     // Why the campaign waits on its owner. Set only while status is
     // "escalated", and then absent only when no reason was ever recorded.
     CampaignEscalation open_escalation = 11;
+    optional string initiative = 12;
+    StageProviders providers = 13;
 }
 
 // Why an escalated campaign waits on its owner.
@@ -430,7 +432,101 @@ message CampaignDetail {
     repeated OwnerDecision owner_decisions = 15;
     // Why the campaign waits on its owner; see Campaign.open_escalation.
     CampaignEscalation open_escalation = 16;
+    optional string initiative = 17;
+    StageProviders providers = 18;
 }
+
+// Stage overrides inherit the campaign's agent_provider when omitted.
+message StageProviders {
+    optional string formation = 1;
+    optional string execution = 2;
+    optional string review = 3;
+}
+message InitiativeMember {
+    string kind = 1;
+    string name = 2;
+    repeated string after = 3;
+    optional string intent_ref = 4;
+    optional string description = 5;
+    Campaign campaign = 6;
+    optional string last_verdict = 7;
+    repeated string reviewer_gaps = 8;
+}
+message InitiativeBudget {
+    uint64 max_cycles = 1;
+    uint64 max_active_members = 2;
+    uint64 max_open_questions = 3;
+}
+message InitiativeBrief {
+    string path = 1;
+    string hash = 2;
+}
+message InitiativeEvidence {
+    string kind = 1;
+    string command = 2;
+    optional string host = 3;
+    bool required = 4;
+    repeated string artifacts = 5;
+    string statement = 6;
+}
+message InitiativeDecision {
+    string decision = 1;
+    string authorized_by = 2;
+    string decided_at = 3;
+    repeated string members = 4;
+}
+message InitiativeQuestion {
+    string id = 1;
+    string question = 2;
+    repeated string members = 3;
+    string opened_at = 4;
+}
+message Initiative {
+    string name = 1;
+    string outcome = 2;
+    repeated string intent_refs = 3;
+    repeated string projects = 4;
+    InitiativeBrief brief = 5;
+    repeated InitiativeMember members = 6;
+    repeated InitiativeEvidence done_evidence = 7;
+    InitiativeBudget budget = 8;
+    optional string authorized_by = 9;
+    StageProviders providers = 10;
+    string status = 11;
+    repeated InitiativeDecision owner_decisions = 12;
+    repeated InitiativeQuestion open_questions = 13;
+    optional string agent_provider = 14;
+}
+message AddInitiativeRequest { string definition_json = 1; }
+message InitiativeResponse { Initiative initiative = 1; }
+message ListInitiativesRequest {}
+message ListInitiativesResponse { repeated Initiative initiatives = 1; }
+message GetInitiativeRequest { string name = 1; }
+message DecideInitiativeRequest {
+    string name = 1;
+    string decision = 2;
+    repeated string members = 3;
+}
+message EndInitiativeRequest { string name = 1; string reason = 2; }
+message SetInitiativeBriefRequest { string name = 1; string content = 2; }
+message InitiativeBriefResponse { InitiativeBrief brief = 1; string content = 2; }
+message FindingSource { string kind = 1; string id = 2; }
+message FindingConsumption { string member = 1; string work_item = 2; }
+message Finding {
+    string id = 1;
+    string initiative = 2;
+    FindingSource from = 3;
+    repeated string to = 4;
+    string kind = 5;
+    string text = 6;
+    repeated string refs = 7;
+    repeated FindingConsumption consumed_by = 8;
+    string recorded_at = 9;
+}
+message AddFindingRequest { string definition_json = 1; }
+message FindingResponse { Finding finding = 1; }
+message ListFindingsRequest { string initiative = 1; string member = 2; }
+message ListFindingsResponse { repeated Finding findings = 1; }
 
 message CampaignReportResponse {
     string report_json = 1;
@@ -982,6 +1078,17 @@ service Foundry {
     rpc RegistryEdit(RegistryEditRequest) returns (RegistryEditResponse);
 
     // Add one durable campaign definition to the configured campaign store.
+    rpc AddInitiative(AddInitiativeRequest) returns (InitiativeResponse);
+    rpc ListInitiatives(ListInitiativesRequest) returns (ListInitiativesResponse);
+    rpc GetInitiative(GetInitiativeRequest) returns (InitiativeResponse);
+    rpc DecideInitiative(DecideInitiativeRequest) returns (InitiativeResponse);
+    rpc CompleteInitiative(EndInitiativeRequest) returns (InitiativeResponse);
+    rpc CancelInitiative(EndInitiativeRequest) returns (InitiativeResponse);
+    rpc SetInitiativeBrief(SetInitiativeBriefRequest) returns (InitiativeBriefResponse);
+    rpc GetInitiativeBrief(GetInitiativeRequest) returns (InitiativeBriefResponse);
+    rpc AddFinding(AddFindingRequest) returns (FindingResponse);
+    rpc ListFindings(ListFindingsRequest) returns (ListFindingsResponse);
+
     rpc AddCampaign(AddCampaignRequest) returns (AddCampaignResponse);
 
     // List durable campaigns from the configured campaign store.

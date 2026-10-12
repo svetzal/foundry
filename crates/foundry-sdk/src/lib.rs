@@ -8,6 +8,7 @@ pub mod error;
 pub mod event;
 pub mod gates;
 pub mod gateway;
+pub mod initiative;
 pub mod loop_context;
 pub mod pacing;
 pub mod paths;

@@ -1708,6 +1708,8 @@ fn seed_campaigns(path: &std::path::Path, events_dir: &std::path::Path) {
         from_event_log: false,
     });
     CampaignStore {
+        findings: vec![],
+        initiatives: vec![],
         version: 1,
         campaigns: vec![
             recorded,

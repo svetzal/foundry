@@ -125,10 +125,7 @@ pub async fn show(
         .context("could not read campaign escalations from the event log")?;
         let campaign =
             store.find(name).ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
-        let items = crate::queue_commands::filter_by_source(
-            crate::queue_commands::load_offline(paths.work_items)?,
-            Some(&cycles),
-        );
+        let items = crate::queue_commands::load_offline_selected(paths.work_items, Some(&cycles))?;
         (detail_to_proto(campaign), items)
     } else {
         let mut client =
@@ -178,6 +175,12 @@ pub struct ShowPaths<'a> {
 /// same functions as the online path.
 pub(crate) fn summary_to_proto(campaign: &Campaign) -> crate::proto::Campaign {
     crate::proto::Campaign {
+        initiative: campaign.initiative.clone(),
+        providers: Some(crate::proto::StageProviders {
+            formation: campaign.providers.formation.map(|p| p.to_string()),
+            execution: campaign.providers.execution.map(|p| p.to_string()),
+            review: campaign.providers.review.map(|p| p.to_string()),
+        }),
         name: campaign.name.clone(),
         project: campaign.project.clone(),
         mission: campaign.mission.clone(),
@@ -199,6 +202,12 @@ pub(crate) fn summary_to_proto(campaign: &Campaign) -> crate::proto::Campaign {
 /// sent, so `--offline` renders through the same functions as the online path.
 pub(crate) fn detail_to_proto(campaign: &Campaign) -> crate::proto::CampaignDetail {
     crate::proto::CampaignDetail {
+        initiative: campaign.initiative.clone(),
+        providers: Some(crate::proto::StageProviders {
+            formation: campaign.providers.formation.map(|p| p.to_string()),
+            execution: campaign.providers.execution.map(|p| p.to_string()),
+            review: campaign.providers.review.map(|p| p.to_string()),
+        }),
         name: campaign.name.clone(),
         project: campaign.project.clone(),
         mission: campaign.mission.clone(),
@@ -1023,6 +1032,8 @@ mod tests {
         let mut store = CampaignStore::default();
         store
             .add(Campaign {
+                initiative: None,
+                providers: foundry_sdk::gateway::StageProviders::default(),
                 name: "c".to_string(),
                 project: "p".to_string(),
                 mission: "ship".to_string(),
@@ -1483,6 +1494,8 @@ mod tests {
         let mut store = CampaignStore::default();
         store
             .add(Campaign {
+                initiative: None,
+                providers: foundry_sdk::gateway::StageProviders::default(),
                 name: "c".to_string(),
                 project: "p".to_string(),
                 mission: "ship".to_string(),

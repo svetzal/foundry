@@ -148,6 +148,8 @@ impl AgentGateway for EditingAgent {
 
 fn active_campaign(name: &str) -> Campaign {
     Campaign {
+        initiative: None,
+        providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),
         project: "test-project".to_string(),
         mission: format!("Mission for {name}"),

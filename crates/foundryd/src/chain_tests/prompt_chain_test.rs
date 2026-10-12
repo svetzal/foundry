@@ -115,6 +115,8 @@ fn save_campaign(path: &std::path::Path, repo: &std::path::Path, context_paths: 
     let mut store = CampaignStore::default();
     store
         .add(Campaign {
+            initiative: None,
+            providers: foundry_sdk::gateway::StageProviders::default(),
             name: "campaign-test".to_string(),
             project: "test-project".to_string(),
             mission: "Prove one campaign cycle closes safely.".to_string(),

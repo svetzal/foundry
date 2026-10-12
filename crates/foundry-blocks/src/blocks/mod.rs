@@ -19,10 +19,10 @@ mod task_workspace;
 pub(crate) use dry_run::SimulatedSuccess;
 
 pub(super) use agent_helpers::{
-    AgentBlockSpec, CodingAgentSpec, ReadOnlyAgentSpec, chain_agent_provider, extract_json,
-    fold_agent_outcome, invoke_agent, invoke_coding_agent, invoke_reasoning_agent,
+    AgentBlockSpec, CodingAgentSpec, ReadOnlyAgentSpec, chain_agent_provider, chain_stage_provider,
+    extract_json, fold_agent_outcome, invoke_agent, invoke_coding_agent, invoke_reasoning_agent,
     invoke_summary_agent, json_output_prompt, match_agent_text_outcome, parse_agent_json,
-    parse_agent_provider, resolve_agent_file, with_single_turn_discipline,
+    parse_agent_provider, resolve_agent_file, with_initiative_context, with_single_turn_discipline,
 };
 // The prompts assert their own closing rule; nothing in production reads the
 // constant directly (`with_single_turn_discipline` applies it).
