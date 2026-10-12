@@ -12,3 +12,6 @@
 
 # Foundry task scratch; never committed
 .foundry/
+
+# Epilogue Tracker server connection (credential; never committed)
+.et_env
