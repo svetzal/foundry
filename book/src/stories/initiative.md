@@ -8,9 +8,8 @@ In Tracker, Maya has an approved goal, `explain-delays`, and a journey,
 `understand-delay`. Its interactions cover publishing a reason and displaying it
 to the customer. The journey puts the API interaction before the portal one.
 
-This story uses initiative slice 1. Development checks passed on the Mac
-daemon, and production promotion awaits approval. Slice 2 will add automatic
-outcome evaluation and Tracker closure.
+This story uses initiative slice 1, introduced in Foundry 0.48.0.
+Slice 2 will add automatic outcome evaluation and Tracker closure.
 
 ## Bring the intent into Foundry
 
