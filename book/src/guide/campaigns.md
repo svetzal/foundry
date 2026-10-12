@@ -510,6 +510,17 @@ project gates resolved from its own checkout. Formation must state acceptance
 evidence the task can actually produce inside that worktree; it does not copy
 campaign gate commands into the objective.
 
+Formation's agent runs in a read-only sandbox. Builds, tests, linters and
+anything else that writes `target/`, caches or lock files cannot run there, and
+the prompt tells formation not to try. It takes test and gate evidence from two
+places: the done-gate results the daemon ran against delivered trunk before
+formation, and the last run result. A run with `landed: true` reached trunk only
+after every required gate in the project's gate file passed in the task
+worktree, and Foundry re-runs those gates after any rebase onto trunk. A review
+statement such as "with passing unit tests" is judged from that evidence and
+from the code. Being unable to run a command in the sandbox is not a reason to
+escalate.
+
 ## Managing a Campaign
 
 ```bash
@@ -522,6 +533,8 @@ foundry campaign decide parite-phase-2d --decision "Use the generated tonic clie
 foundry campaign resume parite-phase-2d
 # When the cycle budget was exhausted, explicitly authorize more work:
 foundry campaign resume parite-phase-2d --add-cycles 1
+# Or record a decision and authorize more work in one step:
+foundry campaign decide parite-phase-2d --decision "Keep the current design." --add-cycles 1
 ```
 
 `foundry campaign show <name>` prints the campaign, then its cycles as the
@@ -560,8 +573,8 @@ When a task stopped with `blocked_on_decision`, the block also prints the
 agent's `Question:` and each `Choice:` as the agent wrote them. The options
 follow the status table below. `resume`, `decide` and `complete` need an
 `authorized_by` owner, so an unauthorized campaign is offered only `cancel`.
-When the cycle budget is spent, `resume` is offered with `--add-cycles`, the
-only form the engine accepts. Every other status prints its own options too,
+When the cycle budget is spent, `decide` and `resume` are offered with
+`--add-cycles`, the only form the engine accepts. Every other status prints its own options too,
 and a completed or cancelled campaign prints none. `foundry campaign report`
 prints the same `Escalation:` block and options, and its `--json` carries
 `open_escalation` and `owner_options`.
@@ -849,6 +862,21 @@ timestamp, then returns the campaign to `active`. Subsequent formation prompts
 include every recorded owner decision as binding context, so the next advance
 can continue under explicit policy instead of re-escalating on the same
 question.
+
+When the campaign has spent its cycle budget, `decide` needs `--add-cycles N`:
+
+```bash
+foundry campaign decide parite-phase-2d \
+  --decision "Keep the current design." --add-cycles 1
+```
+
+The decision, the budget extension and the return to `active` happen in one
+transition. Without `--add-cycles` the command is refused and records nothing.
+A decision alone would leave an active campaign whose next advance escalates on
+budget again, and `resume` does not accept an active campaign. Because `decide`
+accepts only an `escalated` campaign, running the same command again after it
+succeeded is refused: the decision is not recorded twice and the cycles are not
+added twice.
 
 By default, `foundry campaign decide` is an online mutation: it requires a
 reachable `foundryd` daemon and sends the decision through the `DecideCampaign`

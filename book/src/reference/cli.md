@@ -224,6 +224,7 @@ foundry campaign show <name> [--json]
 foundry campaign advance <name> [--origin <text>]
 foundry campaign pause <name>
 foundry campaign decide <name> --decision "Use the generated tonic client path."
+foundry campaign decide <name> --decision "Keep the current design." --add-cycles 1
 foundry campaign complete <name> --reason "Production evidence confirms the mission shipped."
 foundry campaign cancel <name> --reason "Superseded by the new architecture."
 foundry campaign cancel <name> --reason "Wrong approach." --now --discard-work
@@ -238,7 +239,7 @@ foundry campaign resume <name> --add-cycles 2
 | `show`     | Yes unless `--offline` | Show the complete stored campaign record; for an escalated campaign, why it waits on its owner; the owner's options as command lines; then its ledger cycles. `--json` emits one object |
 | `advance`  | Yes                    | Re-evaluate done evidence and dispatch one next task, complete, or escalate. `--origin <text>` records a free-text note, beside this machine's hostname, on the work item of the cycle it dispatches |
 | `pause`    | Yes unless `--offline` | Halt future automatic and manual advancement                                |
-| `decide`   | Yes unless `--offline` | Record an owner decision on an escalated campaign and return it to active   |
+| `decide`   | Yes unless `--offline` | Record an owner decision on an escalated campaign and return it to active; `--add-cycles <n>` also extends the budget |
 | `complete` | Yes unless `--offline` | Mark an authorized campaign complete with an auditable owner reason         |
 | `cancel`   | Yes unless `--offline` | Stop a campaign permanently, optionally killing the in-flight cycle         |
 | `resume`   | Yes unless `--offline` | Return an authorized paused or escalated campaign to active state           |
@@ -248,7 +249,9 @@ The store defaults to `~/.foundry/campaigns.json` and can be overridden with
 `mission` fields plus at least one `done_evidence` item. `authorized_by` is
 required before `decide`, `complete`, or `resume`. `decide` is valid only when
 the campaign is currently `escalated`; it appends an owner decision record and
-makes that policy available to the next formation run. `resume --add-cycles N`
+makes that policy available to the next formation run. On a spent budget,
+`decide` requires `--add-cycles N`, which it applies in the same transition;
+without it the command is refused and records nothing. `resume --add-cycles N`
 is required when an exhausted budget needs an explicit positive extension.
 Without `--offline`, all nine campaign subcommands are daemon-authoritative:
 they require a reachable `foundryd` daemon, fail without touching the

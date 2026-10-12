@@ -414,6 +414,10 @@ enum CampaignCommands {
         name: String,
         #[arg(long)]
         decision: String,
+        /// Add owner-authorized cycles to the campaign budget with the decision
+        /// (required when the campaign has spent its cycle budget)
+        #[arg(long, default_value_t = 0)]
+        add_cycles: u64,
     },
     /// Mark an authorized campaign complete with an auditable reason
     Complete {
@@ -959,8 +963,13 @@ async fn handle_campaign_command(
         CampaignCommands::Pause { name } => {
             campaign_commands::pause(campaigns_path, addr, offline, &name).await
         }
-        CampaignCommands::Decide { name, decision } => {
-            campaign_commands::decide(campaigns_path, addr, offline, &name, &decision).await
+        CampaignCommands::Decide {
+            name,
+            decision,
+            add_cycles,
+        } => {
+            campaign_commands::decide(campaigns_path, addr, offline, &name, &decision, add_cycles)
+                .await
         }
         CampaignCommands::Complete { name, reason } => {
             campaign_commands::complete(campaigns_path, addr, offline, &name, &reason).await

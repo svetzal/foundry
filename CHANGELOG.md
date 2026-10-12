@@ -34,6 +34,36 @@ project adheres to [Semantic Versioning](https://semver.org/).
   cycle and advance from trunk, and close the preserved item if its work was
   reconciled by hand. It used to read only "campaign cycle budget exhausted (N)
   after an unlanded non-complete result". The refused cycle is not refunded.
+- `foundry campaign decide` takes `--add-cycles <n>`, and on a spent budget it
+  requires it. A budget-exhausted escalation offered both `decide` and
+  `resume --add-cycles`. An owner who ran `decide` got an `active` campaign
+  whose next advance escalated on budget again, and `resume --add-cycles` then
+  failed with "campaign is 'active'; resume requires Paused or Escalated
+  status". `decide --add-cycles <n>` now records the decision, adds the cycles
+  (checked addition) and returns the campaign to `active` in one transition.
+  When `cycles_completed >= max_cycles`, `decide` without `--add-cycles` is
+  refused with "campaign '<name>' exhausted its cycle budget; pass add_cycles >
+  0 to authorize more work" and records nothing. `decide` still accepts only an
+  escalated campaign, so a retry after a success is refused and adds no cycles.
+  `DecideCampaignRequest` has a new `add_cycles` field (tag 3); older clients
+  send 0. The owner options of an escalated campaign with a spent budget now
+  print `foundry campaign decide <name> --decision "<text>" --add-cycles <n>`.
+- `foundry campaign advance --offline` on a paused or escalated campaign now
+  lists that campaign's owner options. It used to suggest plain `foundry
+  campaign resume <name>` "when the escalation was budget-only", which the
+  engine refuses on a spent budget without `--add-cycles`.
+- Formation no longer escalates because its read-only sandbox cannot run
+  cargo. After a landed cycle on the development daemon, formation escalated
+  with "Clippy and cargo test cannot run because the read-only sandbox denies
+  opening target/debug/.cargo-build-lock" and asked the owner for a writable
+  validation environment, although the campaign's required done-gate had
+  passed and the cycle had landed only after the project's required gates
+  passed. The formation prompt now says the sandbox is read-only, that builds,
+  tests and linters must not be attempted there, that test and gate evidence
+  comes from the done-gate results and the last run result (a run with
+  `landed: true` reached trunk only after every required gate in the project's
+  gate file passed in its worktree), and that being unable to run a command
+  there is never a reason to escalate.
 
 ## [0.45.1] - 2026-10-11
 

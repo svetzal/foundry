@@ -542,6 +542,7 @@ fn decision_prompt(
          CAMPAIGN: {}\nMISSION: {}\nINTENT REFS: {}\nCYCLES: {} completed / {} landed / {} max\nESCALATION RULES:\n- {}\n\n\
          OWNER DECISIONS (binding policy for this and future advances):\n{}\n\nREQUIRED REVIEW EVIDENCE:\n{}\n\nMECHANICAL DONE-GATE RESULTS (run here at formation, against the delivered trunk — the task does NOT run these):\n{}\n\nOBJECTIVE HISTORY (what this campaign has already asked for, oldest first, with the typed verdict each returned):\n{}\n\nLAST TYPED RUN RESULT:\n{}\n\nLIVE REPO SNAPSHOT (delivered trunk state):\n{}\n\nACCUMULATED UNMERGED WORK:\n{}\n\nCONTEXT ARTIFACTS (wording is binding and must be threaded into acceptance criteria):\n{}\n\n\
          TWO TREES. The live snapshot is the delivered trunk state. The accumulated section describes a preserved branch carrying earlier cycles of THIS campaign that did not land; the next cycle starts from that ref, not from the trunk. Its work is real and already written—it is invisible to a trunk-only inspection, and any tool you run in the working directory sees the trunk, not it.\n\n\
+         READ-ONLY SANDBOX. Do not run builds, tests, linters, or anything else that writes target/, caches or lock files: they cannot run here and prove nothing. Test and gate evidence comes from MECHANICAL DONE-GATE RESULTS, which the daemon ran against the delivered trunk, and from LAST TYPED RUN RESULT: a run with landed: true reached trunk only after every required gate in the project's gate file passed in its worktree, re-run after any rebase onto trunk. Judge review statements about passing tests from that evidence and the code you read. Being unable to run a command here is never a reason to escalate.\n\n\
          DONE only when every required gate passes and every review statement is true against the delivered trunk state. Accumulated unmerged work does not make a campaign done. ADVANCE must cut exactly ONE objective from mission minus current state, where current state is the trunk PLUS the accumulated work. Never re-cut an objective the accumulated commits already satisfy; if the accumulated work appears to carry the mission but has not landed, the objective is to reconcile and land it—finish the remaining gaps, get the required gates green on that branch—not to rebuild it from scratch. NO RESTATEMENT. Check the objective you are about to cut against OBJECTIVE HISTORY before you commit to it. If it substantially restates an entry there, do not re-dispatch it; decide which of exactly two things is true. Either that earlier work exists and you are reading the wrong tree—re-read the accumulated section, and the objective becomes reconcile-and-land, not rebuild. Or the earlier cycle returned `remainder` and its gaps are genuinely still open on a tree you can see, in which case asking for the same thing has already failed once and repeating it is not the correction: name the single sub-gap that blocked it, change the approach, or escalate for an owner decision. A third identical objective is never the answer. Constraints, change licenses, scope guards, and forbidden moves are gates—not co-equal objectives. DO NOT RESTATE THE MECHANICAL DONE-GATE COMMANDS AS TASK EVIDENCE. Those run here, at formation, against the delivered trunk; the task runs the project's own discovered gates in an isolated worktree and cannot produce a result for a command it is never given. Asking it to prove one creates a gap it cannot close no matter what it does. Require only evidence the task itself can produce in its worktree. State concrete proof capable of rejecting masked IDs, count-only checks, or tests that bypass the real boundary. Do not prescribe implementation mechanism. Before removal/refactor packets, perform cheap live structural probes for callers and cross-module coupling and encode discoveries as scope guards. For migrations, name each licensed behavior change with its intent ref; all other characterized behavior is frozen. Build characterization before migration. ESCALATE on a human judgment, fired escalation rule, unusable provider, or invalidated campaign assumption.\n\n\
          End with exactly one fenced JSON object:\n\
          {{\"decision\":\"done\",\"reason\":\"evidence\"}}\n\
@@ -3232,6 +3233,50 @@ mod tests {
         assert!(
             prompt.contains("mdbook build book"),
             "gate section must render the declared done-gate command, not come back empty: {prompt}"
+        );
+    }
+
+    /// Formation runs in a read-only sandbox, so it cannot build or test. On
+    /// 2026-10-11 a campaign escalated after a landed cycle because clippy and
+    /// `cargo test` could not open `target/debug/.cargo-build-lock`, while the
+    /// required done-gate had passed and the task had landed only after its
+    /// required gates passed. The prompt must say where test evidence comes
+    /// from and that a command it cannot run here is no reason to escalate.
+    #[tokio::test]
+    async fn decision_prompt_says_the_sandbox_cannot_build_and_where_test_evidence_comes_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("campaigns.json");
+        let mut store = CampaignStore::default();
+        store.add(campaign_for_accumulation_test()).unwrap();
+        store.save(&store_path).unwrap();
+        let registry =
+            super::super::test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
+        let agent = FakeAgentGateway::success_with(
+            "```json\n{\"decision\":\"advance\",\"objective\":\"Cut one slice.\",\"reason\":\"gap\"}\n```",
+        );
+        let block =
+            advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
+
+        block.execute(&manual_advance_trigger()).await.unwrap();
+
+        let prompt = &agent.invocations()[0].prompt;
+        assert!(
+            prompt.contains("READ-ONLY SANDBOX"),
+            "formation must be told its sandbox is read-only: {prompt}"
+        );
+        assert!(
+            prompt.contains("Do not run builds, tests, linters"),
+            "formation must be told not to attempt commands that write target/ or caches"
+        );
+        assert!(
+            prompt.contains("landed: true")
+                && prompt
+                    .contains("only after every required gate in the project's gate file passed"),
+            "formation must be told what a landed run already proves"
+        );
+        assert!(
+            prompt.contains("never a reason to escalate"),
+            "a command this sandbox cannot run must not become an escalation"
         );
     }
 

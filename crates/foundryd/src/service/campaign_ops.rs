@@ -388,7 +388,10 @@ pub(super) fn resume(
     }))
 }
 
-/// Record an owner decision on an escalated campaign and return it to active state.
+/// Record an owner decision on an escalated campaign and return it to active
+/// state, adding `add_cycles` to its budget in the same transition. A spent
+/// budget requires `add_cycles > 0`; the rules live in
+/// [`foundry_sdk::campaign::Campaign::record_owner_decision`].
 pub(super) fn decide(
     campaigns_path: &Path,
     request: Request<DecideCampaignRequest>,
@@ -407,7 +410,7 @@ pub(super) fn decide(
         .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
 
     campaign
-        .record_owner_decision(decision, Utc::now())
+        .record_owner_decision(decision, Utc::now(), req.add_cycles)
         .map_err(|e| map_transition_error(&e))?;
     let detail = campaign_to_detail(campaign);
     guard.save().map_err(map_save_error)?;
