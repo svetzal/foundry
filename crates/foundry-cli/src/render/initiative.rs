@@ -229,6 +229,13 @@ fn render_questions(out: &mut String, initiative: &Initiative) {
     if initiative.open_questions.is_empty() {
         out.push_str("(none)\n");
     }
+    if initiative.deferred_question_count > 0 {
+        let _ = writeln!(
+            out,
+            "{} further unanswered question(s) wait for room. Answer a listed question to see the next.",
+            initiative.deferred_question_count
+        );
+    }
     for question in &initiative.open_questions {
         let _ = writeln!(
             out,

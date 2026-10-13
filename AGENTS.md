@@ -278,7 +278,12 @@ scratch space. Keep the live installed-Claude boundary test as evidence.
 
 Slice 1 adds steering, the codebase audit and refreshed Tracker intent.
 Slice 2 adds integration gates, campaign staging, outcome proposals and
-owner-confirmed Tracker closure. Development stays on the Mac's
+owner-confirmed Tracker closure. Slice 3 caps shared questions, preserves their
+earliest unanswered age and reports deferred member questions without losing them.
+At the cap, steering advances eligible unblocked members or waits for the owner.
+Questions older than one day and initiatives inactive for thirty days are digest
+anomalies. The ops-visualizer Sources page places initiatives above campaigns and
+submits member-scoped decisions through typed RPCs. Development stays on the Mac's
 synthetic daemon; promotion to ops-01 needs Stacey's go-ahead.
 
 `foundry initiative advance <name>` submits one outcome assessment and enables

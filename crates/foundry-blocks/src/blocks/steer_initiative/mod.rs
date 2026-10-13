@@ -453,9 +453,43 @@ impl SteerInitiative {
         );
         let registry = self.registry()?;
         for member in &prepared.snapshot.initiative.members {
+            use foundry_sdk::initiative::{AuditClassification, MemberKind};
+            let project = match member.kind {
+                MemberKind::Campaign => None,
+                // A task slot needs a newly derived objective; repeating its description can duplicate a landing.
+                MemberKind::Task => continue,
+                MemberKind::Candidate => {
+                    let audit = response
+                        .audits
+                        .iter()
+                        .find(|audit| Some(&audit.intent_ref) == member.intent_ref.as_ref())
+                        .or_else(|| {
+                            member
+                                .audit_finding_id
+                                .as_ref()
+                                .and_then(|id| store.find_finding(id))
+                                .and_then(|finding| finding.audit.as_ref())
+                        });
+                    if let Some(audit) = audit {
+                        if !matches!(
+                            audit.classification,
+                            AuditClassification::Partial | AuditClassification::Absent
+                        ) {
+                            continue;
+                        }
+                        Some(audit.project.clone())
+                    } else if prepared.snapshot.initiative.derive_source.is_none()
+                        && prepared.snapshot.initiative.projects.len() == 1
+                    {
+                        prepared.snapshot.initiative.projects.first().cloned()
+                    } else {
+                        continue;
+                    }
+                }
+            };
             let decision = foundry_sdk::initiative::SteeringDecision::Advance {
                 member: member.name.clone(),
-                project: None,
+                project,
             };
             if validate_member_pin(prepared.requested_member.as_deref(), &decision).is_err()
                 || ensure_action_repository_free(
@@ -484,17 +518,51 @@ impl SteerInitiative {
                 return Ok(decision);
             }
         }
+        if prepared.snapshot.initiative.open_questions.len()
+            >= prepared.snapshot.initiative.budget.max_open_questions
+        {
+            return Ok(foundry_sdk::initiative::SteeringDecision::Escalate {
+                reason: "waiting on owner; open question budget exhausted".into(),
+            });
+        }
         Ok(foundry_sdk::initiative::SteeringDecision::Ask {
             question: format!("Outcome completion lacks evidence: {reason}"),
             members: vec![],
         })
     }
+    fn enforce_question_budget(
+        &self,
+        prepared: &Prepared,
+        response: &mut SteeringResponse,
+    ) -> anyhow::Result<()> {
+        let question = match &response.action {
+            foundry_sdk::initiative::SteeringDecision::Ask { question, .. } => question,
+            foundry_sdk::initiative::SteeringDecision::Escalate { reason } => reason,
+            _ => return Ok(()),
+        };
+        if prepared.snapshot.initiative.open_questions.len()
+            >= prepared.snapshot.initiative.budget.max_open_questions
+            && !prepared
+                .snapshot
+                .initiative
+                .open_questions
+                .iter()
+                .chain(&prepared.snapshot.initiative.deferred_questions)
+                .any(|existing| existing.question.trim() == question.trim())
+        {
+            response.action =
+                self.repair_action(prepared, response, "open question budget exhausted")?;
+        }
+        Ok(())
+    }
+
     async fn commit_response(
         &self,
         trigger: &Event,
         prepared: &Prepared,
-        response: SteeringResponse,
+        mut response: SteeringResponse,
     ) -> anyhow::Result<TaskBlockResult> {
+        self.enforce_question_budget(prepared, &mut response)?;
         let initiative = &prepared.snapshot.initiative.name;
         let mut guard = lock_store(&self.store_path).await?;
         let _gate = ledger_write_gate()

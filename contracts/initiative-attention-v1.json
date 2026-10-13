@@ -1,0 +1,1005 @@
+{
+  "contract": "foundry.initiative-attention",
+  "version": 1,
+  "description": "Executable List/Get/Decide scenarios. Response fields are the consumer-required projection; provider assertions compare every declared field and exact repeated-array cardinality. Protobuf JSON accepts absent optional fields; numeric uint64 fields are strings. Responses omit volatile decision timestamps but provider verifies they exist. Errors preserve store bytes.",
+  "seed": {
+    "campaigns": [
+      {
+        "name": "first",
+        "project": "sample",
+        "mission": "Use the supported API",
+        "status": "escalated",
+        "authorized_by": "Stacey",
+        "done_evidence": [
+          {
+            "kind": "review",
+            "statement": "API works"
+          }
+        ],
+        "open_escalation": {
+          "reason": "Shared owner policy",
+          "question": "Which API version should both members use?",
+          "escalated_at": "2026-10-01T12:00:00+00:00",
+          "cycles_completed": 0,
+          "cycles_landed": 0
+        },
+        "objective_history": [
+          {
+            "cycle": 1,
+            "objective": "Verify client behavior",
+            "outcome": {
+              "verdict": "remainder",
+              "gaps": [
+                "Upgrade the remaining consumer"
+              ],
+              "landed": true
+            }
+          }
+        ]
+      },
+      {
+        "name": "second",
+        "project": "sample",
+        "mission": "Use the supported API",
+        "status": "escalated",
+        "authorized_by": "Stacey",
+        "done_evidence": [
+          {
+            "kind": "review",
+            "statement": "API works"
+          }
+        ],
+        "open_escalation": {
+          "reason": "Shared owner policy",
+          "question": "Which API version should both members use?",
+          "escalated_at": "2026-10-01T12:00:00+00:00",
+          "cycles_completed": 0,
+          "cycles_landed": 0
+        }
+      }
+    ],
+    "initiative": {
+      "name": "shared",
+      "outcome": "The two members use the same API contract",
+      "projects": [
+        "sample"
+      ],
+      "authorized_by": "Stacey",
+      "budget": {
+        "max_open_questions": 1
+      },
+      "members": [
+        {
+          "kind": "campaign",
+          "name": "first"
+        },
+        {
+          "kind": "campaign",
+          "name": "second"
+        }
+      ],
+      "done_evidence": [
+        {
+          "kind": "review",
+          "statement": "Both members use the supported API version"
+        },
+        {
+          "kind": "gate",
+          "command": "scripts/integrate.sh",
+          "host": "sandbox",
+          "required": true,
+          "artifacts": [
+            "integration.json"
+          ]
+        }
+      ]
+    },
+    "integration_result": {
+      "id": "gate-shared-1",
+      "gate_index": 1,
+      "host": "sandbox",
+      "command": "scripts/integrate.sh",
+      "passed": true,
+      "exit_code": 0,
+      "report": "/sandbox/evidence/integration.json",
+      "artifacts": [
+        "integration.json"
+      ],
+      "recorded_at": "2026-10-01T13:00:00+00:00",
+      "repositories": [
+        {
+          "project": "sample",
+          "root": "/sandbox/sample",
+          "registry": "sandbox registered project",
+          "trunk": "abc123",
+          "head": "abc123",
+          "status": "",
+          "diff": ""
+        }
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "list-shared-question",
+      "method": "ListInitiatives",
+      "request": {},
+      "response": {
+        "initiatives": [
+          {
+            "name": "shared",
+            "outcome": "The two members use the same API contract",
+            "projects": [
+              "sample"
+            ],
+            "authorizedBy": "Stacey",
+            "status": "escalated",
+            "budget": {
+              "maxCycles": "20",
+              "maxActiveMembers": "2",
+              "maxOpenQuestions": "1"
+            },
+            "members": [
+              {
+                "kind": "campaign",
+                "name": "first",
+                "project": "sample",
+                "campaign": {
+                  "name": "first",
+                  "project": "sample",
+                  "status": "escalated"
+                },
+                "lastVerdict": "remainder",
+                "reviewerGaps": [
+                  "Upgrade the remaining consumer"
+                ]
+              },
+              {
+                "kind": "campaign",
+                "name": "second",
+                "project": "sample",
+                "campaign": {
+                  "name": "second",
+                  "project": "sample",
+                  "status": "escalated"
+                }
+              }
+            ],
+            "openQuestions": [
+              {
+                "id": "question_63cbe146051e2f66777adea978a283017f46a0c8254b39ac6d71df1bdb147a7e",
+                "question": "Which API version should both members use?",
+                "members": [
+                  "first",
+                  "second"
+                ],
+                "openedAt": "2026-10-01T12:00:00+00:00"
+              }
+            ],
+            "deferredQuestionCount": "0",
+            "doneEvidence": [
+              {
+                "kind": "review",
+                "statement": "Both members use the supported API version"
+              },
+              {
+                "kind": "gate",
+                "command": "scripts/integrate.sh",
+                "host": "sandbox",
+                "required": true,
+                "artifacts": [
+                  "integration.json"
+                ]
+              }
+            ],
+            "ownerDecisions": [],
+            "integrationResults": [
+              {
+                "id": "gate-shared-1",
+                "gateIndex": "1",
+                "host": "sandbox",
+                "command": "scripts/integrate.sh",
+                "passed": true,
+                "exitCode": 0,
+                "report": "/sandbox/evidence/integration.json",
+                "artifacts": [
+                  "integration.json"
+                ],
+                "recordedAt": "2026-10-01T13:00:00+00:00",
+                "snapshot": {
+                  "repositories": [
+                    {
+                      "project": "sample",
+                      "root": "/sandbox/sample",
+                      "registry": "sandbox registered project",
+                      "trunk": "abc123",
+                      "head": "abc123",
+                      "status": "",
+                      "diff": ""
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "get-shared-question",
+      "method": "GetInitiative",
+      "request": {
+        "name": "shared"
+      },
+      "response": {
+        "initiative": {
+          "name": "shared",
+          "outcome": "The two members use the same API contract",
+          "projects": [
+            "sample"
+          ],
+          "authorizedBy": "Stacey",
+          "status": "escalated",
+          "budget": {
+            "maxCycles": "20",
+            "maxActiveMembers": "2",
+            "maxOpenQuestions": "1"
+          },
+          "members": [
+            {
+              "kind": "campaign",
+              "name": "first",
+              "project": "sample",
+              "campaign": {
+                "name": "first",
+                "project": "sample",
+                "status": "escalated"
+              },
+              "lastVerdict": "remainder",
+              "reviewerGaps": [
+                "Upgrade the remaining consumer"
+              ]
+            },
+            {
+              "kind": "campaign",
+              "name": "second",
+              "project": "sample",
+              "campaign": {
+                "name": "second",
+                "project": "sample",
+                "status": "escalated"
+              }
+            }
+          ],
+          "openQuestions": [
+            {
+              "id": "question_63cbe146051e2f66777adea978a283017f46a0c8254b39ac6d71df1bdb147a7e",
+              "question": "Which API version should both members use?",
+              "members": [
+                "first",
+                "second"
+              ],
+              "openedAt": "2026-10-01T12:00:00+00:00"
+            }
+          ],
+          "deferredQuestionCount": "0",
+          "doneEvidence": [
+            {
+              "kind": "review",
+              "statement": "Both members use the supported API version"
+            },
+            {
+              "kind": "gate",
+              "command": "scripts/integrate.sh",
+              "host": "sandbox",
+              "required": true,
+              "artifacts": [
+                "integration.json"
+              ]
+            }
+          ],
+          "ownerDecisions": [],
+          "integrationResults": [
+            {
+              "id": "gate-shared-1",
+              "gateIndex": "1",
+              "host": "sandbox",
+              "command": "scripts/integrate.sh",
+              "passed": true,
+              "exitCode": 0,
+              "report": "/sandbox/evidence/integration.json",
+              "artifacts": [
+                "integration.json"
+              ],
+              "recordedAt": "2026-10-01T13:00:00+00:00",
+              "snapshot": {
+                "repositories": [
+                  {
+                    "project": "sample",
+                    "root": "/sandbox/sample",
+                    "registry": "sandbox registered project",
+                    "trunk": "abc123",
+                    "head": "abc123",
+                    "status": "",
+                    "diff": ""
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "empty-answer-refused",
+      "method": "DecideInitiative",
+      "request": {
+        "name": "shared",
+        "decision": " ",
+        "members": [
+          "first"
+        ]
+      },
+      "error": {
+        "status": 3,
+        "message": "decision must be non-empty"
+      },
+      "unchanged": true
+    },
+    {
+      "id": "outside-member-refused",
+      "method": "DecideInitiative",
+      "request": {
+        "name": "shared",
+        "decision": "Use v1",
+        "members": [
+          "outside"
+        ]
+      },
+      "error": {
+        "status": 3,
+        "message": "decision or finding names a campaign outside the initiative"
+      },
+      "unchanged": true
+    },
+    {
+      "id": "partial-answer",
+      "method": "DecideInitiative",
+      "request": {
+        "name": "shared",
+        "decision": "Use API v1 for first",
+        "members": [
+          "first"
+        ]
+      },
+      "response": {
+        "initiative": {
+          "name": "shared",
+          "outcome": "The two members use the same API contract",
+          "projects": [
+            "sample"
+          ],
+          "authorizedBy": "Stacey",
+          "status": "escalated",
+          "budget": {
+            "maxCycles": "20",
+            "maxActiveMembers": "2",
+            "maxOpenQuestions": "1"
+          },
+          "members": [
+            {
+              "kind": "campaign",
+              "name": "first",
+              "project": "sample",
+              "campaign": {
+                "name": "first",
+                "project": "sample",
+                "status": "active"
+              },
+              "lastVerdict": "remainder",
+              "reviewerGaps": [
+                "Upgrade the remaining consumer"
+              ]
+            },
+            {
+              "kind": "campaign",
+              "name": "second",
+              "project": "sample",
+              "campaign": {
+                "name": "second",
+                "project": "sample",
+                "status": "escalated"
+              }
+            }
+          ],
+          "openQuestions": [
+            {
+              "id": "question_63cbe146051e2f66777adea978a283017f46a0c8254b39ac6d71df1bdb147a7e",
+              "question": "Which API version should both members use?",
+              "members": [
+                "second"
+              ],
+              "openedAt": "2026-10-01T12:00:00+00:00"
+            }
+          ],
+          "deferredQuestionCount": "0",
+          "doneEvidence": [
+            {
+              "kind": "review",
+              "statement": "Both members use the supported API version"
+            },
+            {
+              "kind": "gate",
+              "command": "scripts/integrate.sh",
+              "host": "sandbox",
+              "required": true,
+              "artifacts": [
+                "integration.json"
+              ]
+            }
+          ],
+          "ownerDecisions": [
+            {
+              "decision": "Use API v1 for first",
+              "authorizedBy": "Stacey",
+              "members": [
+                "first"
+              ]
+            }
+          ],
+          "integrationResults": [
+            {
+              "id": "gate-shared-1",
+              "gateIndex": "1",
+              "host": "sandbox",
+              "command": "scripts/integrate.sh",
+              "passed": true,
+              "exitCode": 0,
+              "report": "/sandbox/evidence/integration.json",
+              "artifacts": [
+                "integration.json"
+              ],
+              "recordedAt": "2026-10-01T13:00:00+00:00",
+              "snapshot": {
+                "repositories": [
+                  {
+                    "project": "sample",
+                    "root": "/sandbox/sample",
+                    "registry": "sandbox registered project",
+                    "trunk": "abc123",
+                    "head": "abc123",
+                    "status": "",
+                    "diff": ""
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "age-survives-partial-answer",
+      "method": "GetInitiative",
+      "request": {
+        "name": "shared"
+      },
+      "response": {
+        "initiative": {
+          "name": "shared",
+          "outcome": "The two members use the same API contract",
+          "projects": [
+            "sample"
+          ],
+          "authorizedBy": "Stacey",
+          "status": "escalated",
+          "budget": {
+            "maxCycles": "20",
+            "maxActiveMembers": "2",
+            "maxOpenQuestions": "1"
+          },
+          "members": [
+            {
+              "kind": "campaign",
+              "name": "first",
+              "project": "sample",
+              "campaign": {
+                "name": "first",
+                "project": "sample",
+                "status": "active"
+              },
+              "lastVerdict": "remainder",
+              "reviewerGaps": [
+                "Upgrade the remaining consumer"
+              ]
+            },
+            {
+              "kind": "campaign",
+              "name": "second",
+              "project": "sample",
+              "campaign": {
+                "name": "second",
+                "project": "sample",
+                "status": "escalated"
+              }
+            }
+          ],
+          "openQuestions": [
+            {
+              "id": "question_63cbe146051e2f66777adea978a283017f46a0c8254b39ac6d71df1bdb147a7e",
+              "question": "Which API version should both members use?",
+              "members": [
+                "second"
+              ],
+              "openedAt": "2026-10-01T12:00:00+00:00"
+            }
+          ],
+          "deferredQuestionCount": "0",
+          "doneEvidence": [
+            {
+              "kind": "review",
+              "statement": "Both members use the supported API version"
+            },
+            {
+              "kind": "gate",
+              "command": "scripts/integrate.sh",
+              "host": "sandbox",
+              "required": true,
+              "artifacts": [
+                "integration.json"
+              ]
+            }
+          ],
+          "ownerDecisions": [
+            {
+              "decision": "Use API v1 for first",
+              "authorizedBy": "Stacey",
+              "members": [
+                "first"
+              ]
+            }
+          ],
+          "integrationResults": [
+            {
+              "id": "gate-shared-1",
+              "gateIndex": "1",
+              "host": "sandbox",
+              "command": "scripts/integrate.sh",
+              "passed": true,
+              "exitCode": 0,
+              "report": "/sandbox/evidence/integration.json",
+              "artifacts": [
+                "integration.json"
+              ],
+              "recordedAt": "2026-10-01T13:00:00+00:00",
+              "snapshot": {
+                "repositories": [
+                  {
+                    "project": "sample",
+                    "root": "/sandbox/sample",
+                    "registry": "sandbox registered project",
+                    "trunk": "abc123",
+                    "head": "abc123",
+                    "status": "",
+                    "diff": ""
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "answer-remaining-member",
+      "method": "DecideInitiative",
+      "request": {
+        "name": "shared",
+        "decision": "Use API v1 for both",
+        "members": [
+          "second"
+        ]
+      },
+      "response": {
+        "initiative": {
+          "name": "shared",
+          "outcome": "The two members use the same API contract",
+          "projects": [
+            "sample"
+          ],
+          "authorizedBy": "Stacey",
+          "status": "active",
+          "budget": {
+            "maxCycles": "20",
+            "maxActiveMembers": "2",
+            "maxOpenQuestions": "1"
+          },
+          "members": [
+            {
+              "kind": "campaign",
+              "name": "first",
+              "project": "sample",
+              "campaign": {
+                "name": "first",
+                "project": "sample",
+                "status": "active"
+              },
+              "lastVerdict": "remainder",
+              "reviewerGaps": [
+                "Upgrade the remaining consumer"
+              ]
+            },
+            {
+              "kind": "campaign",
+              "name": "second",
+              "project": "sample",
+              "campaign": {
+                "name": "second",
+                "project": "sample",
+                "status": "active"
+              }
+            }
+          ],
+          "openQuestions": [],
+          "deferredQuestionCount": "0",
+          "doneEvidence": [
+            {
+              "kind": "review",
+              "statement": "Both members use the supported API version"
+            },
+            {
+              "kind": "gate",
+              "command": "scripts/integrate.sh",
+              "host": "sandbox",
+              "required": true,
+              "artifacts": [
+                "integration.json"
+              ]
+            }
+          ],
+          "ownerDecisions": [
+            {
+              "decision": "Use API v1 for first",
+              "authorizedBy": "Stacey",
+              "members": [
+                "first"
+              ]
+            },
+            {
+              "decision": "Use API v1 for both",
+              "authorizedBy": "Stacey",
+              "members": [
+                "second"
+              ]
+            }
+          ],
+          "integrationResults": [
+            {
+              "id": "gate-shared-1",
+              "gateIndex": "1",
+              "host": "sandbox",
+              "command": "scripts/integrate.sh",
+              "passed": true,
+              "exitCode": 0,
+              "report": "/sandbox/evidence/integration.json",
+              "artifacts": [
+                "integration.json"
+              ],
+              "recordedAt": "2026-10-01T13:00:00+00:00",
+              "snapshot": {
+                "repositories": [
+                  {
+                    "project": "sample",
+                    "root": "/sandbox/sample",
+                    "registry": "sandbox registered project",
+                    "trunk": "abc123",
+                    "head": "abc123",
+                    "status": "",
+                    "diff": ""
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "unknown-initiative",
+      "method": "GetInitiative",
+      "request": {
+        "name": "missing"
+      },
+      "error": {
+        "status": 5,
+        "message": "initiative 'missing' not found"
+      },
+      "unchanged": true
+    }
+  ],
+  "legacy_responses": [
+    {
+      "initiative": {
+        "name": "legacy",
+        "outcome": "Older daemon response",
+        "projects": [
+          "sample"
+        ],
+        "status": "staged",
+        "members": [
+          {
+            "kind": "candidate",
+            "name": "next",
+            "description": "Awaiting audit"
+          }
+        ],
+        "doneEvidence": [
+          {
+            "kind": "review",
+            "statement": "The outcome works"
+          }
+        ]
+      }
+    }
+  ],
+  "additional_cases": [
+    {
+      "id": "deferred-member-with-gate-evidence",
+      "seed": {
+        "campaigns": [
+          {
+            "name": "first",
+            "project": "sample",
+            "mission": "Use the supported API",
+            "status": "escalated",
+            "authorized_by": "Stacey",
+            "done_evidence": [
+              {
+                "kind": "review",
+                "statement": "API works"
+              }
+            ],
+            "open_escalation": {
+              "reason": "Shared owner policy",
+              "question": "Which API version should both members use?",
+              "escalated_at": "2026-10-01T12:00:00+00:00",
+              "cycles_completed": 0,
+              "cycles_landed": 0
+            },
+            "objective_history": [
+              {
+                "cycle": 1,
+                "objective": "Verify client behavior",
+                "outcome": {
+                  "verdict": "remainder",
+                  "gaps": [
+                    "Upgrade the remaining consumer"
+                  ],
+                  "landed": true
+                }
+              }
+            ]
+          },
+          {
+            "name": "second",
+            "project": "sample",
+            "mission": "Use the supported API",
+            "status": "escalated",
+            "authorized_by": "Stacey",
+            "done_evidence": [
+              {
+                "kind": "review",
+                "statement": "API works"
+              }
+            ],
+            "open_escalation": {
+              "reason": "Shared owner policy",
+              "question": "Which API version should both members use?",
+              "escalated_at": "2026-10-01T12:00:00+00:00",
+              "cycles_completed": 0,
+              "cycles_landed": 0
+            }
+          },
+          {
+            "name": "third",
+            "project": "sample",
+            "mission": "Use the supported API",
+            "status": "escalated",
+            "authorized_by": "Stacey",
+            "done_evidence": [
+              {
+                "kind": "review",
+                "statement": "API works"
+              }
+            ],
+            "open_escalation": {
+              "reason": "Shared owner policy",
+              "question": "Approve the second rollout?",
+              "escalated_at": "2026-10-02T12:00:00+00:00",
+              "cycles_completed": 0,
+              "cycles_landed": 0
+            }
+          }
+        ],
+        "initiative": {
+          "name": "shared",
+          "outcome": "The two members use the same API contract",
+          "projects": [
+            "sample"
+          ],
+          "authorized_by": "Stacey",
+          "budget": {
+            "max_open_questions": 1
+          },
+          "members": [
+            {
+              "kind": "campaign",
+              "name": "first"
+            },
+            {
+              "kind": "campaign",
+              "name": "second"
+            },
+            {
+              "kind": "campaign",
+              "name": "third"
+            }
+          ],
+          "done_evidence": [
+            {
+              "kind": "review",
+              "statement": "Both members use the supported API version"
+            },
+            {
+              "kind": "gate",
+              "command": "scripts/integrate.sh",
+              "host": "sandbox",
+              "required": true,
+              "artifacts": [
+                "integration.json"
+              ]
+            }
+          ]
+        },
+        "integration_result": {
+          "id": "gate-shared-1",
+          "gate_index": 1,
+          "host": "sandbox",
+          "command": "scripts/integrate.sh",
+          "passed": true,
+          "exit_code": 0,
+          "report": "/sandbox/evidence/integration.json",
+          "artifacts": [
+            "integration.json"
+          ],
+          "recorded_at": "2026-10-01T13:00:00+00:00",
+          "repositories": [
+            {
+              "project": "sample",
+              "root": "/sandbox/sample",
+              "registry": "sandbox registered project",
+              "trunk": "abc123",
+              "head": "abc123",
+              "status": "",
+              "diff": ""
+            }
+          ]
+        }
+      },
+      "scenario": {
+        "method": "GetInitiative",
+        "request": {
+          "name": "shared"
+        },
+        "response": {
+          "initiative": {
+            "name": "shared",
+            "outcome": "The two members use the same API contract",
+            "projects": [
+              "sample"
+            ],
+            "authorizedBy": "Stacey",
+            "status": "escalated",
+            "budget": {
+              "maxCycles": "20",
+              "maxActiveMembers": "2",
+              "maxOpenQuestions": "1"
+            },
+            "members": [
+              {
+                "kind": "campaign",
+                "name": "first",
+                "project": "sample",
+                "campaign": {
+                  "name": "first",
+                  "project": "sample",
+                  "status": "escalated"
+                },
+                "lastVerdict": "remainder",
+                "reviewerGaps": [
+                  "Upgrade the remaining consumer"
+                ]
+              },
+              {
+                "kind": "campaign",
+                "name": "second",
+                "project": "sample",
+                "campaign": {
+                  "name": "second",
+                  "project": "sample",
+                  "status": "escalated"
+                }
+              },
+              {
+                "kind": "campaign",
+                "name": "third",
+                "project": "sample",
+                "campaign": {
+                  "name": "third",
+                  "project": "sample",
+                  "status": "escalated"
+                }
+              }
+            ],
+            "openQuestions": [
+              {
+                "id": "question_63cbe146051e2f66777adea978a283017f46a0c8254b39ac6d71df1bdb147a7e",
+                "question": "Which API version should both members use?",
+                "members": [
+                  "first",
+                  "second"
+                ],
+                "openedAt": "2026-10-01T12:00:00+00:00"
+              }
+            ],
+            "deferredQuestionCount": "1",
+            "doneEvidence": [
+              {
+                "kind": "review",
+                "statement": "Both members use the supported API version"
+              },
+              {
+                "kind": "gate",
+                "command": "scripts/integrate.sh",
+                "host": "sandbox",
+                "required": true,
+                "artifacts": [
+                  "integration.json"
+                ]
+              }
+            ],
+            "ownerDecisions": [],
+            "integrationResults": [
+              {
+                "id": "gate-shared-1",
+                "gateIndex": "1",
+                "host": "sandbox",
+                "command": "scripts/integrate.sh",
+                "passed": true,
+                "exitCode": 0,
+                "report": "/sandbox/evidence/integration.json",
+                "artifacts": [
+                  "integration.json"
+                ],
+                "recordedAt": "2026-10-01T13:00:00+00:00",
+                "snapshot": {
+                  "repositories": [
+                    {
+                      "project": "sample",
+                      "root": "/sandbox/sample",
+                      "registry": "sandbox registered project",
+                      "trunk": "abc123",
+                      "head": "abc123",
+                      "status": "",
+                      "diff": ""
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

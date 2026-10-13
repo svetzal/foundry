@@ -36,6 +36,7 @@ pub struct ObserveEvents {
     /// Filesystems whose free space is checked; a low one is an anomaly.
     disk_paths: Vec<PathBuf>,
     disk: foundry_sdk::disk::DiskThreshold,
+    initiative_paths: Option<(PathBuf, PathBuf)>,
 }
 
 impl ObserveEvents {
@@ -45,7 +46,15 @@ impl ObserveEvents {
             watermark_path: watermark_path.into(),
             disk_paths: vec![foundry_sdk::paths::foundry_home()],
             disk: foundry_sdk::disk::DiskThreshold::from_env(),
+            initiative_paths: None,
         }
+    }
+
+    /// Include current owner attention facts from these stores in every digest tick.
+    #[must_use]
+    pub fn with_initiative_attention(mut self, campaigns: PathBuf, work_items: PathBuf) -> Self {
+        self.initiative_paths = Some((campaigns, work_items));
+        self
     }
 
     /// Check these filesystems against this threshold instead.
@@ -131,6 +140,7 @@ impl TaskBlock for ObserveEvents {
         let watermark_path = self.watermark_path.clone();
         let disk_paths = self.disk_paths.clone();
         let disk = self.disk;
+        let initiative_paths = self.initiative_paths.clone();
         // Propagate: a malformed OpsDigestStarted payload must fail loudly
         // rather than silently proceeding as if `forced_event` were unset —
         // that would re-evaluate the pressure gate as unforced and could
@@ -147,7 +157,28 @@ impl TaskBlock for ObserveEvents {
                 }
             };
             let disk_event = low_disk_event(&disk_paths, disk);
-            observe(&project, throttle, &intake_dir, &watermark_path, forced_event, disk_event)
+            let attention = if let Some((campaigns, work_items)) = initiative_paths {
+                tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+                    let guard = foundry_sdk::campaign::CampaignStore::lock_exclusive(&campaigns)?;
+                    let _gate = foundry_sdk::work_item::ledger_write_gate()
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("ledger gate poisoned"))?;
+                    let ledger = foundry_sdk::work_item::WorkItemStore::load(&work_items)?;
+                    Ok(guard.store.initiative_attention_events(&ledger, chrono::Utc::now())?)
+                })
+                .await??
+            } else {
+                vec![]
+            };
+            observe(
+                &project,
+                throttle,
+                &intake_dir,
+                &watermark_path,
+                forced_event,
+                disk_event,
+                attention,
+            )
         })
     }
 }
@@ -159,14 +190,19 @@ fn observe(
     watermark_path: &Path,
     forced_event: Option<OpsEventDigest>,
     disk_event: Option<OpsEventDigest>,
+    attention: Vec<OpsEventDigest>,
 ) -> anyhow::Result<TaskBlockResult> {
     let cutoff = read_cutoff(watermark_path);
     let events = read_events_since(intake_dir, cutoff);
 
-    let new_event_count =
-        events.len() as u64 + u64::from(forced_event.is_some()) + u64::from(disk_event.is_some());
-    let anomaly_present =
-        forced_event.is_some() || disk_event.is_some() || events.iter().any(is_anomaly);
+    let new_event_count = events.len() as u64
+        + u64::from(forced_event.is_some())
+        + u64::from(disk_event.is_some())
+        + u64::try_from(attention.len()).unwrap_or(u64::MAX);
+    let anomaly_present = forced_event.is_some()
+        || disk_event.is_some()
+        || !attention.is_empty()
+        || events.iter().any(is_anomaly);
 
     if !should_proceed(new_event_count, anomaly_present) {
         tracing::info!(
@@ -212,6 +248,7 @@ fn observe(
         .collect();
     digests.extend(forced_event);
     digests.extend(disk_event);
+    digests.extend(attention);
 
     tracing::info!(
         new_event_count,
@@ -645,6 +682,45 @@ mod tests {
         format!(
             r#"{{"id":"{id}","type":"{event_type}","occurredAt":"{ts}","recordedAt":"{ts}","category":"System-detected","urgency":"P2","status":"done","summary":"summary for {id}","source":{{}}}}"#
         )
+    }
+
+    #[tokio::test]
+    async fn unanswered_question_forces_each_digest_tick_even_after_watermark() {
+        let home = TempDir::new().unwrap();
+        let campaigns = home.path().join("campaigns.json");
+        let work_items = home.path().join("work-items.json");
+        let watermark = home.path().join("watermark");
+        std::fs::write(&watermark, chrono::Utc::now().to_rfc3339()).unwrap();
+        let mut store = foundry_sdk::campaign::CampaignStore::default();
+        store.add(serde_json::from_value(serde_json::json!({"name":"member","project":"sample","mission":"Ship it","authorized_by":"Owner","done_evidence":[{"kind":"review","statement":"It works"}]})).unwrap()).unwrap();
+        store.add_initiative(serde_json::from_value(serde_json::json!({"name":"attention","outcome":"Owner succeeds","projects":["sample"],"authorized_by":"Owner","members":[{"kind":"campaign","name":"member"}],"done_evidence":[{"kind":"review","statement":"Outcome works"}]})).unwrap(), &["sample".into()]).unwrap();
+        store.record_question("attention", "Which version?", &[]).unwrap();
+        store.find_initiative_mut("attention").unwrap().open_questions[0].opened_at =
+            chrono::Utc::now() - chrono::Duration::days(2);
+        store.save(&campaigns).unwrap();
+        let block = ObserveEvents::new(home.path().join("intake"), &watermark)
+            .with_disk(vec![], foundry_sdk::disk::DiskThreshold::from_env())
+            .with_initiative_attention(campaigns.clone(), work_items);
+        for _ in 0..2 {
+            let result = block.execute(&trigger()).await.unwrap();
+            let observed: OpsObservedPayload = result.events[0].parse_payload().unwrap();
+            assert!(observed.proceed && observed.anomaly_present);
+            assert_eq!(observed.events[0].event_type, "initiative_question_overdue");
+            assert!(
+                observed.new_watermark.is_none(),
+                "current-state attention must not advance intake watermark"
+            );
+        }
+        let mut guard = foundry_sdk::campaign::CampaignStore::lock_exclusive(&campaigns).unwrap();
+        guard
+            .store
+            .decide_initiative("attention", "Use v1", &[], chrono::Utc::now())
+            .unwrap();
+        guard.save().unwrap();
+        drop(guard);
+        let result = block.execute(&trigger()).await.unwrap();
+        let completed: OpsDigestCompletedPayload = result.events[0].parse_payload().unwrap();
+        assert!(completed.skipped);
     }
 
     #[test]

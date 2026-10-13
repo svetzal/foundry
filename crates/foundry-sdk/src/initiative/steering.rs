@@ -598,7 +598,26 @@ impl CampaignStore {
                 self.record_question(name, question, members)?;
             }
             SteeringDecision::Escalate { reason } => {
-                self.record_question(name, reason, &[])?;
+                if reason.trim().is_empty() {
+                    return Err(InitiativeError::Invalid(
+                        "escalation reason must be non-empty".into(),
+                    ));
+                }
+                self.refresh_questions(name)?;
+                let initiative = self.require_initiative(name)?;
+                if initiative.open_questions.len() < initiative.budget.max_open_questions
+                    || initiative
+                        .open_questions
+                        .iter()
+                        .chain(&initiative.deferred_questions)
+                        .any(|question| question.question.trim() == reason.trim())
+                {
+                    self.record_question(name, reason, &[])?;
+                } else {
+                    self.find_initiative_mut(name)
+                        .ok_or_else(|| InitiativeError::NotFound(name.into()))?
+                        .status = super::InitiativeStatus::Escalated;
+                }
             }
             SteeringDecision::Stage { campaign, member } => {
                 self.stage_initiative_campaign(name, campaign, member.as_deref())?;
@@ -1107,8 +1126,8 @@ impl CampaignStore {
         member: &str,
         active_members: &[String],
     ) -> Result<()> {
-        let initiative = self.require_initiative(name)?;
-        require_authorized(initiative)?;
+        let initiative = self.initiative_view(name)?;
+        require_authorized(&initiative)?;
         let definition = initiative
             .members
             .iter()
@@ -1123,9 +1142,14 @@ impl CampaignStore {
                 "member intent was discarded or revoked".into(),
             ));
         }
-        if initiative.open_questions.iter().any(|question| {
-            question.members.is_empty() || question.members.iter().any(|m| m == member)
-        }) {
+        if initiative
+            .open_questions
+            .iter()
+            .chain(&initiative.deferred_questions)
+            .any(|question| {
+                question.members.is_empty() || question.members.iter().any(|m| m == member)
+            })
+        {
             return Err(InitiativeError::Precondition(format!(
                 "member '{member}' waits on an initiative owner question"
             )));

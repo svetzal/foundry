@@ -559,3 +559,144 @@ async fn campaign_advance_action_retains_its_strategic_route() {
     assert!(child.payload.get("workflow").is_none());
     assert!(child.payload.get("workflow_type").is_none());
 }
+
+#[tokio::test]
+async fn full_question_budget_advances_unblocked_work_or_waits_once() {
+    for block_all in [false, true] {
+        let fixture = Fixture::new();
+        let mut store = CampaignStore::load(&fixture.store).unwrap();
+        store.find_initiative_mut("shared").unwrap().budget.max_open_questions = 1;
+        let members = if block_all {
+            vec![]
+        } else {
+            vec!["one".into()]
+        };
+        store.record_question("shared", "First policy?", &members).unwrap();
+        store.save(&fixture.store).unwrap();
+        let agent = FakeAgentGateway::success_with(
+            r#"{"action":{"decision":"ask","question":"Fourth policy?","members":["two"]},"audits":[]}"#,
+        );
+        let result = fixture
+            .steer(agent, FakeShellGateway::success())
+            .execute(&Fixture::trigger(None))
+            .await
+            .unwrap();
+        assert!(result.success, "{}", result.summary);
+        let action = result
+            .events
+            .iter()
+            .find(|event| event.event_type == EventType::InitiativeActionRequested)
+            .unwrap()
+            .parse_payload::<InitiativeActionRequestedPayload>()
+            .unwrap()
+            .action;
+        if block_all {
+            assert!(matches!(
+                action.decision,
+                foundry_sdk::initiative::SteeringDecision::Escalate { .. }
+            ));
+            let apply = ApplyInitiativeAction::new(
+                fixture.registry.clone(),
+                fixture.store.clone(),
+                fixture.ledger.clone(),
+            );
+            let event = result
+                .events
+                .iter()
+                .find(|event| event.event_type == EventType::InitiativeActionRequested)
+                .unwrap();
+            assert!(
+                apply.execute(event).await.unwrap().events.is_empty(),
+                "waiting on owner must not trigger an idle loop"
+            );
+        } else {
+            assert!(
+                matches!(action.decision, foundry_sdk::initiative::SteeringDecision::Advance { ref member, .. } if member == "two")
+            );
+        }
+        let view = CampaignStore::load(&fixture.store).unwrap().initiative_view("shared").unwrap();
+        assert_eq!(view.open_questions.len(), 1);
+        assert_eq!(view.open_questions[0].question, "First policy?");
+    }
+}
+
+#[tokio::test]
+async fn full_question_budget_can_advance_an_audited_candidate() {
+    let fixture = Fixture::new();
+    let mut store = CampaignStore::load(&fixture.store).unwrap();
+    let initiative = store.find_initiative_mut("shared").unwrap();
+    initiative.budget.max_open_questions = 1;
+    initiative.intent_refs.push("et:interaction:next".into());
+    initiative.members.push(
+        serde_json::from_value(serde_json::json!({
+            "kind":"candidate","name":"candidate","description":"Finish approved API behavior",
+            "intent_ref":"et:interaction:next","intent_state":"create"
+        }))
+        .unwrap(),
+    );
+    store
+        .record_question("shared", "Existing policy?", &["one".into(), "two".into()])
+        .unwrap();
+    store.save(&fixture.store).unwrap();
+    let agent = FakeAgentGateway::success_with(
+        r#"{"action":{"decision":"ask","question":"Another policy?","members":["one"]},"audits":[{"intent_ref":"et:interaction:next","classification":"partial","project":"sample","paths":["contract.rs"],"explanation":"Approved behavior is incomplete"}]}"#,
+    );
+    let result = fixture
+        .steer(agent, FakeShellGateway::success())
+        .execute(&Fixture::trigger(None))
+        .await
+        .unwrap();
+    assert!(result.success, "{}", result.summary);
+    let action = result
+        .events
+        .iter()
+        .find(|event| event.event_type == EventType::InitiativeActionRequested)
+        .unwrap()
+        .parse_payload::<InitiativeActionRequestedPayload>()
+        .unwrap()
+        .action;
+    assert!(
+        matches!(action.decision, foundry_sdk::initiative::SteeringDecision::Advance { ref member, ref project } if member == "candidate" && project.as_deref() == Some("sample"))
+    );
+    let store = CampaignStore::load(&fixture.store).unwrap();
+    assert_eq!(store.find("candidate").unwrap().project, "sample");
+    assert_eq!(store.initiative_view("shared").unwrap().open_questions.len(), 1);
+}
+
+#[tokio::test]
+async fn new_escalation_at_question_capacity_still_advances_eligible_work() {
+    let fixture = Fixture::new();
+    let mut store = CampaignStore::load(&fixture.store).unwrap();
+    store.find_initiative_mut("shared").unwrap().budget.max_open_questions = 1;
+    store.record_question("shared", "Existing policy?", &["one".into()]).unwrap();
+    store.save(&fixture.store).unwrap();
+    let agent = FakeAgentGateway::success_with(
+        r#"{"action":{"decision":"escalate","reason":"Another policy needed"},"audits":[]}"#,
+    );
+    let result = fixture
+        .steer(agent, FakeShellGateway::success())
+        .execute(&Fixture::trigger(None))
+        .await
+        .unwrap();
+    assert!(result.success, "{}", result.summary);
+    let action = result
+        .events
+        .iter()
+        .find(|event| event.event_type == EventType::InitiativeActionRequested)
+        .unwrap()
+        .parse_payload::<InitiativeActionRequestedPayload>()
+        .unwrap()
+        .action;
+    assert!(
+        matches!(action.decision, foundry_sdk::initiative::SteeringDecision::Advance { ref member, .. } if member == "two")
+    );
+    assert_eq!(
+        CampaignStore::load(&fixture.store)
+            .unwrap()
+            .initiative_view("shared")
+            .unwrap()
+            .open_questions
+            .len(),
+        1
+    );
+}

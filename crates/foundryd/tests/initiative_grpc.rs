@@ -708,3 +708,132 @@ async fn manual_campaign_completion_records_authoritative_milestone() {
     assert!(!initiative.steering_enabled);
     server.abort();
 }
+
+/// Consumer and provider execute this same versioned set, rather than inventing mocks independently.
+#[tokio::test]
+async fn initiative_attention_v1_provider_verifies_shared_contract() {
+    let bytes = include_bytes!("../../../contracts/initiative-attention-v1.json");
+    let contract: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(contract["contract"], "foundry.initiative-attention");
+    assert_eq!(contract["version"], 1);
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("campaigns.json");
+    seed_attention_contract(&contract["seed"], &path);
+    let (mut client, server) = client(home.path()).await;
+    for scenario in contract["scenarios"].as_array().unwrap() {
+        let before = std::fs::read(&path).unwrap();
+        let request = &scenario["request"];
+        let result = match scenario["method"].as_str().unwrap() {
+            "ListInitiatives" => client.list_initiatives(proto::ListInitiativesRequest {}).await
+                .map(|response| json!({"initiatives":response.into_inner().initiatives.iter().map(attention_contract_projection).collect::<Vec<_>>()})),
+            "GetInitiative" => client.get_initiative(proto::GetInitiativeRequest { name:request["name"].as_str().unwrap().into() }).await
+                .map(|response| json!({"initiative":attention_contract_projection(&response.into_inner().initiative.unwrap())})),
+            "DecideInitiative" => client.decide_initiative(proto::DecideInitiativeRequest {
+                name:request["name"].as_str().unwrap().into(), decision:request["decision"].as_str().unwrap().into(),
+                members:request["members"].as_array().unwrap().iter().map(|member| member.as_str().unwrap().into()).collect(), add_cycles:0,
+            }).await.map(|response| {
+                let initiative = response.into_inner().initiative.unwrap();
+                assert!(initiative.owner_decisions.iter().all(|decision| chrono::DateTime::parse_from_rfc3339(&decision.decided_at).is_ok()));
+                json!({"initiative":attention_contract_projection(&initiative)})
+            }),
+            method => panic!("unverified contract method {method}"),
+        };
+        if let Some(error) = scenario.get("error") {
+            let actual = result.unwrap_err();
+            assert_eq!(
+                actual.code() as i32,
+                i32::try_from(error["status"].as_i64().unwrap()).unwrap(),
+                "{}",
+                scenario["id"]
+            );
+            assert_eq!(actual.message(), error["message"].as_str().unwrap(), "{}", scenario["id"]);
+        } else {
+            assert_eq!(result.unwrap(), scenario["response"], "{}", scenario["id"]);
+        }
+        if scenario["unchanged"] == true {
+            assert_eq!(std::fs::read(&path).unwrap(), before, "{} mutated state", scenario["id"]);
+        }
+        // The contract's question identity and oldest age also survive a durable reload.
+        let restored = CampaignStore::load(&path).unwrap();
+        if let Some(question) = restored.initiative_view("shared").unwrap().open_questions.first() {
+            assert_eq!(question.opened_at.to_rfc3339(), "2026-10-01T12:00:00+00:00");
+        }
+    }
+    for case in contract["additional_cases"].as_array().unwrap() {
+        seed_attention_contract(&case["seed"], &path);
+        let response = client
+            .get_initiative(proto::GetInitiativeRequest {
+                name: case["scenario"]["request"]["name"].as_str().unwrap().into(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(
+            json!({"initiative":attention_contract_projection(&response.initiative.unwrap())}),
+            case["scenario"]["response"],
+            "{}",
+            case["id"]
+        );
+    }
+    server.abort();
+}
+
+fn seed_attention_contract(seed: &serde_json::Value, path: &std::path::Path) {
+    let mut store = CampaignStore::default();
+    for campaign in seed["campaigns"].as_array().unwrap() {
+        store.add(serde_json::from_value(campaign.clone()).unwrap()).unwrap();
+    }
+    store
+        .add_initiative(
+            serde_json::from_value(seed["initiative"].clone()).unwrap(),
+            &["sample".into()],
+        )
+        .unwrap();
+    store.refresh_questions("shared").unwrap();
+    let evidence = &seed["integration_result"];
+    let snapshot = store
+        .outcome_snapshot(
+            "shared",
+            serde_json::from_value(evidence["repositories"].clone()).unwrap(),
+        )
+        .unwrap();
+    let mut result = evidence.clone();
+    result.as_object_mut().unwrap().remove("repositories");
+    result["snapshot"] = serde_json::to_value(snapshot).unwrap();
+    store
+        .record_integration_result("shared", serde_json::from_value(result).unwrap())
+        .unwrap();
+    store.save(path).unwrap();
+}
+
+/// This is the explicitly declared consumer projection in the versioned contract.
+fn attention_contract_projection(initiative: &proto::Initiative) -> serde_json::Value {
+    let budget = initiative.budget.as_ref().unwrap();
+    json!({
+        "name":initiative.name,"outcome":initiative.outcome,"projects":initiative.projects,
+        "authorizedBy":initiative.authorized_by,"status":initiative.status,
+        "budget":{"maxCycles":budget.max_cycles.to_string(),"maxActiveMembers":budget.max_active_members.to_string(),"maxOpenQuestions":budget.max_open_questions.to_string()},
+        "members":initiative.members.iter().map(|member| {
+            let campaign = member.campaign.as_ref().unwrap();
+            let mut value = json!({"kind":member.kind,"name":member.name,"project":member.project,
+                "campaign":{"name":campaign.name,"project":campaign.project,"status":campaign.status}});
+            if let Some(verdict) = &member.last_verdict {
+                value["lastVerdict"] = json!(verdict);
+                value["reviewerGaps"] = json!(member.reviewer_gaps);
+            }
+            value
+        }).collect::<Vec<_>>(),
+        "openQuestions":initiative.open_questions.iter().map(|question| json!({"id":question.id,"question":question.question,"members":question.members,"openedAt":question.opened_at})).collect::<Vec<_>>(),
+        "deferredQuestionCount":initiative.deferred_question_count.to_string(),
+        "doneEvidence":initiative.done_evidence.iter().map(|evidence| {
+            if evidence.kind == "gate" { json!({"kind":evidence.kind,"command":evidence.command,"host":evidence.host,"required":evidence.required,"artifacts":evidence.artifacts}) }
+            else { json!({"kind":evidence.kind,"statement":evidence.statement}) }
+        }).collect::<Vec<_>>(),
+        "integrationResults":initiative.integration_results.iter().map(|result| json!({
+            "id":result.id,"gateIndex":result.gate_index.to_string(),"host":result.host,"command":result.command,
+            "passed":result.passed,"exitCode":result.exit_code,"report":result.report,"artifacts":result.artifacts,"recordedAt":result.recorded_at,
+            "snapshot":{"repositories":result.snapshot.as_ref().unwrap().repositories.iter().map(|repo| json!({"project":repo.project,"root":repo.root,"registry":repo.registry,"trunk":repo.trunk,"head":repo.head,"status":repo.status,"diff":repo.diff})).collect::<Vec<_>>()}
+        })).collect::<Vec<_>>(),
+        "ownerDecisions":initiative.owner_decisions.iter().map(|decision| json!({"decision":decision.decision,"authorizedBy":decision.authorized_by,"members":decision.members})).collect::<Vec<_>>()
+    })
+}

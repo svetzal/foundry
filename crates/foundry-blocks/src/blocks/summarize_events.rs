@@ -110,19 +110,61 @@ async fn summarize(
         );
     }
 
-    let prompt = build_prompt(&observed);
-    let outcome = invoke_reasoning_agent(
-        agent.as_ref(),
+    let markdown =
+        compose_digest(&observed, agent.as_ref(), &project, trace_id, std::env::temp_dir()).await;
+
+    let payload = OpsSummaryCompletedPayload {
+        markdown,
+        event_count,
+        new_watermark,
+    };
+
+    emit_result(
+        format!("Ops digest composed for {event_count} event(s)"),
+        EventType::OpsSummaryCompleted,
         &project,
+        throttle,
+        &payload,
+    )
+}
+
+async fn compose_digest(
+    observed: &OpsObservedPayload,
+    agent: &dyn AgentGateway,
+    project: &str,
+    trace_id: Option<String>,
+    scratch_parent: std::path::PathBuf,
+) -> String {
+    let prompt = build_prompt(observed);
+    // The prompt contains all evidence. A service cwd such as '/' must never
+    // become the selected repository for this read-only summary invocation.
+    let working_dir = match tokio::task::spawn_blocking(move || {
+        tempfile::Builder::new()
+            .prefix("foundry-ops-summary-")
+            .tempdir_in(scratch_parent)
+    })
+    .await
+    {
+        Ok(Ok(directory)) => directory,
+        Ok(Err(error)) => {
+            return fallback_digest(
+                observed,
+                Some(&format!("summary scratch setup failed: {error}")),
+            );
+        }
+        Err(error) => {
+            return fallback_digest(
+                observed,
+                Some(&format!("summary scratch setup failed: {error}")),
+            );
+        }
+    };
+    let outcome = invoke_reasoning_agent(
+        agent,
+        project,
         ReadOnlyAgentSpec {
             prompt,
-            working_dir: std::env::current_dir().unwrap_or_else(|e| {
-                // Best-effort: current_dir() failing (e.g. cwd deleted out from under the
-                // process) shouldn't block digest formation; fall back to "." same as
-                // before, but log so an unusual environment issue is investigable.
-                tracing::warn!(error = %e, "current_dir() failed while building ops-digest agent spec; falling back to \".\"");
-                ".".into()
-            }),
+            working_dir: working_dir.path().to_path_buf(),
             agent_file: None,
             // Proactive ops-digest formation — not part of a request chain, so
             // there is no per-request override to honour. Uses the daemon default.
@@ -138,25 +180,20 @@ async fn summarize(
 
     let markdown = fold_agent_outcome(
         outcome,
-        &project,
+        project,
         TRACE_LABEL,
         |stdout| stdout.trim().to_string(),
-        |ns| fallback_digest(&observed, Some(&ns.error)),
+        |ns| fallback_digest(observed, Some(&ns.error)),
     );
 
-    let payload = OpsSummaryCompletedPayload {
-        markdown,
-        event_count,
-        new_watermark,
-    };
-
-    emit_result(
-        format!("Ops digest composed for {event_count} event(s)"),
-        EventType::OpsSummaryCompleted,
-        &project,
-        throttle,
-        &payload,
-    )
+    // Explicit cleanup also stays off the async runtime. A cleanup failure
+    // cannot discard the composed digest.
+    match tokio::task::spawn_blocking(move || working_dir.close()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!(%error, "ops summary scratch cleanup failed"),
+        Err(error) => tracing::warn!(%error, "ops summary scratch cleanup failed"),
+    }
+    markdown
 }
 
 /// Build the agent prompt from the observed events.
@@ -176,6 +213,11 @@ fn build_prompt(observed: &OpsObservedPayload) -> String {
             "- Open with a `## ⚠ Anomalies` section listing events that require immediate \
              attention (P0 urgency, CI failures, unresolved interventions, high/critical \
              vulnerabilities, maintenance failures).\n",
+        );
+        prompt.push_str(
+            "- Treat `initiative_question_overdue` and `initiative_inactive` as owner-attention anomalies, \
+             even at P1 urgency. Explain what needs an owner answer or inactivity review; \
+             retain the affected members and the suggested owner command.\n",
         );
     }
     prompt.push_str(
@@ -384,5 +426,81 @@ mod tests {
             prompt.contains("do not invent events") || prompt.contains("only source of truth"),
             "no-fabrication clause must be present"
         );
+    }
+    struct CheckIsolatedSummaryDirectory {
+        directory: std::sync::Mutex<Option<std::path::PathBuf>>,
+    }
+
+    impl AgentGateway for CheckIsolatedSummaryDirectory {
+        fn invoke<'a>(
+            &'a self,
+            request: &'a crate::gateway::AgentRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = anyhow::Result<crate::gateway::AgentResponse>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                assert_eq!(request.access, crate::gateway::AgentAccess::ReadOnly);
+                assert_ne!(request.working_dir, std::env::current_dir().unwrap());
+                assert_eq!(std::fs::read_dir(&request.working_dir).unwrap().count(), 0);
+                *self.directory.lock().unwrap() = Some(request.working_dir.clone());
+                tokio::task::yield_now().await;
+                assert!(
+                    request.working_dir.is_dir(),
+                    "owned scratch directory must survive the invocation await"
+                );
+                Ok(crate::gateway::AgentResponse::success(
+                    "## Anomalies\nAn initiative needs an owner answer.\n",
+                ))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn summary_uses_an_empty_owned_directory_for_the_entire_invocation() {
+        let agent = Arc::new(CheckIsolatedSummaryDirectory {
+            directory: std::sync::Mutex::new(None),
+        });
+        let block = SummarizeEvents::new(agent.clone());
+        let observed =
+            observed_with_events(true, vec![sample_event("owner", "initiative_question_overdue")]);
+        let result = block.execute(&trigger_with(&observed)).await.unwrap();
+        let summary: OpsSummaryCompletedPayload = result.events[0].parse_payload().unwrap();
+        assert!(summary.markdown.contains("needs an owner answer"));
+        let path = agent.directory.lock().unwrap().clone().unwrap();
+        assert!(!path.exists(), "scratch directory must be cleaned after summary completes");
+    }
+
+    #[test]
+    fn summary_prompt_classifies_initiative_owner_attention_as_anomalies() {
+        let mut observed = observed_with_events(
+            true,
+            vec![
+                sample_event("question", "initiative_question_overdue"),
+                sample_event("inactive", "initiative_inactive"),
+            ],
+        );
+        observed.anomaly_present = true;
+        let prompt = build_prompt(&observed);
+        assert!(prompt.contains("Treat `initiative_question_overdue` and `initiative_inactive` as owner-attention anomalies"));
+        assert!(prompt.contains("retain the affected members and the suggested owner command"));
+    }
+    #[tokio::test]
+    async fn scratch_setup_failure_preserves_anomaly_digest_without_invoking_agent() {
+        let home = tempfile::tempdir().unwrap();
+        let blocked = home.path().join("not-a-directory");
+        std::fs::write(&blocked, "unavailable scratch parent").unwrap();
+        let agent = FakeAgentGateway::success();
+        let mut observed =
+            observed_with_events(true, vec![sample_event("low-disk", "host_disk_low")]);
+        observed.anomaly_present = true;
+        let markdown = compose_digest(&observed, agent.as_ref(), "system", None, blocked).await;
+        assert!(markdown.contains("summary scratch setup failed"));
+        assert!(markdown.contains("host_disk_low"));
+        assert!(markdown.contains("Anomaly: true"));
+        assert!(agent.invocations().is_empty(), "failed setup must not invoke in inherited cwd");
     }
 }

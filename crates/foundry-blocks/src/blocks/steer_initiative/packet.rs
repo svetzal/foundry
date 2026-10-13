@@ -95,7 +95,7 @@ pub(super) fn prompt(
     let packet = serde_json::json!({"initiative":initiative.name,"outcome":initiative.outcome,"intent_refs":initiative.intent_refs,
         "members":initiative.members,
         "campaigns":campaigns,"projects":repositories,"brief":initiative.brief,
-        "owner_decisions":initiative.owner_decisions,"questions":initiative.open_questions,"budget":initiative.budget,
+        "owner_decisions":initiative.owner_decisions,"questions":initiative.open_questions,"deferred_questions":initiative.deferred_questions,"budget":initiative.budget,
         "holds":initiative.holds,"milestones":initiative.milestones,"close_proposals":initiative.close_proposals,
         "findings":findings,"requested_member":requested_member,"work_ledger":ledger_view,
         "done_evidence":initiative.done_evidence,"integration_results":integration_results,
@@ -105,7 +105,7 @@ pub(super) fn prompt(
     let text = format!(
         r#"Choose exactly one next initiative action from current intent and live repository evidence. Take one step, then reassess. You are read-only; do not modify repositories, Foundry state, or Tracker. Foundry has executed integration gates and retained bounded capture evidence in this packet. Inspect the registered repository paths and Foundry-owned brief yourself. All owner decisions are binding. An explicit requested_member restricts advance to that member, but never overrides audit, budget, dependencies, questions, repository ownership, or terminal state.
 
-Before any derived work advances, audit EVERY current intent candidate: create looks for partial implementation, update compares revised intent with code, delete finds removals and references. Classify realised, partial, absent, or misplaced. Cite project-relative existing paths (a checked directory may support absence). Realised intent is proposed for owner Tracker closure and must not become redundant work. Do not infer named milestones from unrelated landings. Approved new intent becomes a candidate; discarded intent has been cancelled. Relay useful findings explicitly, and ask one question covering every applicable member when owner judgement is needed.
+Before any derived work advances, audit EVERY current intent candidate: create looks for partial implementation, update compares revised intent with code, delete finds removals and references. Classify realised, partial, absent, or misplaced. Cite project-relative existing paths (a checked directory may support absence). Realised intent is proposed for owner Tracker closure and must not become redundant work. Do not infer named milestones from unrelated landings. Approved new intent becomes a candidate; discarded intent has been cancelled. Relay useful findings explicitly, and ask one question covering every applicable member when owner judgement is needed. Respect max_open_questions: when the surface is full, advance an eligible member that has no unanswered question, or escalate waiting on owner if nothing can move. Deferred questions still block their applicable members.
 
 {contract_guidance}
 

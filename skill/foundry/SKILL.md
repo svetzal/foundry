@@ -948,6 +948,16 @@ formation snapshot is discarded and formed again. `queue open` shows an
 escalated initiative once, with member escalation rows suppressed. Open work
 items retain their own rows.
 
+The Sources page in ops-visualizer lists initiatives above campaigns with outcomes,
+member results, integration evidence and questions. Its decision form submits the
+selected members through the daemon and retains drafts when live results arrive.
+`max_open_questions` caps the shared list (default three). Matching questions
+appear once with the applicable members and earliest unanswered age. Extra member
+questions remain on their campaigns; `deferred_question_count` reports them.
+The next waiting question appears when an answer frees a slot. At the cap,
+steering advances unblocked eligible work or waits for the owner. Questions older
+than one day and initiatives inactive for thirty days are ops digest anomalies.
+
 Foundry owns the brief at `~/.foundry/initiatives/<name>/BRIEF.md`. Definitions
 must omit `brief`. Import external content with `brief set` after adding the
 initiative. Formation and execution receive its path and SHA-256 hash.

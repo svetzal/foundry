@@ -7,6 +7,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Slice 3 owner attention: a shared question limit, coalesced member questions
+  with their earliest unanswered age, and a count of questions waiting for a slot.
+  Steering advances unblocked members at the limit or waits for the owner.
+- Initiative questions older than one day and initiatives inactive for thirty
+  days open the ops digest's anomaly gate.
+- A shared executable contract for initiative listing, details and scoped
+  decisions, verified by Foundry and ops-visualizer.
+
+### Fixed
+
+- Refreshing member questions or answering only some members no longer resets
+  the age of a question that remains unanswered.
+- Ops digest summaries use an empty temporary directory for their read-only
+  agent call. A daemon started at `/` can now apply Claude's scoped policy.
+
 ## [0.49.0] - 2026-10-12
 
 ### Changed

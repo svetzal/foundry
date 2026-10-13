@@ -1027,10 +1027,16 @@ fn register_digest_blocks(
         foundry_sdk::paths::reconcile_dir(),
     )));
     // Ops-digest formation (periodic summary of MBOS operational events).
-    engine.register(Box::new(foundry_blocks::blocks::ObserveEvents::new(
-        paths.ops_events_intake_dir,
-        paths.ops_watermark_path.clone(),
-    )));
+    engine.register(Box::new(
+        foundry_blocks::blocks::ObserveEvents::new(
+            paths.ops_events_intake_dir,
+            paths.ops_watermark_path.clone(),
+        )
+        .with_initiative_attention(
+            foundry_sdk::paths::campaigns_path(),
+            foundry_sdk::paths::work_items_path(),
+        ),
+    ));
     engine.register(Box::new(foundry_blocks::blocks::SummarizeEvents::new(agent.clone())));
     engine.register(Box::new(foundry_blocks::blocks::WriteOpsDigest::new(
         paths.ops_digests_dir,
