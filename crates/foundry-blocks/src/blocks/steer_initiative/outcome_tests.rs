@@ -204,7 +204,9 @@ async fn a_review_only_pending_proposal_refreshes_trunks_before_reassessment() {
     std::fs::write(updated.join("contract.rs"), "current origin contract").unwrap();
     git(&updated, &["add", "contract.rs"]);
     git(&updated, &["commit", "-m", "Updated contract"]);
-    git(&updated, &["push", "origin", "main"]);
+    // Push by path, not remote name: an inherited `remote.origin.pushurl`
+    // (e.g. an agent session's push block) must not redirect this fixture.
+    git(&updated, &["push", origin.to_str().unwrap(), "main"]);
     assert_eq!(
         std::fs::read_to_string(fixture.temp.path().join("contract.rs")).unwrap(),
         "evidence"
