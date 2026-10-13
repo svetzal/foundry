@@ -1,0 +1,3373 @@
+{
+  "contract": "foundry.initiative-control",
+  "version": 1,
+  "description": "Executable owner-control scenarios. Each group starts a fresh daemon on an empty Foundry home, applies its named seed fragments in order, then runs its scenarios in order, so a scenario sees the effects of the ones before it. Seed fragments use the campaign store's own JSON: campaigns; an initiative over the registered project 'sample'; findings; brief (a recorded hash whose file on disk now differs); completion_proposal (done proposed against the live trunk snapshot of the 'sample' checkout); tracker_projection (committed as .et/projection.json in a Git repository). Requests and responses are Protobuf JSON for proto/foundry.proto: lowerCamelCase names, uint64 as decimal strings, defaults omitted from requests, and ActOnInitiative's action oneof written as exactly one of hold, relay, dispatch, ask or milestone (an empty object still selects that variant). A response is the consumer-required projection; the provider compares every declared field and the exact cardinality of every array. Repeated fields are listed even when empty. Proto3 optional fields and message fields appear only when the daemon sets them, so an absent eventId means the call started no new event. Daemon-stamped times (decidedAt, openedAt, proposedAt, confirmedAt), reservation operation ids, outcome snapshots and brief paths are left out; the provider asserts the times parse as RFC 3339, the ids are non-empty, and each brief path is initiatives/<name>/BRIEF.md under the Foundry home. Daemon-minted ids the consumer acts on are written as placeholders at the JSON pointers listed in 'volatile'; the provider asserts each is a non-empty string, and within one group placeholders and daemon values correspond one to one. The Tracker repository is written as /sandbox/tracker; the provider substitutes its temporary repository in requests and restores the placeholder in responses. Finding times come from the definition and return in RFC 3339 with an offset. An error gives the numeric gRPC status and the daemon's exact message. 'unchanged: true' means the provider asserts the campaign store bytes did not change: every refusal carries it, as do reads, idempotent retries and a steer that joins one already in flight.",
+  "seeds": {
+    "campaigns": {
+      "campaigns": [
+        {
+          "name": "first",
+          "project": "sample",
+          "mission": "Serve contract v2 from the API",
+          "status": "active",
+          "authorized_by": "Stacey",
+          "done_evidence": [
+            {
+              "kind": "review",
+              "statement": "The API serves contract v2"
+            }
+          ]
+        },
+        {
+          "name": "second",
+          "project": "sample",
+          "mission": "Consume contract v2 in the client",
+          "status": "active",
+          "authorized_by": "Stacey",
+          "done_evidence": [
+            {
+              "kind": "review",
+              "statement": "The client consumes contract v2"
+            }
+          ]
+        }
+      ]
+    },
+    "shared": {
+      "initiative": {
+        "name": "shared",
+        "outcome": "Both members speak contract v2",
+        "projects": [
+          "sample"
+        ],
+        "authorized_by": "Stacey",
+        "members": [
+          {
+            "kind": "campaign",
+            "name": "first"
+          },
+          {
+            "kind": "campaign",
+            "name": "second"
+          },
+          {
+            "kind": "candidate",
+            "name": "probe",
+            "description": "Probe the v2 endpoint from outside"
+          }
+        ],
+        "done_evidence": [
+          {
+            "kind": "review",
+            "statement": "Both members speak contract v2"
+          }
+        ]
+      },
+      "findings": [
+        {
+          "id": "fnd_contract",
+          "initiative": "shared",
+          "from": {
+            "kind": "owner",
+            "id": "Stacey"
+          },
+          "to": [
+            "first"
+          ],
+          "kind": "contract_changed",
+          "text": "The v2 response renames traceId to trace_id",
+          "refs": [
+            "sample@abc123"
+          ],
+          "recorded_at": "2026-10-02T09:00:00Z"
+        }
+      ]
+    },
+    "drifted-brief": {
+      "brief": {
+        "initiative": "shared",
+        "hash": "b8ed1cab9bc8784ae32610679166d4e4f618e02be57aebcb820fd76f730c0827",
+        "file": "Edited outside Foundry.\n"
+      }
+    },
+    "done-proposal": {
+      "completion_proposal": {
+        "initiative": "shared",
+        "id": "done_contract",
+        "reviews": [
+          {
+            "statement": "Both members speak contract v2",
+            "affirmed": true,
+            "evidence": [
+              "sample@trunk"
+            ]
+          }
+        ]
+      }
+    },
+    "spent": {
+      "campaigns": [
+        {
+          "name": "first",
+          "project": "sample",
+          "mission": "Serve contract v2 from the API",
+          "status": "escalated",
+          "authorized_by": "Stacey",
+          "cycles_completed": 2,
+          "cycles_landed": 2,
+          "done_evidence": [
+            {
+              "kind": "review",
+              "statement": "The API serves contract v2"
+            }
+          ],
+          "open_escalation": {
+            "reason": "campaign cycle budget exhausted (2)",
+            "escalated_at": "2026-10-01T12:00:00+00:00",
+            "cycles_completed": 2,
+            "cycles_landed": 2
+          }
+        },
+        {
+          "name": "second",
+          "project": "sample",
+          "mission": "Consume contract v2 in the client",
+          "status": "active",
+          "authorized_by": "Stacey",
+          "done_evidence": [
+            {
+              "kind": "review",
+              "statement": "The client consumes contract v2"
+            }
+          ]
+        },
+        {
+          "name": "solo",
+          "project": "sample",
+          "mission": "Retire the v1 endpoint",
+          "status": "escalated",
+          "authorized_by": "Stacey",
+          "cycles_completed": 1,
+          "cycles_landed": 1,
+          "budget": {
+            "max_cycles": 1
+          },
+          "done_evidence": [
+            {
+              "kind": "review",
+              "statement": "No client calls v1"
+            }
+          ],
+          "open_escalation": {
+            "reason": "campaign cycle budget exhausted (1)",
+            "escalated_at": "2026-10-01T12:00:00+00:00",
+            "cycles_completed": 1,
+            "cycles_landed": 1
+          }
+        }
+      ],
+      "initiative": {
+        "name": "shared",
+        "outcome": "Both members speak contract v2",
+        "projects": [
+          "sample"
+        ],
+        "authorized_by": "Stacey",
+        "budget": {
+          "max_cycles": 2
+        },
+        "members": [
+          {
+            "kind": "campaign",
+            "name": "first"
+          },
+          {
+            "kind": "campaign",
+            "name": "second"
+          }
+        ],
+        "done_evidence": [
+          {
+            "kind": "review",
+            "statement": "Both members speak contract v2"
+          }
+        ]
+      }
+    },
+    "tracker": {
+      "tracker_projection": {
+        "goals": [
+          {
+            "id": "contract-v2",
+            "description": "Both members speak contract v2",
+            "success_criteria": "No client depends on v1"
+          }
+        ],
+        "interactions": [
+          {
+            "id": "serve-v2",
+            "description": "Serve contract v2 from the API",
+            "state": "create",
+            "goals": [
+              "contract-v2"
+            ]
+          }
+        ],
+        "journeys": []
+      }
+    }
+  },
+  "groups": [
+    {
+      "id": "steer",
+      "seed": [
+        "campaigns",
+        "shared"
+      ],
+      "scenarios": [
+        {
+          "id": "advance-unknown-initiative",
+          "method": "AdvanceInitiative",
+          "request": {
+            "name": "missing"
+          },
+          "error": {
+            "message": "initiative 'missing' not found",
+            "status": 5
+          },
+          "unchanged": true
+        },
+        {
+          "id": "advance-unknown-member",
+          "method": "AdvanceInitiative",
+          "request": {
+            "name": "shared",
+            "member": "ghost"
+          },
+          "error": {
+            "message": "unknown member 'ghost'",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "steer-whole-initiative",
+          "method": "AdvanceInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard"
+          },
+          "volatile": [
+            "/eventId"
+          ],
+          "response": {
+            "eventId": "evt_contract_steer",
+            "initiative": {
+              "authorizedBy": "Stacey",
+              "budget": {
+                "maxActiveMembers": "2",
+                "maxCycles": "20",
+                "maxOpenQuestions": "3"
+              },
+              "deferredQuestionCount": "0",
+              "doneEvidence": [
+                {
+                  "kind": "review",
+                  "statement": "Both members speak contract v2"
+                }
+              ],
+              "holds": [],
+              "intentRefs": [],
+              "members": [
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "first",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "first",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "second",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "second",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "description": "Probe the v2 endpoint from outside",
+                  "kind": "candidate",
+                  "name": "probe",
+                  "reviewerGaps": []
+                }
+              ],
+              "milestones": [],
+              "name": "shared",
+              "openQuestions": [],
+              "outcome": "Both members speak contract v2",
+              "ownerDecisions": [],
+              "pendingActions": [],
+              "projects": [
+                "sample"
+              ],
+              "reservations": [],
+              "status": "active",
+              "steeringEnabled": true,
+              "steeringHistoryCount": "0",
+              "taskDispatches": []
+            }
+          }
+        },
+        {
+          "id": "override-refused-while-steer-runs",
+          "method": "AdvanceInitiative",
+          "request": {
+            "name": "shared",
+            "member": "first",
+            "operatorOrigin": "dashboard"
+          },
+          "error": {
+            "message": "a steer is already in flight; wait before submitting a member override or new owner context",
+            "status": 9
+          },
+          "unchanged": true
+        },
+        {
+          "id": "owner-context-refused-while-steer-runs",
+          "method": "AdvanceInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard: finish first before second"
+          },
+          "error": {
+            "message": "a steer is already in flight; wait before submitting a member override or new owner context",
+            "status": 9
+          },
+          "unchanged": true
+        },
+        {
+          "id": "steer-joins-running-steer",
+          "method": "AdvanceInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard"
+          },
+          "volatile": [
+            "/inFlight/workItemId",
+            "/inFlight/eventId"
+          ],
+          "response": {
+            "inFlight": {
+              "eventId": "evt_contract_steer",
+              "kind": "steer",
+              "state": "queued",
+              "workItemId": "wi_contract_steer"
+            },
+            "initiative": {
+              "authorizedBy": "Stacey",
+              "budget": {
+                "maxActiveMembers": "2",
+                "maxCycles": "20",
+                "maxOpenQuestions": "3"
+              },
+              "deferredQuestionCount": "0",
+              "doneEvidence": [
+                {
+                  "kind": "review",
+                  "statement": "Both members speak contract v2"
+                }
+              ],
+              "holds": [],
+              "intentRefs": [],
+              "members": [
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "first",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "first",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "second",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "second",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "description": "Probe the v2 endpoint from outside",
+                  "kind": "candidate",
+                  "name": "probe",
+                  "reviewerGaps": []
+                }
+              ],
+              "milestones": [],
+              "name": "shared",
+              "openQuestions": [],
+              "outcome": "Both members speak contract v2",
+              "ownerDecisions": [],
+              "pendingActions": [],
+              "projects": [
+                "sample"
+              ],
+              "reservations": [],
+              "status": "active",
+              "steeringEnabled": true,
+              "steeringHistoryCount": "0",
+              "taskDispatches": []
+            }
+          },
+          "unchanged": true
+        },
+        {
+          "id": "cancel-keeps-steering-flag",
+          "method": "CancelInitiative",
+          "request": {
+            "name": "shared",
+            "reason": "Contract v2 is shelved"
+          },
+          "response": {
+            "initiative": {
+              "authorizedBy": "Stacey",
+              "budget": {
+                "maxActiveMembers": "2",
+                "maxCycles": "20",
+                "maxOpenQuestions": "3"
+              },
+              "deferredQuestionCount": "0",
+              "doneEvidence": [
+                {
+                  "kind": "review",
+                  "statement": "Both members speak contract v2"
+                }
+              ],
+              "holds": [],
+              "intentRefs": [],
+              "members": [
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "first",
+                    "project": "sample",
+                    "status": "cancelled"
+                  },
+                  "kind": "campaign",
+                  "name": "first",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "second",
+                    "project": "sample",
+                    "status": "cancelled"
+                  },
+                  "kind": "campaign",
+                  "name": "second",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "description": "Probe the v2 endpoint from outside",
+                  "kind": "candidate",
+                  "name": "probe",
+                  "reviewerGaps": []
+                }
+              ],
+              "milestones": [],
+              "name": "shared",
+              "openQuestions": [],
+              "outcome": "Both members speak contract v2",
+              "ownerDecisions": [],
+              "pendingActions": [],
+              "projects": [
+                "sample"
+              ],
+              "reservations": [],
+              "status": "cancelled",
+              "steeringEnabled": true,
+              "steeringHistoryCount": "0",
+              "taskDispatches": []
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "owner-controls",
+      "seed": [
+        "campaigns",
+        "shared"
+      ],
+      "scenarios": [
+        {
+          "id": "act-unknown-initiative",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "missing",
+            "operatorOrigin": "dashboard",
+            "hold": {
+              "member": "first",
+              "reason": "Owner review pending"
+            }
+          },
+          "error": {
+            "message": "initiative not found",
+            "status": 5
+          },
+          "unchanged": true
+        },
+        {
+          "id": "act-without-action",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard"
+          },
+          "error": {
+            "message": "an owner action is required",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "hold-unknown-member",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "hold": {
+              "member": "ghost",
+              "reason": "Owner review pending"
+            }
+          },
+          "error": {
+            "message": "hold requires an initiative member and a reason",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "hold-without-reason",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "hold": {
+              "member": "first"
+            }
+          },
+          "error": {
+            "message": "hold requires an initiative member and a reason",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "hold-member",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "hold": {
+              "member": "first",
+              "reason": "Owner review pending"
+            }
+          },
+          "volatile": [
+            "/eventId"
+          ],
+          "response": {
+            "eventId": "evt_contract_hold",
+            "initiative": {
+              "authorizedBy": "Stacey",
+              "budget": {
+                "maxActiveMembers": "2",
+                "maxCycles": "20",
+                "maxOpenQuestions": "3"
+              },
+              "deferredQuestionCount": "0",
+              "doneEvidence": [
+                {
+                  "kind": "review",
+                  "statement": "Both members speak contract v2"
+                }
+              ],
+              "holds": [
+                {
+                  "member": "first",
+                  "owner": true,
+                  "reason": "Owner review pending",
+                  "until": []
+                }
+              ],
+              "intentRefs": [],
+              "members": [
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "first",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "first",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "second",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "second",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "description": "Probe the v2 endpoint from outside",
+                  "kind": "candidate",
+                  "name": "probe",
+                  "reviewerGaps": []
+                }
+              ],
+              "milestones": [],
+              "name": "shared",
+              "openQuestions": [],
+              "outcome": "Both members speak contract v2",
+              "ownerDecisions": [],
+              "pendingActions": [],
+              "projects": [
+                "sample"
+              ],
+              "reservations": [],
+              "status": "active",
+              "steeringEnabled": false,
+              "steeringHistoryCount": "0",
+              "taskDispatches": []
+            }
+          }
+        },
+        {
+          "id": "milestone-without-proof",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "milestone": {
+              "member": "first",
+              "milestone": "landed"
+            }
+          },
+          "error": {
+            "message": "milestone requires a member, name and recorded proof",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "milestone-unknown-member",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "milestone": {
+              "member": "ghost",
+              "milestone": "landed",
+              "evidence": [
+                "sample@abc123"
+              ]
+            }
+          },
+          "error": {
+            "message": "milestone requires a member, name and recorded proof",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "record-milestone",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "milestone": {
+              "member": "first",
+              "milestone": "landed",
+              "evidence": [
+                "sample@abc123"
+              ]
+            }
+          },
+          "volatile": [
+            "/eventId"
+          ],
+          "response": {
+            "eventId": "evt_contract_milestone",
+            "initiative": {
+              "authorizedBy": "Stacey",
+              "budget": {
+                "maxActiveMembers": "2",
+                "maxCycles": "20",
+                "maxOpenQuestions": "3"
+              },
+              "deferredQuestionCount": "0",
+              "doneEvidence": [
+                {
+                  "kind": "review",
+                  "statement": "Both members speak contract v2"
+                }
+              ],
+              "holds": [
+                {
+                  "member": "first",
+                  "owner": true,
+                  "reason": "Owner review pending",
+                  "until": []
+                }
+              ],
+              "intentRefs": [],
+              "members": [
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "first",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "first",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "second",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "second",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "description": "Probe the v2 endpoint from outside",
+                  "kind": "candidate",
+                  "name": "probe",
+                  "reviewerGaps": []
+                }
+              ],
+              "milestones": [
+                {
+                  "evidence": [
+                    "sample@abc123"
+                  ],
+                  "member": "first",
+                  "name": "landed"
+                }
+              ],
+              "name": "shared",
+              "openQuestions": [],
+              "outcome": "Both members speak contract v2",
+              "ownerDecisions": [],
+              "pendingActions": [],
+              "projects": [
+                "sample"
+              ],
+              "reservations": [],
+              "status": "active",
+              "steeringEnabled": false,
+              "steeringHistoryCount": "0",
+              "taskDispatches": []
+            }
+          }
+        },
+        {
+          "id": "override-releases-owner-hold",
+          "method": "AdvanceInitiative",
+          "request": {
+            "name": "shared",
+            "member": "first",
+            "operatorOrigin": "dashboard"
+          },
+          "volatile": [
+            "/eventId"
+          ],
+          "response": {
+            "eventId": "evt_contract_override",
+            "initiative": {
+              "authorizedBy": "Stacey",
+              "budget": {
+                "maxActiveMembers": "2",
+                "maxCycles": "20",
+                "maxOpenQuestions": "3"
+              },
+              "deferredQuestionCount": "0",
+              "doneEvidence": [
+                {
+                  "kind": "review",
+                  "statement": "Both members speak contract v2"
+                }
+              ],
+              "holds": [],
+              "intentRefs": [],
+              "members": [
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "first",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "first",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "second",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "second",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "description": "Probe the v2 endpoint from outside",
+                  "kind": "candidate",
+                  "name": "probe",
+                  "reviewerGaps": []
+                }
+              ],
+              "milestones": [
+                {
+                  "evidence": [
+                    "sample@abc123"
+                  ],
+                  "member": "first",
+                  "name": "landed"
+                }
+              ],
+              "name": "shared",
+              "openQuestions": [],
+              "outcome": "Both members speak contract v2",
+              "ownerDecisions": [],
+              "pendingActions": [],
+              "projects": [
+                "sample"
+              ],
+              "reservations": [],
+              "status": "active",
+              "steeringEnabled": true,
+              "steeringHistoryCount": "0",
+              "taskDispatches": []
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "ask",
+      "seed": [
+        "campaigns",
+        "shared"
+      ],
+      "scenarios": [
+        {
+          "id": "ask-without-question",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "ask": {}
+          },
+          "error": {
+            "message": "question must be non-empty",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "ask-outside-member",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "ask": {
+              "question": "Drop v1 now?",
+              "members": [
+                "ghost"
+              ]
+            }
+          },
+          "error": {
+            "message": "decision or finding names a campaign outside the initiative",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "ask-owner",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "ask": {
+              "question": "Should both members drop v1 now?",
+              "members": [
+                "first",
+                "second"
+              ]
+            }
+          },
+          "volatile": [
+            "/eventId"
+          ],
+          "response": {
+            "eventId": "evt_contract_ask",
+            "initiative": {
+              "authorizedBy": "Stacey",
+              "budget": {
+                "maxActiveMembers": "2",
+                "maxCycles": "20",
+                "maxOpenQuestions": "3"
+              },
+              "deferredQuestionCount": "0",
+              "doneEvidence": [
+                {
+                  "kind": "review",
+                  "statement": "Both members speak contract v2"
+                }
+              ],
+              "holds": [],
+              "intentRefs": [],
+              "members": [
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "first",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "first",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "second",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "second",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "description": "Probe the v2 endpoint from outside",
+                  "kind": "candidate",
+                  "name": "probe",
+                  "reviewerGaps": []
+                }
+              ],
+              "milestones": [],
+              "name": "shared",
+              "openQuestions": [
+                {
+                  "id": "question_5fcc8eb0712637d1a25886c7b0cf7dd917a79c63568eca8fd4e2f0ba70e23e42",
+                  "members": [
+                    "first",
+                    "second"
+                  ],
+                  "question": "Should both members drop v1 now?"
+                }
+              ],
+              "outcome": "Both members speak contract v2",
+              "ownerDecisions": [],
+              "pendingActions": [
+                {
+                  "initiative": "shared"
+                }
+              ],
+              "projects": [
+                "sample"
+              ],
+              "reservations": [],
+              "status": "escalated",
+              "steeringEnabled": false,
+              "steeringHistoryCount": "1",
+              "taskDispatches": []
+            }
+          }
+        },
+        {
+          "id": "second-action-refused-while-first-pending",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "relay": {
+              "findingId": "fnd_contract",
+              "members": [
+                "second"
+              ]
+            }
+          },
+          "error": {
+            "message": "an initiative steering operation is already in flight",
+            "status": 9
+          },
+          "unchanged": true
+        }
+      ]
+    },
+    {
+      "id": "relay",
+      "seed": [
+        "campaigns",
+        "shared"
+      ],
+      "scenarios": [
+        {
+          "id": "relay-unknown-finding",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "relay": {
+              "findingId": "fnd_missing",
+              "members": [
+                "second"
+              ]
+            }
+          },
+          "error": {
+            "message": "finding does not belong to this initiative",
+            "status": 5
+          },
+          "unchanged": true
+        },
+        {
+          "id": "relay-outside-member",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "relay": {
+              "findingId": "fnd_contract",
+              "members": [
+                "ghost"
+              ]
+            }
+          },
+          "error": {
+            "message": "decision or finding names a campaign outside the initiative",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "relay-finding",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "relay": {
+              "findingId": "fnd_contract",
+              "members": [
+                "second"
+              ]
+            }
+          },
+          "volatile": [
+            "/eventId"
+          ],
+          "response": {
+            "eventId": "evt_contract_relay",
+            "initiative": {
+              "authorizedBy": "Stacey",
+              "budget": {
+                "maxActiveMembers": "2",
+                "maxCycles": "20",
+                "maxOpenQuestions": "3"
+              },
+              "deferredQuestionCount": "0",
+              "doneEvidence": [
+                {
+                  "kind": "review",
+                  "statement": "Both members speak contract v2"
+                }
+              ],
+              "holds": [],
+              "intentRefs": [],
+              "members": [
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "first",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "first",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "second",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "second",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "description": "Probe the v2 endpoint from outside",
+                  "kind": "candidate",
+                  "name": "probe",
+                  "reviewerGaps": []
+                }
+              ],
+              "milestones": [],
+              "name": "shared",
+              "openQuestions": [],
+              "outcome": "Both members speak contract v2",
+              "ownerDecisions": [],
+              "pendingActions": [
+                {
+                  "initiative": "shared"
+                }
+              ],
+              "projects": [
+                "sample"
+              ],
+              "reservations": [],
+              "status": "active",
+              "steeringEnabled": false,
+              "steeringHistoryCount": "1",
+              "taskDispatches": []
+            }
+          }
+        },
+        {
+          "id": "relayed-finding-reaches-member",
+          "method": "ListFindings",
+          "request": {
+            "initiative": "shared",
+            "member": "second"
+          },
+          "response": {
+            "findings": [
+              {
+                "consumedBy": [],
+                "from": {
+                  "id": "Stacey",
+                  "kind": "owner"
+                },
+                "id": "fnd_contract",
+                "initiative": "shared",
+                "kind": "contract_changed",
+                "recordedAt": "2026-10-02T09:00:00+00:00",
+                "refs": [
+                  "sample@abc123"
+                ],
+                "text": "The v2 response renames traceId to trace_id",
+                "to": [
+                  "first",
+                  "second"
+                ]
+              }
+            ]
+          },
+          "unchanged": true
+        }
+      ]
+    },
+    {
+      "id": "dispatch",
+      "seed": [
+        "campaigns",
+        "shared"
+      ],
+      "scenarios": [
+        {
+          "id": "dispatch-outside-project",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "dispatch": {
+              "project": "elsewhere",
+              "objective": "Probe v2",
+              "member": "probe"
+            }
+          },
+          "error": {
+            "message": "task objective and an initiative project are required",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "dispatch-without-objective",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "dispatch": {
+              "project": "sample",
+              "member": "probe"
+            }
+          },
+          "error": {
+            "message": "task objective and an initiative project are required",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "dispatch-to-campaign-member",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "dispatch": {
+              "project": "sample",
+              "objective": "Probe v2",
+              "member": "first"
+            }
+          },
+          "error": {
+            "message": "dispatch requires a candidate or task slot",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "dispatch-unknown-candidate",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "dispatch": {
+              "project": "sample",
+              "objective": "Probe v2",
+              "member": "ghost"
+            }
+          },
+          "error": {
+            "message": "candidate 'ghost' not found",
+            "status": 5
+          },
+          "unchanged": true
+        },
+        {
+          "id": "dispatch-candidate",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "dispatch": {
+              "project": "sample",
+              "objective": "Probe the v2 endpoint",
+              "member": "probe"
+            }
+          },
+          "volatile": [
+            "/eventId"
+          ],
+          "response": {
+            "eventId": "evt_contract_dispatch",
+            "initiative": {
+              "authorizedBy": "Stacey",
+              "budget": {
+                "maxActiveMembers": "2",
+                "maxCycles": "20",
+                "maxOpenQuestions": "3"
+              },
+              "deferredQuestionCount": "0",
+              "doneEvidence": [
+                {
+                  "kind": "review",
+                  "statement": "Both members speak contract v2"
+                }
+              ],
+              "holds": [],
+              "intentRefs": [],
+              "members": [
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "first",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "first",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "second",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "second",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "description": "Probe the v2 endpoint from outside",
+                  "kind": "task",
+                  "name": "probe",
+                  "reviewerGaps": []
+                }
+              ],
+              "milestones": [],
+              "name": "shared",
+              "openQuestions": [],
+              "outcome": "Both members speak contract v2",
+              "ownerDecisions": [],
+              "pendingActions": [
+                {
+                  "initiative": "shared"
+                }
+              ],
+              "projects": [
+                "sample"
+              ],
+              "reservations": [
+                {
+                  "kind": "task",
+                  "member": "probe"
+                }
+              ],
+              "status": "active",
+              "steeringEnabled": false,
+              "steeringHistoryCount": "1",
+              "taskDispatches": []
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "hold-until",
+      "seed": [
+        "campaigns",
+        "shared"
+      ],
+      "scenarios": [
+        {
+          "id": "hold-until-own-milestone",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "hold": {
+              "member": "second",
+              "until": [
+                "second:landed"
+              ],
+              "reason": "Wait for the API"
+            }
+          },
+          "error": {
+            "message": "hold prerequisite must name another member's milestone",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "hold-until-unknown-member",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "hold": {
+              "member": "second",
+              "until": [
+                "ghost:landed"
+              ],
+              "reason": "Wait for the API"
+            }
+          },
+          "error": {
+            "message": "hold prerequisite must name another member's milestone",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "hold-until-milestone",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "hold": {
+              "member": "second",
+              "until": [
+                "first:landed"
+              ],
+              "reason": "Wait for the API"
+            }
+          },
+          "volatile": [
+            "/eventId"
+          ],
+          "response": {
+            "eventId": "evt_contract_hold_until",
+            "initiative": {
+              "authorizedBy": "Stacey",
+              "budget": {
+                "maxActiveMembers": "2",
+                "maxCycles": "20",
+                "maxOpenQuestions": "3"
+              },
+              "deferredQuestionCount": "0",
+              "doneEvidence": [
+                {
+                  "kind": "review",
+                  "statement": "Both members speak contract v2"
+                }
+              ],
+              "holds": [
+                {
+                  "member": "second",
+                  "owner": true,
+                  "reason": "Wait for the API",
+                  "until": [
+                    "first:landed"
+                  ]
+                }
+              ],
+              "intentRefs": [],
+              "members": [
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "first",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "first",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "second",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "second",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "description": "Probe the v2 endpoint from outside",
+                  "kind": "candidate",
+                  "name": "probe",
+                  "reviewerGaps": []
+                }
+              ],
+              "milestones": [],
+              "name": "shared",
+              "openQuestions": [],
+              "outcome": "Both members speak contract v2",
+              "ownerDecisions": [],
+              "pendingActions": [
+                {
+                  "initiative": "shared"
+                }
+              ],
+              "projects": [
+                "sample"
+              ],
+              "reservations": [],
+              "status": "active",
+              "steeringEnabled": false,
+              "steeringHistoryCount": "1",
+              "taskDispatches": []
+            }
+          }
+        },
+        {
+          "id": "override-keeps-conditional-hold",
+          "method": "AdvanceInitiative",
+          "request": {
+            "name": "shared",
+            "member": "second",
+            "operatorOrigin": "dashboard"
+          },
+          "volatile": [
+            "/eventId"
+          ],
+          "response": {
+            "eventId": "evt_contract_override",
+            "initiative": {
+              "authorizedBy": "Stacey",
+              "budget": {
+                "maxActiveMembers": "2",
+                "maxCycles": "20",
+                "maxOpenQuestions": "3"
+              },
+              "deferredQuestionCount": "0",
+              "doneEvidence": [
+                {
+                  "kind": "review",
+                  "statement": "Both members speak contract v2"
+                }
+              ],
+              "holds": [
+                {
+                  "member": "second",
+                  "owner": true,
+                  "reason": "Wait for the API",
+                  "until": [
+                    "first:landed"
+                  ]
+                }
+              ],
+              "intentRefs": [],
+              "members": [
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "first",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "first",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "second",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "second",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "description": "Probe the v2 endpoint from outside",
+                  "kind": "candidate",
+                  "name": "probe",
+                  "reviewerGaps": []
+                }
+              ],
+              "milestones": [],
+              "name": "shared",
+              "openQuestions": [],
+              "outcome": "Both members speak contract v2",
+              "ownerDecisions": [],
+              "pendingActions": [
+                {
+                  "initiative": "shared"
+                }
+              ],
+              "projects": [
+                "sample"
+              ],
+              "reservations": [],
+              "status": "active",
+              "steeringEnabled": true,
+              "steeringHistoryCount": "1",
+              "taskDispatches": []
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "brief",
+      "seed": [
+        "campaigns",
+        "shared"
+      ],
+      "scenarios": [
+        {
+          "id": "get-brief-before-any",
+          "method": "GetInitiativeBrief",
+          "request": {
+            "name": "shared"
+          },
+          "error": {
+            "message": "initiative 'shared' has no brief",
+            "status": 5
+          },
+          "unchanged": true
+        },
+        {
+          "id": "set-brief-unknown-initiative",
+          "method": "SetInitiativeBrief",
+          "request": {
+            "name": "missing",
+            "content": "Ship v2.\n"
+          },
+          "error": {
+            "message": "initiative 'missing' not found",
+            "status": 5
+          },
+          "unchanged": true
+        },
+        {
+          "id": "set-brief",
+          "method": "SetInitiativeBrief",
+          "request": {
+            "name": "shared",
+            "content": "# Brief\n\nShip contract v2 to both members.\n"
+          },
+          "response": {
+            "brief": {
+              "hash": "cc5e84e0dab789b00f7a5a00d2cac7adb9a19ced7ff32fed3deca9a276ded48d"
+            },
+            "content": "# Brief\n\nShip contract v2 to both members.\n"
+          }
+        },
+        {
+          "id": "get-brief",
+          "method": "GetInitiativeBrief",
+          "request": {
+            "name": "shared"
+          },
+          "response": {
+            "brief": {
+              "hash": "cc5e84e0dab789b00f7a5a00d2cac7adb9a19ced7ff32fed3deca9a276ded48d"
+            },
+            "content": "# Brief\n\nShip contract v2 to both members.\n"
+          },
+          "unchanged": true
+        },
+        {
+          "id": "initiative-shows-brief-hash",
+          "method": "GetInitiative",
+          "request": {
+            "name": "shared"
+          },
+          "response": {
+            "initiative": {
+              "authorizedBy": "Stacey",
+              "brief": {
+                "hash": "cc5e84e0dab789b00f7a5a00d2cac7adb9a19ced7ff32fed3deca9a276ded48d"
+              },
+              "budget": {
+                "maxActiveMembers": "2",
+                "maxCycles": "20",
+                "maxOpenQuestions": "3"
+              },
+              "deferredQuestionCount": "0",
+              "doneEvidence": [
+                {
+                  "kind": "review",
+                  "statement": "Both members speak contract v2"
+                }
+              ],
+              "holds": [],
+              "intentRefs": [],
+              "members": [
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "first",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "first",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "second",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "second",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "description": "Probe the v2 endpoint from outside",
+                  "kind": "candidate",
+                  "name": "probe",
+                  "reviewerGaps": []
+                }
+              ],
+              "milestones": [],
+              "name": "shared",
+              "openQuestions": [],
+              "outcome": "Both members speak contract v2",
+              "ownerDecisions": [],
+              "pendingActions": [],
+              "projects": [
+                "sample"
+              ],
+              "reservations": [],
+              "status": "active",
+              "steeringEnabled": false,
+              "steeringHistoryCount": "0",
+              "taskDispatches": []
+            }
+          },
+          "unchanged": true
+        },
+        {
+          "id": "replace-brief",
+          "method": "SetInitiativeBrief",
+          "request": {
+            "name": "shared",
+            "content": "# Brief\n\nRetire v1 after both members ship v2.\n"
+          },
+          "response": {
+            "brief": {
+              "hash": "b2f69b5327cf80477f6e683771f94b34a4951b9852327926d7b8d397d3ec006b"
+            },
+            "content": "# Brief\n\nRetire v1 after both members ship v2.\n"
+          }
+        }
+      ]
+    },
+    {
+      "id": "brief-drift",
+      "seed": [
+        "campaigns",
+        "shared",
+        "drifted-brief"
+      ],
+      "scenarios": [
+        {
+          "id": "get-drifted-brief",
+          "method": "GetInitiativeBrief",
+          "request": {
+            "name": "shared"
+          },
+          "error": {
+            "message": "initiative brief content differs from its recorded hash",
+            "status": 9
+          },
+          "unchanged": true
+        },
+        {
+          "id": "set-brief-over-drift",
+          "method": "SetInitiativeBrief",
+          "request": {
+            "name": "shared",
+            "content": "Recorded brief.\n"
+          },
+          "response": {
+            "brief": {
+              "hash": "b8ed1cab9bc8784ae32610679166d4e4f618e02be57aebcb820fd76f730c0827"
+            },
+            "content": "Recorded brief.\n"
+          }
+        },
+        {
+          "id": "get-restored-brief",
+          "method": "GetInitiativeBrief",
+          "request": {
+            "name": "shared"
+          },
+          "response": {
+            "brief": {
+              "hash": "b8ed1cab9bc8784ae32610679166d4e4f618e02be57aebcb820fd76f730c0827"
+            },
+            "content": "Recorded brief.\n"
+          },
+          "unchanged": true
+        }
+      ]
+    },
+    {
+      "id": "findings",
+      "seed": [
+        "campaigns",
+        "shared"
+      ],
+      "scenarios": [
+        {
+          "id": "add-finding",
+          "method": "AddFinding",
+          "request": {
+            "definitionJson": "{\"id\":\"fnd_regression\",\"initiative\":\"shared\",\"from\":{\"kind\":\"owner\",\"id\":\"Stacey\"},\"to\":[\"second\"],\"kind\":\"regression\",\"text\":\"v1 clients lose the trace header\",\"refs\":[\"sample@def456\"],\"recorded_at\":\"2026-10-03T09:00:00Z\"}"
+          },
+          "response": {
+            "finding": {
+              "consumedBy": [],
+              "from": {
+                "id": "Stacey",
+                "kind": "owner"
+              },
+              "id": "fnd_regression",
+              "initiative": "shared",
+              "kind": "regression",
+              "recordedAt": "2026-10-03T09:00:00+00:00",
+              "refs": [
+                "sample@def456"
+              ],
+              "text": "v1 clients lose the trace header",
+              "to": [
+                "second"
+              ]
+            }
+          }
+        },
+        {
+          "id": "add-broadcast-finding",
+          "method": "AddFinding",
+          "request": {
+            "definitionJson": "{\"id\":\"fnd_note\",\"initiative\":\"shared\",\"from\":{\"kind\":\"owner\",\"id\":\"Stacey\"},\"kind\":\"owner_note\",\"text\":\"Release both members together\",\"recorded_at\":\"2026-10-04T09:00:00Z\"}"
+          },
+          "response": {
+            "finding": {
+              "consumedBy": [],
+              "from": {
+                "id": "Stacey",
+                "kind": "owner"
+              },
+              "id": "fnd_note",
+              "initiative": "shared",
+              "kind": "owner_note",
+              "recordedAt": "2026-10-04T09:00:00+00:00",
+              "refs": [],
+              "text": "Release both members together",
+              "to": []
+            }
+          }
+        },
+        {
+          "id": "list-findings-for-member",
+          "method": "ListFindings",
+          "request": {
+            "initiative": "shared",
+            "member": "second"
+          },
+          "response": {
+            "findings": [
+              {
+                "consumedBy": [],
+                "from": {
+                  "id": "Stacey",
+                  "kind": "owner"
+                },
+                "id": "fnd_note",
+                "initiative": "shared",
+                "kind": "owner_note",
+                "recordedAt": "2026-10-04T09:00:00+00:00",
+                "refs": [],
+                "text": "Release both members together",
+                "to": []
+              },
+              {
+                "consumedBy": [],
+                "from": {
+                  "id": "Stacey",
+                  "kind": "owner"
+                },
+                "id": "fnd_regression",
+                "initiative": "shared",
+                "kind": "regression",
+                "recordedAt": "2026-10-03T09:00:00+00:00",
+                "refs": [
+                  "sample@def456"
+                ],
+                "text": "v1 clients lose the trace header",
+                "to": [
+                  "second"
+                ]
+              }
+            ]
+          },
+          "unchanged": true
+        },
+        {
+          "id": "list-all-findings",
+          "method": "ListFindings",
+          "request": {
+            "initiative": "shared"
+          },
+          "response": {
+            "findings": [
+              {
+                "consumedBy": [],
+                "from": {
+                  "id": "Stacey",
+                  "kind": "owner"
+                },
+                "id": "fnd_note",
+                "initiative": "shared",
+                "kind": "owner_note",
+                "recordedAt": "2026-10-04T09:00:00+00:00",
+                "refs": [],
+                "text": "Release both members together",
+                "to": []
+              },
+              {
+                "consumedBy": [],
+                "from": {
+                  "id": "Stacey",
+                  "kind": "owner"
+                },
+                "id": "fnd_regression",
+                "initiative": "shared",
+                "kind": "regression",
+                "recordedAt": "2026-10-03T09:00:00+00:00",
+                "refs": [
+                  "sample@def456"
+                ],
+                "text": "v1 clients lose the trace header",
+                "to": [
+                  "second"
+                ]
+              },
+              {
+                "consumedBy": [],
+                "from": {
+                  "id": "Stacey",
+                  "kind": "owner"
+                },
+                "id": "fnd_contract",
+                "initiative": "shared",
+                "kind": "contract_changed",
+                "recordedAt": "2026-10-02T09:00:00+00:00",
+                "refs": [
+                  "sample@abc123"
+                ],
+                "text": "The v2 response renames traceId to trace_id",
+                "to": [
+                  "first"
+                ]
+              }
+            ]
+          },
+          "unchanged": true
+        },
+        {
+          "id": "finding-outside-member",
+          "method": "AddFinding",
+          "request": {
+            "definitionJson": "{\"id\":\"fnd_outside\",\"initiative\":\"shared\",\"from\":{\"kind\":\"owner\",\"id\":\"Stacey\"},\"to\":[\"ghost\"],\"kind\":\"blocker\",\"text\":\"Blocked\"}"
+          },
+          "error": {
+            "message": "decision or finding names a campaign outside the initiative",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "finding-duplicate-id",
+          "method": "AddFinding",
+          "request": {
+            "definitionJson": "{\"id\":\"fnd_regression\",\"initiative\":\"shared\",\"from\":{\"kind\":\"owner\",\"id\":\"Stacey\"},\"kind\":\"evidence\",\"text\":\"Duplicate\"}"
+          },
+          "error": {
+            "message": "finding 'fnd_regression' already exists",
+            "status": 6
+          },
+          "unchanged": true
+        },
+        {
+          "id": "finding-without-text",
+          "method": "AddFinding",
+          "request": {
+            "definitionJson": "{\"id\":\"fnd_empty\",\"initiative\":\"shared\",\"from\":{\"kind\":\"owner\",\"id\":\"Stacey\"},\"kind\":\"evidence\",\"text\":\" \"}"
+          },
+          "error": {
+            "message": "finding id, text and source must be non-empty",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "finding-malformed",
+          "method": "AddFinding",
+          "request": {
+            "definitionJson": "{\"id\":\"fnd_bad\""
+          },
+          "error": {
+            "message": "invalid finding definition: EOF while parsing an object at line 1 column 15",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "finding-unknown-initiative",
+          "method": "AddFinding",
+          "request": {
+            "definitionJson": "{\"id\":\"fnd_lost\",\"initiative\":\"missing\",\"from\":{\"kind\":\"owner\",\"id\":\"Stacey\"},\"kind\":\"evidence\",\"text\":\"Lost\"}"
+          },
+          "error": {
+            "message": "initiative 'missing' not found",
+            "status": 5
+          },
+          "unchanged": true
+        },
+        {
+          "id": "list-unknown-initiative",
+          "method": "ListFindings",
+          "request": {
+            "initiative": "missing"
+          },
+          "error": {
+            "message": "initiative 'missing' not found",
+            "status": 5
+          },
+          "unchanged": true
+        }
+      ]
+    },
+    {
+      "id": "add",
+      "seed": [
+        "campaigns"
+      ],
+      "scenarios": [
+        {
+          "id": "add-malformed",
+          "method": "AddInitiative",
+          "request": {
+            "definitionJson": "{\"name\":\"shared\""
+          },
+          "error": {
+            "message": "invalid initiative definition: EOF while parsing an object at line 1 column 16",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "add-unregistered-project",
+          "method": "AddInitiative",
+          "request": {
+            "definitionJson": "{\"name\":\"shared\",\"outcome\":\"Both members speak contract v2\",\"projects\":[\"elsewhere\"],\"authorized_by\":\"Stacey\",\"members\":[{\"kind\":\"campaign\",\"name\":\"first\"},{\"kind\":\"campaign\",\"name\":\"second\"}],\"done_evidence\":[{\"kind\":\"review\",\"statement\":\"Both members speak contract v2\"}]}"
+          },
+          "error": {
+            "message": "project 'elsewhere' is not registered",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "add-unknown-member",
+          "method": "AddInitiative",
+          "request": {
+            "definitionJson": "{\"name\":\"shared\",\"outcome\":\"Both members speak contract v2\",\"projects\":[\"sample\"],\"authorized_by\":\"Stacey\",\"members\":[{\"kind\":\"campaign\",\"name\":\"ghost\"}],\"done_evidence\":[{\"kind\":\"review\",\"statement\":\"Both members speak contract v2\"}]}"
+          },
+          "error": {
+            "message": "member campaign 'ghost' not found",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "add-with-brief",
+          "method": "AddInitiative",
+          "request": {
+            "definitionJson": "{\"name\":\"shared\",\"outcome\":\"Both members speak contract v2\",\"projects\":[\"sample\"],\"authorized_by\":\"Stacey\",\"members\":[{\"kind\":\"campaign\",\"name\":\"first\"},{\"kind\":\"campaign\",\"name\":\"second\"}],\"done_evidence\":[{\"kind\":\"review\",\"statement\":\"Both members speak contract v2\"}],\"brief\":{\"path\":\"/sandbox/BRIEF.md\",\"hash\":\"0\"}}"
+          },
+          "error": {
+            "message": "initiative definitions must omit brief; import it with 'foundry initiative brief set'",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "add-zero-budget",
+          "method": "AddInitiative",
+          "request": {
+            "definitionJson": "{\"name\":\"shared\",\"outcome\":\"Both members speak contract v2\",\"projects\":[\"sample\"],\"authorized_by\":\"Stacey\",\"members\":[{\"kind\":\"campaign\",\"name\":\"first\"},{\"kind\":\"campaign\",\"name\":\"second\"}],\"done_evidence\":[{\"kind\":\"review\",\"statement\":\"Both members speak contract v2\"}],\"budget\":{\"max_cycles\":0}}"
+          },
+          "error": {
+            "message": "initiative budgets must be greater than zero",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "add-initiative",
+          "method": "AddInitiative",
+          "request": {
+            "definitionJson": "{\"name\":\"shared\",\"outcome\":\"Both members speak contract v2\",\"projects\":[\"sample\"],\"authorized_by\":\"Stacey\",\"members\":[{\"kind\":\"campaign\",\"name\":\"first\"},{\"kind\":\"campaign\",\"name\":\"second\"}],\"done_evidence\":[{\"kind\":\"review\",\"statement\":\"Both members speak contract v2\"}]}"
+          },
+          "response": {
+            "initiative": {
+              "authorizedBy": "Stacey",
+              "budget": {
+                "maxActiveMembers": "2",
+                "maxCycles": "20",
+                "maxOpenQuestions": "3"
+              },
+              "deferredQuestionCount": "0",
+              "doneEvidence": [
+                {
+                  "kind": "review",
+                  "statement": "Both members speak contract v2"
+                }
+              ],
+              "holds": [],
+              "intentRefs": [],
+              "members": [
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "first",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "first",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "second",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "second",
+                  "project": "sample",
+                  "reviewerGaps": []
+                }
+              ],
+              "milestones": [],
+              "name": "shared",
+              "openQuestions": [],
+              "outcome": "Both members speak contract v2",
+              "ownerDecisions": [],
+              "pendingActions": [],
+              "projects": [
+                "sample"
+              ],
+              "reservations": [],
+              "status": "active",
+              "steeringEnabled": false,
+              "steeringHistoryCount": "0",
+              "taskDispatches": []
+            }
+          }
+        },
+        {
+          "id": "add-duplicate",
+          "method": "AddInitiative",
+          "request": {
+            "definitionJson": "{\"name\":\"shared\",\"outcome\":\"Both members speak contract v2\",\"projects\":[\"sample\"],\"authorized_by\":\"Stacey\",\"members\":[{\"kind\":\"campaign\",\"name\":\"first\"},{\"kind\":\"campaign\",\"name\":\"second\"}],\"done_evidence\":[{\"kind\":\"review\",\"statement\":\"Both members speak contract v2\"}]}"
+          },
+          "error": {
+            "message": "initiative 'shared' already exists",
+            "status": 6
+          },
+          "unchanged": true
+        },
+        {
+          "id": "add-member-of-another-initiative",
+          "method": "AddInitiative",
+          "request": {
+            "definitionJson": "{\"name\":\"other\",\"outcome\":\"Both members speak contract v2\",\"projects\":[\"sample\"],\"authorized_by\":\"Stacey\",\"members\":[{\"kind\":\"campaign\",\"name\":\"first\"},{\"kind\":\"campaign\",\"name\":\"second\"}],\"done_evidence\":[{\"kind\":\"review\",\"statement\":\"Both members speak contract v2\"}]}"
+          },
+          "error": {
+            "message": "member 'first' already belongs to an initiative",
+            "status": 3
+          },
+          "unchanged": true
+        }
+      ]
+    },
+    {
+      "id": "derive",
+      "seed": [
+        "tracker"
+      ],
+      "scenarios": [
+        {
+          "id": "derive-unregistered-target",
+          "method": "DeriveInitiative",
+          "request": {
+            "fromRef": "et:goal:contract-v2",
+            "projects": [
+              "elsewhere"
+            ],
+            "authorizedBy": "Stacey",
+            "sourceRepo": "/sandbox/tracker",
+            "integrationGates": [
+              {
+                "kind": "gate",
+                "command": "scripts/contract-check.sh",
+                "host": "build-host",
+                "required": true,
+                "artifacts": [
+                  "contract-report.json"
+                ]
+              }
+            ]
+          },
+          "error": {
+            "message": "derive requires registered target projects",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "derive-review-as-integration-gate",
+          "method": "DeriveInitiative",
+          "request": {
+            "fromRef": "et:goal:contract-v2",
+            "projects": [
+              "sample"
+            ],
+            "authorizedBy": "Stacey",
+            "sourceRepo": "/sandbox/tracker",
+            "integrationGates": [
+              {
+                "kind": "review",
+                "statement": "Cannot replace Tracker reviews"
+              }
+            ]
+          },
+          "error": {
+            "message": "integration_gates accepts only gate declarations with a command; Tracker supplies outcome reviews",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "derive-without-owner",
+          "method": "DeriveInitiative",
+          "request": {
+            "fromRef": "et:goal:contract-v2",
+            "projects": [
+              "sample"
+            ],
+            "sourceRepo": "/sandbox/tracker",
+            "integrationGates": [
+              {
+                "kind": "gate",
+                "command": "scripts/contract-check.sh",
+                "host": "build-host",
+                "required": true,
+                "artifacts": [
+                  "contract-report.json"
+                ]
+              }
+            ]
+          },
+          "error": {
+            "message": "name the authorizing owner",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "derive-malformed-reference",
+          "method": "DeriveInitiative",
+          "request": {
+            "fromRef": "goal:contract-v2",
+            "projects": [
+              "sample"
+            ],
+            "authorizedBy": "Stacey",
+            "sourceRepo": "/sandbox/tracker",
+            "integrationGates": [
+              {
+                "kind": "gate",
+                "command": "scripts/contract-check.sh",
+                "host": "build-host",
+                "required": true,
+                "artifacts": [
+                  "contract-report.json"
+                ]
+              }
+            ]
+          },
+          "error": {
+            "message": "--from must be et:goal:<id> or et:journey:<id>",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "derive-unknown-goal",
+          "method": "DeriveInitiative",
+          "request": {
+            "fromRef": "et:goal:missing",
+            "projects": [
+              "sample"
+            ],
+            "authorizedBy": "Stacey",
+            "sourceRepo": "/sandbox/tracker",
+            "integrationGates": [
+              {
+                "kind": "gate",
+                "command": "scripts/contract-check.sh",
+                "host": "build-host",
+                "required": true,
+                "artifacts": [
+                  "contract-report.json"
+                ]
+              }
+            ]
+          },
+          "error": {
+            "message": "et goal 'missing' not found",
+            "status": 5
+          },
+          "unchanged": true
+        },
+        {
+          "id": "derive-goal",
+          "method": "DeriveInitiative",
+          "request": {
+            "fromRef": "et:goal:contract-v2",
+            "projects": [
+              "sample"
+            ],
+            "authorizedBy": "Stacey",
+            "sourceRepo": "/sandbox/tracker",
+            "integrationGates": [
+              {
+                "kind": "gate",
+                "command": "scripts/contract-check.sh",
+                "host": "build-host",
+                "required": true,
+                "artifacts": [
+                  "contract-report.json"
+                ]
+              }
+            ]
+          },
+          "response": {
+            "initiative": {
+              "authorizedBy": "Stacey",
+              "budget": {
+                "maxActiveMembers": "2",
+                "maxCycles": "20",
+                "maxOpenQuestions": "3"
+              },
+              "deferredQuestionCount": "0",
+              "deriveSource": {
+                "from": "et:goal:contract-v2",
+                "repo": "/sandbox/tracker"
+              },
+              "doneEvidence": [
+                {
+                  "artifacts": [
+                    "contract-report.json"
+                  ],
+                  "command": "scripts/contract-check.sh",
+                  "host": "build-host",
+                  "kind": "gate",
+                  "required": true
+                },
+                {
+                  "kind": "review",
+                  "statement": "No client depends on v1"
+                },
+                {
+                  "kind": "review",
+                  "statement": "Serve contract v2 from the API"
+                }
+              ],
+              "holds": [],
+              "intentRefs": [
+                "et:goal:contract-v2",
+                "et:interaction:serve-v2"
+              ],
+              "members": [
+                {
+                  "after": [],
+                  "description": "Serve contract v2 from the API",
+                  "intentRef": "et:interaction:serve-v2",
+                  "intentState": "create",
+                  "kind": "candidate",
+                  "name": "serve-v2",
+                  "reviewerGaps": []
+                }
+              ],
+              "milestones": [],
+              "name": "contract-v2",
+              "openQuestions": [],
+              "outcome": "Both members speak contract v2\nSuccess criteria: No client depends on v1",
+              "ownerDecisions": [],
+              "pendingActions": [],
+              "projects": [
+                "sample"
+              ],
+              "reservations": [],
+              "status": "staged",
+              "steeringEnabled": false,
+              "steeringHistoryCount": "0",
+              "taskDispatches": []
+            }
+          }
+        },
+        {
+          "id": "derive-again",
+          "method": "DeriveInitiative",
+          "request": {
+            "fromRef": "et:goal:contract-v2",
+            "projects": [
+              "sample"
+            ],
+            "authorizedBy": "Stacey",
+            "sourceRepo": "/sandbox/tracker",
+            "integrationGates": [
+              {
+                "kind": "gate",
+                "command": "scripts/contract-check.sh",
+                "host": "build-host",
+                "required": true,
+                "artifacts": [
+                  "contract-report.json"
+                ]
+              }
+            ]
+          },
+          "error": {
+            "message": "initiative 'contract-v2' already exists",
+            "status": 6
+          },
+          "unchanged": true
+        }
+      ]
+    },
+    {
+      "id": "complete",
+      "seed": [
+        "campaigns",
+        "shared",
+        "done-proposal"
+      ],
+      "scenarios": [
+        {
+          "id": "complete-without-reason",
+          "method": "CompleteInitiative",
+          "request": {
+            "name": "shared"
+          },
+          "error": {
+            "message": "completion confirmation requires a reason",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "complete-with-proposal",
+          "method": "CompleteInitiative",
+          "request": {
+            "name": "shared",
+            "reason": "Owner verified contract v2 on trunk"
+          },
+          "response": {
+            "initiative": {
+              "authorizedBy": "Stacey",
+              "budget": {
+                "maxActiveMembers": "2",
+                "maxCycles": "20",
+                "maxOpenQuestions": "3"
+              },
+              "completionConfirmation": {
+                "proposalId": "done_contract",
+                "reason": "Owner verified contract v2 on trunk"
+              },
+              "completionProposal": {
+                "id": "done_contract",
+                "reviews": [
+                  {
+                    "affirmed": true,
+                    "evidence": [
+                      "sample@trunk"
+                    ],
+                    "statement": "Both members speak contract v2"
+                  }
+                ]
+              },
+              "deferredQuestionCount": "0",
+              "doneEvidence": [
+                {
+                  "kind": "review",
+                  "statement": "Both members speak contract v2"
+                }
+              ],
+              "holds": [],
+              "intentRefs": [],
+              "members": [
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "first",
+                    "project": "sample",
+                    "status": "cancelled"
+                  },
+                  "kind": "campaign",
+                  "name": "first",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "second",
+                    "project": "sample",
+                    "status": "cancelled"
+                  },
+                  "kind": "campaign",
+                  "name": "second",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "description": "Probe the v2 endpoint from outside",
+                  "kind": "candidate",
+                  "name": "probe",
+                  "reviewerGaps": []
+                }
+              ],
+              "milestones": [],
+              "name": "shared",
+              "openQuestions": [],
+              "outcome": "Both members speak contract v2",
+              "ownerDecisions": [
+                {
+                  "authorizedBy": "Stacey",
+                  "decision": "Owner verified contract v2 on trunk",
+                  "members": [
+                    "first",
+                    "second",
+                    "probe"
+                  ]
+                }
+              ],
+              "pendingActions": [],
+              "projects": [
+                "sample"
+              ],
+              "reservations": [],
+              "status": "completed",
+              "steeringEnabled": false,
+              "steeringHistoryCount": "0",
+              "taskDispatches": []
+            }
+          }
+        },
+        {
+          "id": "complete-retry",
+          "method": "CompleteInitiative",
+          "request": {
+            "name": "shared",
+            "reason": "Owner retried"
+          },
+          "response": {
+            "initiative": {
+              "authorizedBy": "Stacey",
+              "budget": {
+                "maxActiveMembers": "2",
+                "maxCycles": "20",
+                "maxOpenQuestions": "3"
+              },
+              "completionConfirmation": {
+                "proposalId": "done_contract",
+                "reason": "Owner verified contract v2 on trunk"
+              },
+              "completionProposal": {
+                "id": "done_contract",
+                "reviews": [
+                  {
+                    "affirmed": true,
+                    "evidence": [
+                      "sample@trunk"
+                    ],
+                    "statement": "Both members speak contract v2"
+                  }
+                ]
+              },
+              "deferredQuestionCount": "0",
+              "doneEvidence": [
+                {
+                  "kind": "review",
+                  "statement": "Both members speak contract v2"
+                }
+              ],
+              "holds": [],
+              "intentRefs": [],
+              "members": [
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "first",
+                    "project": "sample",
+                    "status": "cancelled"
+                  },
+                  "kind": "campaign",
+                  "name": "first",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "second",
+                    "project": "sample",
+                    "status": "cancelled"
+                  },
+                  "kind": "campaign",
+                  "name": "second",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "description": "Probe the v2 endpoint from outside",
+                  "kind": "candidate",
+                  "name": "probe",
+                  "reviewerGaps": []
+                }
+              ],
+              "milestones": [],
+              "name": "shared",
+              "openQuestions": [],
+              "outcome": "Both members speak contract v2",
+              "ownerDecisions": [
+                {
+                  "authorizedBy": "Stacey",
+                  "decision": "Owner verified contract v2 on trunk",
+                  "members": [
+                    "first",
+                    "second",
+                    "probe"
+                  ]
+                }
+              ],
+              "pendingActions": [],
+              "projects": [
+                "sample"
+              ],
+              "reservations": [],
+              "status": "completed",
+              "steeringEnabled": false,
+              "steeringHistoryCount": "0",
+              "taskDispatches": []
+            }
+          },
+          "unchanged": true
+        },
+        {
+          "id": "cancel-after-complete",
+          "method": "CancelInitiative",
+          "request": {
+            "name": "shared",
+            "reason": "Too late"
+          },
+          "error": {
+            "message": "a completed initiative cannot be cancelled",
+            "status": 9
+          },
+          "unchanged": true
+        },
+        {
+          "id": "steer-after-complete",
+          "method": "AdvanceInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard"
+          },
+          "error": {
+            "message": "a terminal initiative cannot steer",
+            "status": 9
+          },
+          "unchanged": true
+        },
+        {
+          "id": "act-after-complete",
+          "method": "ActOnInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard",
+            "hold": {
+              "member": "first",
+              "reason": "Too late"
+            }
+          },
+          "error": {
+            "message": "owner actions require an authorized, nonterminal initiative",
+            "status": 9
+          },
+          "unchanged": true
+        },
+        {
+          "id": "decide-after-complete",
+          "method": "DecideInitiative",
+          "request": {
+            "name": "shared",
+            "decision": "Too late"
+          },
+          "error": {
+            "message": "initiative 'shared' is terminal",
+            "status": 9
+          },
+          "unchanged": true
+        }
+      ]
+    },
+    {
+      "id": "cancel",
+      "seed": [
+        "campaigns",
+        "shared"
+      ],
+      "scenarios": [
+        {
+          "id": "complete-without-proposal",
+          "method": "CompleteInitiative",
+          "request": {
+            "name": "shared",
+            "reason": "Looks done"
+          },
+          "error": {
+            "message": "initiative has no done proposal awaiting owner confirmation; advance it to review outcome evidence",
+            "status": 9
+          },
+          "unchanged": true
+        },
+        {
+          "id": "cancel-without-reason",
+          "method": "CancelInitiative",
+          "request": {
+            "name": "shared",
+            "reason": " "
+          },
+          "error": {
+            "message": "cancellation reason must be non-empty",
+            "status": 3
+          },
+          "unchanged": true
+        },
+        {
+          "id": "cancel",
+          "method": "CancelInitiative",
+          "request": {
+            "name": "shared",
+            "reason": "Contract v2 is shelved"
+          },
+          "response": {
+            "initiative": {
+              "authorizedBy": "Stacey",
+              "budget": {
+                "maxActiveMembers": "2",
+                "maxCycles": "20",
+                "maxOpenQuestions": "3"
+              },
+              "deferredQuestionCount": "0",
+              "doneEvidence": [
+                {
+                  "kind": "review",
+                  "statement": "Both members speak contract v2"
+                }
+              ],
+              "holds": [],
+              "intentRefs": [],
+              "members": [
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "first",
+                    "project": "sample",
+                    "status": "cancelled"
+                  },
+                  "kind": "campaign",
+                  "name": "first",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "second",
+                    "project": "sample",
+                    "status": "cancelled"
+                  },
+                  "kind": "campaign",
+                  "name": "second",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "description": "Probe the v2 endpoint from outside",
+                  "kind": "candidate",
+                  "name": "probe",
+                  "reviewerGaps": []
+                }
+              ],
+              "milestones": [],
+              "name": "shared",
+              "openQuestions": [],
+              "outcome": "Both members speak contract v2",
+              "ownerDecisions": [],
+              "pendingActions": [],
+              "projects": [
+                "sample"
+              ],
+              "reservations": [],
+              "status": "cancelled",
+              "steeringEnabled": false,
+              "steeringHistoryCount": "0",
+              "taskDispatches": []
+            }
+          }
+        },
+        {
+          "id": "cancel-retry",
+          "method": "CancelInitiative",
+          "request": {
+            "name": "shared",
+            "reason": "Owner retried"
+          },
+          "response": {
+            "initiative": {
+              "authorizedBy": "Stacey",
+              "budget": {
+                "maxActiveMembers": "2",
+                "maxCycles": "20",
+                "maxOpenQuestions": "3"
+              },
+              "deferredQuestionCount": "0",
+              "doneEvidence": [
+                {
+                  "kind": "review",
+                  "statement": "Both members speak contract v2"
+                }
+              ],
+              "holds": [],
+              "intentRefs": [],
+              "members": [
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "first",
+                    "project": "sample",
+                    "status": "cancelled"
+                  },
+                  "kind": "campaign",
+                  "name": "first",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "second",
+                    "project": "sample",
+                    "status": "cancelled"
+                  },
+                  "kind": "campaign",
+                  "name": "second",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "description": "Probe the v2 endpoint from outside",
+                  "kind": "candidate",
+                  "name": "probe",
+                  "reviewerGaps": []
+                }
+              ],
+              "milestones": [],
+              "name": "shared",
+              "openQuestions": [],
+              "outcome": "Both members speak contract v2",
+              "ownerDecisions": [],
+              "pendingActions": [],
+              "projects": [
+                "sample"
+              ],
+              "reservations": [],
+              "status": "cancelled",
+              "steeringEnabled": false,
+              "steeringHistoryCount": "0",
+              "taskDispatches": []
+            }
+          },
+          "unchanged": true
+        },
+        {
+          "id": "complete-after-cancel",
+          "method": "CompleteInitiative",
+          "request": {
+            "name": "shared",
+            "reason": "Looks done"
+          },
+          "error": {
+            "message": "a cancelled initiative cannot complete",
+            "status": 9
+          },
+          "unchanged": true
+        },
+        {
+          "id": "steer-after-cancel",
+          "method": "AdvanceInitiative",
+          "request": {
+            "name": "shared",
+            "operatorOrigin": "dashboard"
+          },
+          "error": {
+            "message": "a terminal initiative cannot steer",
+            "status": 9
+          },
+          "unchanged": true
+        }
+      ]
+    },
+    {
+      "id": "budget",
+      "seed": [
+        "spent"
+      ],
+      "scenarios": [
+        {
+          "id": "decide-campaign-spent-without-cycles",
+          "method": "DecideCampaign",
+          "request": {
+            "name": "solo",
+            "decision": "Keep going"
+          },
+          "error": {
+            "message": "campaign 'solo' exhausted its cycle budget; pass add_cycles > 0 to authorize more work",
+            "status": 9
+          },
+          "unchanged": true
+        },
+        {
+          "id": "decide-member-campaign-with-cycles",
+          "method": "DecideCampaign",
+          "request": {
+            "name": "first",
+            "decision": "Keep going",
+            "addCycles": "2"
+          },
+          "error": {
+            "message": "campaign 'first' belongs to initiative 'shared'; its cycle budget is owned by the initiative",
+            "status": 9
+          },
+          "unchanged": true
+        },
+        {
+          "id": "decide-member-campaign-spent-without-cycles",
+          "method": "DecideCampaign",
+          "request": {
+            "name": "first",
+            "decision": "Keep going"
+          },
+          "error": {
+            "message": "campaign 'first' exhausted its cycle budget; pass add_cycles > 0 to authorize more work",
+            "status": 9
+          },
+          "unchanged": true
+        },
+        {
+          "id": "decide-campaign-unknown",
+          "method": "DecideCampaign",
+          "request": {
+            "name": "missing",
+            "decision": "Keep going"
+          },
+          "error": {
+            "message": "campaign 'missing' not found",
+            "status": 5
+          },
+          "unchanged": true
+        },
+        {
+          "id": "decide-initiative-spent-without-cycles",
+          "method": "DecideInitiative",
+          "request": {
+            "name": "shared",
+            "decision": "Finish the migration"
+          },
+          "response": {
+            "initiative": {
+              "authorizedBy": "Stacey",
+              "budget": {
+                "maxActiveMembers": "2",
+                "maxCycles": "2",
+                "maxOpenQuestions": "3"
+              },
+              "deferredQuestionCount": "0",
+              "doneEvidence": [
+                {
+                  "kind": "review",
+                  "statement": "Both members speak contract v2"
+                }
+              ],
+              "holds": [],
+              "intentRefs": [],
+              "members": [
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "2",
+                    "initiative": "shared",
+                    "maxCycles": "2",
+                    "name": "first",
+                    "openEscalation": {
+                      "escalatedAt": "2026-10-01T12:00:00+00:00",
+                      "reason": "campaign cycle budget exhausted (2)"
+                    },
+                    "project": "sample",
+                    "status": "escalated"
+                  },
+                  "kind": "campaign",
+                  "name": "first",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "2",
+                    "name": "second",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "second",
+                  "project": "sample",
+                  "reviewerGaps": []
+                }
+              ],
+              "milestones": [],
+              "name": "shared",
+              "openQuestions": [
+                {
+                  "id": "question_280a306ae385f97fb1652ecdb504f39883318d3d2a708e57c489a8aace2d4fc1",
+                  "members": [
+                    "first"
+                  ],
+                  "question": "campaign cycle budget exhausted (2)"
+                }
+              ],
+              "outcome": "Both members speak contract v2",
+              "ownerDecisions": [
+                {
+                  "authorizedBy": "Stacey",
+                  "decision": "Finish the migration",
+                  "members": [
+                    "first",
+                    "second"
+                  ]
+                }
+              ],
+              "pendingActions": [],
+              "projects": [
+                "sample"
+              ],
+              "reservations": [],
+              "status": "escalated",
+              "steeringEnabled": false,
+              "steeringHistoryCount": "0",
+              "taskDispatches": []
+            }
+          }
+        },
+        {
+          "id": "decide-initiative-adds-cycles",
+          "method": "DecideInitiative",
+          "request": {
+            "name": "shared",
+            "decision": "Spend three more cycles",
+            "addCycles": "3"
+          },
+          "response": {
+            "initiative": {
+              "authorizedBy": "Stacey",
+              "budget": {
+                "maxActiveMembers": "2",
+                "maxCycles": "5",
+                "maxOpenQuestions": "3"
+              },
+              "deferredQuestionCount": "0",
+              "doneEvidence": [
+                {
+                  "kind": "review",
+                  "statement": "Both members speak contract v2"
+                }
+              ],
+              "holds": [],
+              "intentRefs": [],
+              "members": [
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "2",
+                    "initiative": "shared",
+                    "maxCycles": "5",
+                    "name": "first",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "first",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "5",
+                    "name": "second",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "second",
+                  "project": "sample",
+                  "reviewerGaps": []
+                }
+              ],
+              "milestones": [],
+              "name": "shared",
+              "openQuestions": [],
+              "outcome": "Both members speak contract v2",
+              "ownerDecisions": [
+                {
+                  "authorizedBy": "Stacey",
+                  "decision": "Finish the migration",
+                  "members": [
+                    "first",
+                    "second"
+                  ]
+                },
+                {
+                  "authorizedBy": "Stacey",
+                  "decision": "Spend three more cycles",
+                  "members": [
+                    "first",
+                    "second"
+                  ]
+                }
+              ],
+              "pendingActions": [],
+              "projects": [
+                "sample"
+              ],
+              "reservations": [],
+              "status": "active",
+              "steeringEnabled": false,
+              "steeringHistoryCount": "0",
+              "taskDispatches": []
+            }
+          }
+        },
+        {
+          "id": "decide-campaign-adds-cycles",
+          "method": "DecideCampaign",
+          "request": {
+            "name": "solo",
+            "decision": "One more pass",
+            "addCycles": "2"
+          },
+          "response": {
+            "campaign": {
+              "authorizedBy": "Stacey",
+              "cyclesCompleted": "1",
+              "maxCycles": "3",
+              "name": "solo",
+              "ownerDecisions": [
+                {
+                  "authorizedBy": "Stacey",
+                  "decision": "One more pass"
+                }
+              ],
+              "project": "sample",
+              "status": "active"
+            }
+          }
+        },
+        {
+          "id": "decide-campaign-not-escalated",
+          "method": "DecideCampaign",
+          "request": {
+            "name": "solo",
+            "decision": "Again"
+          },
+          "error": {
+            "message": "campaign 'solo' is 'active'; decide requires Escalated status",
+            "status": 9
+          },
+          "unchanged": true
+        }
+      ]
+    }
+  ]
+}
