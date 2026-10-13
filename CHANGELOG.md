@@ -24,6 +24,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Ops digest summaries use an empty temporary directory for their read-only
   agent call. A daemon started at `/` can now apply Claude's scoped policy.
 
+### Changed
+
+- The bundled skill tells briefs to state guarantees the code can actually
+  make, with the threat and accepted residual named, because a reviewer holds a
+  task to every requirement literally and an impossible absolute fails review
+  repeatedly. It also points follow-ups at `--continues <id>`.
+
 ## [0.49.0] - 2026-10-12
 
 ### Changed

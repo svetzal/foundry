@@ -218,6 +218,16 @@ task blocks. Every event published on Foundry's Watch stream is durable.
 
 Use this for small, concrete, immediately executable coding work.
 
+The reviewer holds a task to every requirement literally, so write guarantees
+the code can actually make. An absolute requirement the environment cannot meet
+(exact behaviour past a security limit, a safe state when every control command
+fails, a byte-level bound below a dependency's API) fails review round after
+round, or drives the agent to fork the dependency. Name the threat, the
+guarantee that answers it, and the residual you accept. When follow-ups keep
+failing on the same requirement, re-read the requirement before dispatching
+again. Link a follow-up to the item it fixes with `--continues <id>`, so the
+earlier attempt settles when the follow-up lands.
+
 ### 6. Manage Durable Campaigns
 
 Use a campaign when the mission is broader than one task and the next objective
