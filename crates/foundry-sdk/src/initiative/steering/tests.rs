@@ -236,6 +236,90 @@ fn member_budget_is_granted_only_within_the_shared_total_and_atomic_owner_extens
     assert_eq!(serde_json::to_string(&store).unwrap(), before);
 }
 
+/// A shared budget of two cycles, both spent by member `one`, which escalated
+/// on budget.
+fn spent_store() -> CampaignStore {
+    let mut store = store();
+    store.find_initiative_mut("shared").unwrap().budget.max_cycles = 2;
+    let member = store.find_mut("one").unwrap();
+    member.budget.max_cycles = 2;
+    member.cycles_completed = 2;
+    member.status = CampaignStatus::Escalated;
+    member.open_escalation = Some(crate::campaign::CampaignEscalation {
+        reason: "campaign cycle budget exhausted (2)".into(),
+        escalated_at: Utc::now(),
+        cycles_completed: 2,
+        cycles_landed: 2,
+        question: None,
+        choices: vec![],
+        from_event_log: false,
+    });
+    store.refresh_questions("shared").unwrap();
+    store
+}
+
+/// A decision without cycles on a spent shared budget would leave the
+/// escalated member escalated and reopen the same question, so it is refused
+/// and records nothing, as `decide` on a spent standalone campaign is.
+#[test]
+fn decision_on_a_spent_shared_budget_requires_more_cycles() {
+    let mut store = spent_store();
+    let before = serde_json::to_string(&store).unwrap();
+
+    assert_eq!(
+        store.decide_initiative_with_budget("shared", "Finish the migration", &[], 0, Utc::now()),
+        Err(InitiativeError::Precondition(
+            "initiative 'shared' exhausted its cycle budget; pass add_cycles > 0 to authorize more work"
+                .into()
+        ))
+    );
+    assert_eq!(serde_json::to_string(&store).unwrap(), before, "a refusal changes nothing");
+
+    store
+        .decide_initiative_with_budget("shared", "Finish the migration", &[], 3, Utc::now())
+        .unwrap();
+    assert_eq!(store.find("one").unwrap().status, CampaignStatus::Active);
+    assert_eq!(store.find_initiative("shared").unwrap().owner_decisions.len(), 1);
+}
+
+/// The decision's own refusals keep precedence over the spent budget, so the
+/// owner hears about the mistake they can fix in the request first.
+#[test]
+fn decision_refusals_precede_the_spent_budget_refusal() {
+    let mut store = spent_store();
+    let before = serde_json::to_string(&store).unwrap();
+
+    assert!(matches!(
+        store.decide_initiative_with_budget("missing", "Continue", &[], 0, Utc::now()),
+        Err(InitiativeError::NotFound(_))
+    ));
+    assert_eq!(
+        store.decide_initiative_with_budget("shared", " ", &[], 0, Utc::now()),
+        Err(InitiativeError::Invalid("decision must be non-empty".into()))
+    );
+    assert_eq!(
+        store.decide_initiative_with_budget("shared", "Continue", &["ghost".into()], 0, Utc::now()),
+        Err(InitiativeError::Invalid(
+            "decision or finding names a campaign outside the initiative".into()
+        ))
+    );
+    assert_eq!(serde_json::to_string(&store).unwrap(), before, "a refusal changes nothing");
+}
+
+/// Completion records its reason as a decision, but it spends nothing, so a
+/// spent budget does not stand in its way.
+#[test]
+fn a_spent_shared_budget_does_not_block_completion() {
+    let mut store = spent_store();
+    store
+        .complete_initiative("shared", "Owner accepts the outcome", Utc::now())
+        .unwrap();
+    assert_eq!(
+        store.find_initiative("shared").unwrap().status,
+        crate::initiative::InitiativeStatus::Completed
+    );
+}
+
 fn projection(state: &str) -> IntentProjection {
     IntentProjection {
         goals: vec![Goal {

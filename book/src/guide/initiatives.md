@@ -176,7 +176,11 @@ that was running when the decision arrived discards its stale outcome and
 forms again from the current record. It does not overwrite the decision.
 
 Use `--add-cycles N` with `initiative decide` to authorize more shared cycles.
-Member grants stay within that total. Raising an individual campaign budget
+When the shared budget is spent, `initiative decide` without `--add-cycles` is
+refused and records nothing. A decision alone would leave a member that
+escalated on budget still escalated, and the same question would open again.
+`campaign decide` on a spent member is also refused, and its message names the
+initiative that owns the budget. Member grants stay within that total. Raising an individual campaign budget
 cannot authorize an initiative to exceed its shared budget.
 
 ### Keep owner attention bounded

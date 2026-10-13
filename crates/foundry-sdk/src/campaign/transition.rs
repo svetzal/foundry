@@ -66,6 +66,10 @@ pub enum TransitionError {
     BudgetExhausted { name: String },
     /// The initiative owns this campaign's cycle budget.
     MemberBudgetOwned { name: String, initiative: String },
+    /// An initiative member has spent its budget and no `add_cycles` was
+    /// requested. Only the initiative can authorize more cycles, so the owner
+    /// is pointed there rather than at the member.
+    MemberBudgetSpent { name: String, initiative: String },
     /// Applying `add_cycles` to `budget.max_cycles` would overflow.
     BudgetOverflow { name: String, add_cycles: u64 },
 }
@@ -97,6 +101,10 @@ impl std::fmt::Display for TransitionError {
             Self::MemberBudgetOwned { name, initiative } => write!(
                 f,
                 "campaign '{name}' belongs to initiative '{initiative}'; its cycle budget is owned by the initiative"
+            ),
+            Self::MemberBudgetSpent { name, initiative } => write!(
+                f,
+                "campaign '{name}' belongs to initiative '{initiative}', whose cycle budget is spent; decide on the initiative with add_cycles > 0"
             ),
             Self::BudgetOverflow { name, add_cycles } => {
                 write!(
@@ -141,7 +149,7 @@ impl Campaign {
     /// addition; overflow is rejected.
     ///
     /// Members of an initiative reject positive `add_cycles`: the initiative
-    /// owns their cycle budget.
+    /// owns their cycle budget. A spent member's refusal names the initiative.
     ///
     /// `pending_run_result` is intentionally left untouched — it remains
     /// pending for the next manual advance to consume.
@@ -188,7 +196,9 @@ impl Campaign {
     /// a refusal records nothing.
     ///
     /// Initiative members reject positive `add_cycles` because their budget
-    /// belongs to the initiative.
+    /// belongs to the initiative. A spent member refuses a decision without
+    /// cycles too, and the refusal names the initiative: deciding there with
+    /// `add_cycles > 0` is the only control that authorizes more work.
     ///
     /// `pending_run_result` is intentionally left untouched.
     ///
@@ -244,8 +254,13 @@ impl Campaign {
             });
         }
         if add_cycles == 0 && self.cycles_completed >= self.budget.max_cycles {
-            return Err(TransitionError::BudgetExhausted {
-                name: self.name.clone(),
+            let name = self.name.clone();
+            return Err(match &self.initiative {
+                Some(initiative) => TransitionError::MemberBudgetSpent {
+                    name,
+                    initiative: initiative.clone(),
+                },
+                None => TransitionError::BudgetExhausted { name },
             });
         }
         self.budget.max_cycles.checked_add(add_cycles).ok_or_else(|| {
@@ -713,6 +728,32 @@ mod tests {
         assert_eq!(serde_json::to_value(&c).unwrap(), before, "a refusal changes nothing");
     }
 
+    /// A spent member cannot take more cycles itself, so telling the owner to
+    /// pass `add_cycles` here would only lead to a second refusal. The refusal
+    /// names the initiative that owns the budget instead.
+    #[test]
+    fn spent_member_decision_without_cycles_points_at_the_initiative() {
+        let mut c = escalated_with_record();
+        c.initiative = Some("shared".to_string());
+        c.cycles_completed = 2;
+        let before = serde_json::to_value(&c).unwrap();
+
+        let refused = TransitionError::MemberBudgetSpent {
+            name: "c".to_string(),
+            initiative: "shared".to_string(),
+        };
+        assert_eq!(
+            c.record_owner_decision("keep going".to_string(), at(), 0),
+            Err(refused.clone())
+        );
+        assert_eq!(serde_json::to_value(&c).unwrap(), before, "a refusal changes nothing");
+
+        c.status = CampaignStatus::Paused;
+        let before = serde_json::to_value(&c).unwrap();
+        assert_eq!(c.resume(0), Err(refused));
+        assert_eq!(serde_json::to_value(&c).unwrap(), before, "a refusal changes nothing");
+    }
+
     #[test]
     fn decide_rejects_overflowing_add_cycles_and_records_nothing() {
         let mut c = escalated_with_record();
@@ -918,6 +959,14 @@ mod tests {
             }
             .to_string(),
             "campaign 'c' exhausted its cycle budget; pass add_cycles > 0 to authorize more work"
+        );
+        assert_eq!(
+            TransitionError::MemberBudgetSpent {
+                name: "c".to_string(),
+                initiative: "shared".to_string()
+            }
+            .to_string(),
+            "campaign 'c' belongs to initiative 'shared', whose cycle budget is spent; decide on the initiative with add_cycles > 0"
         );
         assert_eq!(
             TransitionError::BudgetOverflow {

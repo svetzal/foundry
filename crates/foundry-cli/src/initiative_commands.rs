@@ -44,7 +44,8 @@ pub enum Commands {
         decision: String,
         #[arg(long = "member")]
         members: Vec<String>,
-        /// Extend the shared initiative budget by this many cycles
+        /// Extend the shared initiative budget by this many cycles; required
+        /// (> 0) once the shared budget is spent
         #[arg(long, default_value_t = 0)]
         add_cycles: u64,
     },

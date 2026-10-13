@@ -618,6 +618,11 @@ message DecideInitiativeRequest {
     string name = 1;
     string decision = 2;
     repeated string members = 3;
+    // Additional cycles to add to the initiative's shared `max_cycles` in the
+    // same change that records the decision (checked addition; overflow →
+    // INVALID_ARGUMENT). Required (> 0) when the initiative has spent its
+    // shared budget (FAILED_PRECONDITION otherwise, and nothing is recorded);
+    // 0 = no extension.
     uint64 add_cycles = 4;
 }
 message EndInitiativeRequest { string name = 1; string reason = 2; }
