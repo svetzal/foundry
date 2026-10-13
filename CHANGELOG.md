@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-10-13
+
 ### Added
 
 - Slice 3 owner attention: a shared question limit, coalesced member questions
