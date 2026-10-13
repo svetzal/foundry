@@ -1317,6 +1317,13 @@ impl CampaignStore {
         Ok(())
     }
 
+    /// Record an owner decision, extending the shared cycle budget by
+    /// `add_cycles` in the same change.
+    ///
+    /// When the shared budget is spent, `add_cycles` must be positive: a
+    /// decision without cycles cannot unblock a budget-escalated member, and
+    /// the same question would reopen. The decision's own refusals come first,
+    /// and every refusal writes nothing.
     pub fn decide_initiative_with_budget(
         &mut self,
         name: &str,
@@ -1325,6 +1332,14 @@ impl CampaignStore {
         add_cycles: u64,
         at: DateTime<Utc>,
     ) -> Result<super::InitiativeOwnerDecision> {
+        self.decision_scope(name, decision, members)?;
+        if add_cycles == 0
+            && self.shared_cycles_used(name)? >= self.require_initiative(name)?.budget.max_cycles
+        {
+            return Err(InitiativeError::Precondition(format!(
+                "initiative '{name}' exhausted its cycle budget; pass add_cycles > 0 to authorize more work"
+            )));
+        }
         let mut candidate = self.clone();
         let ceiling = candidate
             .require_initiative(name)?

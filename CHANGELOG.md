@@ -7,6 +7,32 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `foundry initiative decide` on a spent shared budget now requires
+  `--add-cycles`, as `foundry campaign decide` does on a spent campaign. It
+  used to accept the decision and record it on every member, but nothing
+  unblocked: the member that escalated on budget stayed escalated and the same
+  question reopened with the same id. Without `--add-cycles` it is now refused
+  with "initiative '<name>' exhausted its cycle budget; pass add_cycles > 0 to
+  authorize more work" (`FAILED_PRECONDITION`) and records nothing. Refusals
+  for an unknown, terminal or unauthorized initiative, an empty decision and an
+  outside member still come first. Completing an initiative is unaffected.
+- `foundry campaign decide` and `resume` without `--add-cycles` on a spent
+  initiative member now name the initiative: "campaign '<name>' belongs to
+  initiative '<initiative>', whose cycle budget is spent; decide on the
+  initiative with add_cycles > 0". They used to say "pass add_cycles > 0",
+  which the member then refused because the initiative owns its budget.
+
+### Changed
+
+- The initiative control contract is now version 2
+  (`contracts/initiative-control-v2.json`). In the `budget` group,
+  `decide-initiative-spent-without-cycles` is a refusal (status 9, store
+  unchanged), `decide-member-campaign-spent-without-cycles` carries the new
+  message, and `decide-initiative-adds-cycles` records one owner decision
+  instead of two. Version 1 is removed: the daemon no longer honours it.
+
 ## [0.50.0] - 2026-10-13
 
 ### Added

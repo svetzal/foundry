@@ -1,6 +1,6 @@
 {
   "contract": "foundry.initiative-control",
-  "version": 1,
+  "version": 2,
   "description": "Executable owner-control scenarios. Each group starts a fresh daemon on an empty Foundry home, applies its named seed fragments in order, then runs its scenarios in order, so a scenario sees the effects of the ones before it. Seed fragments use the campaign store's own JSON: campaigns; an initiative over the registered project 'sample'; findings; brief (a recorded hash whose file on disk now differs); completion_proposal (done proposed against the live trunk snapshot of the 'sample' checkout); tracker_projection (committed as .et/projection.json in a Git repository). Requests and responses are Protobuf JSON for proto/foundry.proto: lowerCamelCase names, uint64 as decimal strings, defaults omitted from requests, and ActOnInitiative's action oneof written as exactly one of hold, relay, dispatch, ask or milestone (an empty object still selects that variant). A response is the consumer-required projection; the provider compares every declared field and the exact cardinality of every array. Repeated fields are listed even when empty. Proto3 optional fields and message fields appear only when the daemon sets them, so an absent eventId means the call started no new event. Daemon-stamped times (decidedAt, openedAt, proposedAt, confirmedAt), reservation operation ids, outcome snapshots and brief paths are left out; the provider asserts the times parse as RFC 3339, the ids are non-empty, and each brief path is initiatives/<name>/BRIEF.md under the Foundry home. Daemon-minted ids the consumer acts on are written as placeholders at the JSON pointers listed in 'volatile'; the provider asserts each is a non-empty string, and within one group placeholders and daemon values correspond one to one. The Tracker repository is written as /sandbox/tracker; the provider substitutes its temporary repository in requests and restores the placeholder in responses. Finding times come from the definition and return in RFC 3339 with an offset. An error gives the numeric gRPC status and the daemon's exact message. 'unchanged: true' means the provider asserts the campaign store bytes did not change: every refusal carries it, as do reads, idempotent retries and a steer that joins one already in flight.",
   "seeds": {
     "campaigns": {
@@ -3126,7 +3126,7 @@
             "decision": "Keep going"
           },
           "error": {
-            "message": "campaign 'first' exhausted its cycle budget; pass add_cycles > 0 to authorize more work",
+            "message": "campaign 'first' belongs to initiative 'shared', whose cycle budget is spent; decide on the initiative with add_cycles > 0",
             "status": 9
           },
           "unchanged": true
@@ -3151,92 +3151,11 @@
             "name": "shared",
             "decision": "Finish the migration"
           },
-          "response": {
-            "initiative": {
-              "authorizedBy": "Stacey",
-              "budget": {
-                "maxActiveMembers": "2",
-                "maxCycles": "2",
-                "maxOpenQuestions": "3"
-              },
-              "deferredQuestionCount": "0",
-              "doneEvidence": [
-                {
-                  "kind": "review",
-                  "statement": "Both members speak contract v2"
-                }
-              ],
-              "holds": [],
-              "intentRefs": [],
-              "members": [
-                {
-                  "after": [],
-                  "campaign": {
-                    "cyclesCompleted": "2",
-                    "initiative": "shared",
-                    "maxCycles": "2",
-                    "name": "first",
-                    "openEscalation": {
-                      "escalatedAt": "2026-10-01T12:00:00+00:00",
-                      "reason": "campaign cycle budget exhausted (2)"
-                    },
-                    "project": "sample",
-                    "status": "escalated"
-                  },
-                  "kind": "campaign",
-                  "name": "first",
-                  "project": "sample",
-                  "reviewerGaps": []
-                },
-                {
-                  "after": [],
-                  "campaign": {
-                    "cyclesCompleted": "0",
-                    "initiative": "shared",
-                    "maxCycles": "2",
-                    "name": "second",
-                    "project": "sample",
-                    "status": "active"
-                  },
-                  "kind": "campaign",
-                  "name": "second",
-                  "project": "sample",
-                  "reviewerGaps": []
-                }
-              ],
-              "milestones": [],
-              "name": "shared",
-              "openQuestions": [
-                {
-                  "id": "question_280a306ae385f97fb1652ecdb504f39883318d3d2a708e57c489a8aace2d4fc1",
-                  "members": [
-                    "first"
-                  ],
-                  "question": "campaign cycle budget exhausted (2)"
-                }
-              ],
-              "outcome": "Both members speak contract v2",
-              "ownerDecisions": [
-                {
-                  "authorizedBy": "Stacey",
-                  "decision": "Finish the migration",
-                  "members": [
-                    "first",
-                    "second"
-                  ]
-                }
-              ],
-              "pendingActions": [],
-              "projects": [
-                "sample"
-              ],
-              "reservations": [],
-              "status": "escalated",
-              "steeringEnabled": false,
-              "steeringHistoryCount": "0",
-              "taskDispatches": []
-            }
-          }
+          "error": {
+            "message": "initiative 'shared' exhausted its cycle budget; pass add_cycles > 0 to authorize more work",
+            "status": 9
+          },
+          "unchanged": true
         },
         {
           "id": "decide-initiative-adds-cycles",
@@ -3300,14 +3219,6 @@
               "openQuestions": [],
               "outcome": "Both members speak contract v2",
               "ownerDecisions": [
-                {
-                  "authorizedBy": "Stacey",
-                  "decision": "Finish the migration",
-                  "members": [
-                    "first",
-                    "second"
-                  ]
-                },
                 {
                   "authorizedBy": "Stacey",
                   "decision": "Spend three more cycles",

@@ -539,13 +539,16 @@ impl CampaignStore {
             unique
         })
     }
-    pub fn decide_initiative(
-        &mut self,
+    /// The owner and the members an owner decision applies to, or the reason
+    /// the decision is refused: the initiative is unknown, terminal or
+    /// unauthorized, the decision is empty, or it names an outside member.
+    /// Writes nothing.
+    fn decision_scope(
+        &self,
         name: &str,
         decision: &str,
         members: &[String],
-        at: DateTime<Utc>,
-    ) -> Result<InitiativeOwnerDecision> {
+    ) -> Result<(String, Vec<String>)> {
         let initiative = self.require_initiative(name)?;
         if initiative.status.is_terminal() {
             return Err(InitiativeError::Precondition(format!("initiative '{name}' is terminal")));
@@ -563,7 +566,16 @@ impl CampaignStore {
         if decision.trim().is_empty() {
             return Err(InitiativeError::Invalid("decision must be non-empty".into()));
         }
-        let applicable = self.applicable_members(name, members)?;
+        Ok((owner, self.applicable_members(name, members)?))
+    }
+    pub fn decide_initiative(
+        &mut self,
+        name: &str,
+        decision: &str,
+        members: &[String],
+        at: DateTime<Utc>,
+    ) -> Result<InitiativeOwnerDecision> {
+        let (owner, applicable) = self.decision_scope(name, decision, members)?;
         self.refresh_questions(name)?;
         let record = InitiativeOwnerDecision {
             decision: decision.into(),

@@ -295,8 +295,9 @@ action. The retained
 
 Queued formation, reserved admissions and standalone tasks count toward
 `max_active_members`. Shared cycles include initiative tasks. Use
-`initiative decide --add-cycles N` to authorize more shared cycles. Member
-budget grants cannot exceed that total. Owner holds and shared questions block
+`initiative decide --add-cycles N` to authorize more shared cycles. Once the
+shared budget is spent, `initiative decide` without `--add-cycles` is refused
+and records nothing. Member budget grants cannot exceed that total. Owner holds and shared questions block
 ineligible work; milestone holds require explicit evidence.
 
 The first steer audits Tracker candidates against registered codebases. Audit
