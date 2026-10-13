@@ -20,7 +20,7 @@ fn initiative() -> Initiative {
     .unwrap()
 }
 
-fn store() -> CampaignStore {
+pub(super) fn store() -> CampaignStore {
     let mut store = CampaignStore::default();
     store.add(campaign("one")).unwrap();
     store.add(campaign("two")).unwrap();
@@ -329,7 +329,7 @@ fn final_cycle_can_form_to_assess_evidence_but_cannot_dispatch_more() {
 }
 
 #[test]
-fn member_questions_stay_visible_above_the_asking_budget_and_clear_with_member_status() {
+fn member_questions_respect_the_budget_without_losing_deferred_escalations() {
     let mut store = store();
     store.find_initiative_mut("sample").unwrap().budget.max_open_questions = 1;
     for name in ["one", "two"] {
@@ -346,7 +346,9 @@ fn member_questions_stay_visible_above_the_asking_budget_and_clear_with_member_s
         });
     }
     store.refresh_questions("sample").unwrap();
-    assert_eq!(store.find_initiative("sample").unwrap().open_questions.len(), 2);
+    assert_eq!(store.find_initiative("sample").unwrap().open_questions.len(), 1);
+    assert_eq!(store.find_initiative("sample").unwrap().deferred_questions.len(), 1);
+    assert!(store.enforce_can_form("two", &[]).is_err());
     store.find_mut("one").unwrap().status = CampaignStatus::Completed;
     store.find_mut("two").unwrap().status = CampaignStatus::Active;
     store.refresh_questions("sample").unwrap();
@@ -364,4 +366,130 @@ fn manual_questions_survive_member_refresh_and_progress_sets_active_status() {
         .unwrap();
     store.refresh_questions("sample").unwrap();
     assert_eq!(store.find_initiative("sample").unwrap().open_questions.len(), 1);
+}
+
+#[test]
+fn shared_question_keeps_its_original_age_after_one_member_is_answered_and_restart() {
+    let mut store = store();
+    let oldest = Utc::now() - chrono::Duration::days(3);
+    for (name, at) in [("one", oldest), ("two", oldest + chrono::Duration::days(1))] {
+        let campaign = store.find_mut(name).unwrap();
+        campaign.status = CampaignStatus::Escalated;
+        campaign.open_escalation = Some(crate::campaign::CampaignEscalation {
+            reason: "Owner policy".into(),
+            escalated_at: at,
+            cycles_completed: 0,
+            cycles_landed: 0,
+            question: Some("Which version?".into()),
+            choices: vec![],
+            from_event_log: false,
+        });
+    }
+    store.refresh_questions("sample").unwrap();
+    let question = store.find_initiative("sample").unwrap().open_questions[0].clone();
+    store
+        .decide_initiative("sample", "Use v1", &["one".into()], Utc::now())
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("campaigns.json");
+    store.save(&path).unwrap();
+    let restored = CampaignStore::load(&path).unwrap();
+    let view = restored.initiative_view("sample").unwrap();
+    assert_eq!(view.open_questions[0].id, question.id);
+    assert_eq!(view.open_questions[0].opened_at, oldest);
+    assert_eq!(view.open_questions[0].members, ["two"]);
+}
+
+#[test]
+fn concurrent_question_admissions_never_exceed_the_limit() {
+    let mut store = store();
+    store.find_initiative_mut("sample").unwrap().budget.max_open_questions = 1;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("campaigns.json");
+    store.save(&path).unwrap();
+    let handles: Vec<_> = ["First?", "Second?"]
+        .into_iter()
+        .map(|text| {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                let mut guard = CampaignStore::lock_exclusive(&path).unwrap();
+                let accepted = guard.store.record_question("sample", text, &[]).is_ok();
+                guard.save().unwrap();
+                accepted
+            })
+        })
+        .collect();
+    assert_eq!(
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|accepted| *accepted)
+            .count(),
+        1
+    );
+    assert_eq!(
+        CampaignStore::load(&path)
+            .unwrap()
+            .initiative_view("sample")
+            .unwrap()
+            .open_questions
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn required_task_question_waits_for_a_slot_and_still_blocks_its_member() {
+    let mut store = store();
+    store.find_initiative_mut("sample").unwrap().budget.max_open_questions = 1;
+    store.record_question("sample", "Policy for one?", &["one".into()]).unwrap();
+    let queued = store
+        .record_required_question("sample", "Policy for two?", &["two".into()])
+        .unwrap();
+    assert_eq!(store.initiative_view("sample").unwrap().deferred_questions[0], queued);
+    assert!(store.enforce_can_form("two", &[]).is_err());
+    store
+        .decide_initiative("sample", "One may proceed", &["one".into()], Utc::now())
+        .unwrap();
+    let view = store.initiative_view("sample").unwrap();
+    assert_eq!(view.open_questions, [queued]);
+    assert!(view.deferred_questions.is_empty());
+    assert!(store.enforce_can_form("one", &[]).is_ok());
+    assert!(store.enforce_can_form("two", &[]).is_err());
+}
+
+#[test]
+fn partial_answer_preserves_oldest_member_age_even_before_the_first_saved_refresh() {
+    let mut store = store();
+    let oldest = Utc::now() - chrono::Duration::days(3);
+    for (name, age) in [("one", oldest), ("two", oldest + chrono::Duration::days(1))] {
+        let campaign = store.find_mut(name).unwrap();
+        campaign.status = CampaignStatus::Escalated;
+        campaign.open_escalation = Some(crate::campaign::CampaignEscalation {
+            reason: "Choose version".into(),
+            question: Some("Which API?".into()),
+            escalated_at: age,
+            cycles_completed: 0,
+            cycles_landed: 0,
+            choices: vec![],
+            from_event_log: false,
+        });
+    }
+    store
+        .decide_initiative("sample", "One uses v1", &["one".into()], Utc::now())
+        .unwrap();
+    assert_eq!(store.initiative_view("sample").unwrap().open_questions[0].opened_at, oldest);
+}
+
+#[test]
+fn fully_answered_question_reappears_with_a_new_age() {
+    let mut store = store();
+    store.record_question("sample", "Which API?", &[]).unwrap();
+    store.find_initiative_mut("sample").unwrap().open_questions[0].opened_at =
+        Utc::now() - chrono::Duration::days(3);
+    let original = store.initiative_view("sample").unwrap().open_questions[0].clone();
+    store.decide_initiative("sample", "Use v1", &[], Utc::now()).unwrap();
+    let reopened = store.record_question("sample", "Which API?", &[]).unwrap();
+    assert_eq!(reopened.id, original.id);
+    assert!(reopened.opened_at > original.opened_at + chrono::Duration::days(2));
 }

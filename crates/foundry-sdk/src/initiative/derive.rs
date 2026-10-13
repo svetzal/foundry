@@ -236,6 +236,7 @@ fn derived_definition(
     Initiative {
         name: name.into(),
         outcome,
+        created_at: None,
         intent_refs,
         projects,
         brief: None,
@@ -248,6 +249,7 @@ fn derived_definition(
         status: InitiativeStatus::Staged,
         owner_decisions: vec![],
         open_questions: vec![],
+        deferred_questions: vec![],
         derive_source: None,
         provider_pairings: vec![],
         holds: vec![],

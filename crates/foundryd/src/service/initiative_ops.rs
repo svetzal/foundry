@@ -76,6 +76,8 @@ pub(super) fn to_proto(store: &CampaignStore, initiative: &Initiative) -> proto:
                 opened_at: question.opened_at.to_rfc3339(),
             })
             .collect(),
+        deferred_question_count: u64::try_from(initiative.deferred_questions.len())
+            .unwrap_or(u64::MAX),
         agent_provider: initiative.agent_provider.clone(),
         ..Default::default()
     };

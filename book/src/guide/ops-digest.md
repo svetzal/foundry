@@ -54,6 +54,21 @@ An event is an anomaly if it matches any of these conditions:
 | `dependency_vulnerability_detected` | When `vulnerability.severity` is `"high"` or `"critical"` |
 | `maintenance_run_completed` | When `maintenance.reposFailed > 0` |
 
+Foundry also reads initiative attention from its campaign store API.
+An unanswered shared question older than one day is an anomaly.
+An open initiative with no member activity for thirty days is an anomaly.
+These anomalies open the pressure gate even with fewer than 25 intake events.
+The digest names the initiative and the question or inactive period.
+An overdue question also names its affected members.
+Older initiatives with no known creation or activity time
+are not classified as inactive.
+Answer questions in ops-visualizer's Sources page or with `foundry initiative decide`.
+
+The summary agent receives the event facts in its prompt.
+It runs in an empty temporary directory.
+If the agent is unavailable, the digest retains a raw listing of those facts
+with the failure reason.
+
 ## Where the digest lands
 
 ```

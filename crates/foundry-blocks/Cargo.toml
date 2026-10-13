@@ -21,6 +21,7 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 toml = { workspace = true }
+tempfile = { workspace = true }
 
 [features]
 # Exposes the blocks' test-only constructors (with_gateways, stub, …) so the
@@ -28,7 +29,6 @@ toml = { workspace = true }
 test-support = []
 
 [dev-dependencies]
-tempfile = { workspace = true }
 # Gateway fakes for testing blocks without real I/O.
 foundry-sdk = { workspace = true, features = ["test-support"] }
 # `test-util` (NOT part of tokio's "full") powers `#[tokio::test(start_paused = true)]`

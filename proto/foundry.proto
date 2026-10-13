@@ -518,6 +518,8 @@ message Initiative {
     InitiativeCompletionProposal completion_proposal = 31;
     InitiativeCompletionConfirmation completion_confirmation = 32;
     repeated InitiativeEtCloseReceipt completion_receipts = 33;
+    // Unanswered facts waiting for room under max_open_questions.
+    uint64 deferred_question_count = 34;
 }
 message InitiativeRepositoryIdentity {
     string project = 1;

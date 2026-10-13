@@ -153,6 +153,14 @@ it is never silently dropped.
 
 ## Record an owner decision
 
+Open the Sources page in ops-visualizer to review initiatives above campaigns.
+Each initiative shows its outcome, member results and integration evidence.
+Each shared question shows its age and applicable members.
+Use its decision form to answer those members, or use the CLI below.
+
+The dashboard keeps your draft and member selection when live results arrive.
+If the daemon refuses a decision, the form shows its reason and retains your draft.
+
 A decision applies to all campaign members unless `--member` selects a subset.
 It reaches active members as well as escalated members.
 
@@ -170,6 +178,26 @@ forms again from the current record. It does not overwrite the decision.
 Use `--add-cycles N` with `initiative decide` to authorize more shared cycles.
 Member grants stay within that total. Raising an individual campaign budget
 cannot authorize an initiative to exceed its shared budget.
+
+### Keep owner attention bounded
+
+`max_open_questions` limits the shared question list. The default is three.
+Matching questions appear once with the union of their applicable members.
+Their age starts at the earliest unanswered occurrence.
+Answering one member does not reset the age for the others.
+
+Extra distinct member questions remain on their campaigns.
+The initiative reports how many questions are waiting for a slot.
+After an answer frees a slot, the next waiting question appears.
+A manual request for another distinct question is refused at the limit.
+
+At the limit, steering can advance an eligible member that needs no owner answer.
+If no member can advance, it waits for the owner.
+The ops digest reports shared questions older than one day.
+It also reports an initiative with no member activity for thirty days.
+The inactivity check uses recorded creation and member activity times.
+An older initiative with no known time stays unclassified
+until member activity provides one.
 
 `foundry queue open` shows an escalated initiative once and suppresses its
 members' escalation rows beneath it. Open work items retain their own rows.
@@ -446,10 +474,6 @@ foundry initiative cancel shared-contract --reason "The shared contract was with
 Cancellation stops its member campaigns gracefully.
 Running cycles can settle and preserve their work.
 It does not discard preserved branches or close Tracker entities.
-
-Slice 3 adds question aging and dashboard controls.
-Development stays on the Mac's synthetic daemon.
-Promotion to ops-01 requires Stacey's go-ahead.
 
 See [campaigns](campaigns.md), [the work queue](work-queue.md) and
 [initiative events](../reference/event-types.md#initiatives-and-findings).

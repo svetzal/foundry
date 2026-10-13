@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use crate::campaign::{CampaignStatus, CampaignStore, OwnerDecision, Transition};
 use crate::gateway::StageProviders;
 
+pub mod attention;
 pub mod derive;
 pub mod outcome;
 pub use outcome::*;
@@ -36,6 +37,9 @@ type Result<T> = std::result::Result<T, InitiativeError>;
 pub struct Initiative {
     pub name: String,
     pub outcome: String,
+    /// Known creation time; legacy records have no inferred age.
+    #[serde(default)]
+    pub created_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub intent_refs: Vec<String>,
     pub projects: Vec<String>,
@@ -58,6 +62,9 @@ pub struct Initiative {
     pub owner_decisions: Vec<InitiativeOwnerDecision>,
     #[serde(default)]
     pub open_questions: Vec<InitiativeQuestion>,
+    /// Unanswered facts waiting for room on the bounded owner attention surface.
+    #[serde(default)]
+    pub deferred_questions: Vec<InitiativeQuestion>,
     #[serde(default)]
     pub derive_source: Option<DeriveSource>,
     #[serde(default)]
@@ -443,11 +450,13 @@ impl CampaignStore {
     }
     pub fn add_initiative(
         &mut self,
-        initiative: Initiative,
+        mut initiative: Initiative,
         registered_projects: &[String],
     ) -> Result<()> {
         initiative.validate()?;
         if initiative.steering.is_some()
+            || !initiative.open_questions.is_empty()
+            || !initiative.deferred_questions.is_empty()
             || !initiative.steering_history.is_empty()
             || !initiative.pending_actions.is_empty()
             || !initiative.reservations.is_empty()
@@ -506,6 +515,7 @@ impl CampaignStore {
                 campaign.budget.max_cycles = initiative.budget.max_cycles;
             }
         }
+        initiative.created_at = Some(Utc::now());
         self.initiatives.push(initiative);
         Ok(())
     }
@@ -554,6 +564,7 @@ impl CampaignStore {
             return Err(InitiativeError::Invalid("decision must be non-empty".into()));
         }
         let applicable = self.applicable_members(name, members)?;
+        self.refresh_questions(name)?;
         let record = InitiativeOwnerDecision {
             decision: decision.into(),
             authorized_by: owner.clone(),
@@ -577,14 +588,18 @@ impl CampaignStore {
         }
         if let Some(initiative) = self.find_initiative_mut(name) {
             initiative.owner_decisions.push(record.clone());
-            for question in &mut initiative.open_questions {
+            for question in
+                initiative.open_questions.iter_mut().chain(&mut initiative.deferred_questions)
+            {
                 question.members.retain(|m| !applicable.contains(m));
             }
             initiative.open_questions.retain(|q| !q.members.is_empty());
+            initiative.deferred_questions.retain(|q| !q.members.is_empty());
             if initiative.open_questions.is_empty() {
                 initiative.status = InitiativeStatus::Active;
             }
         }
+        self.refresh_questions(name)?;
         Ok(record)
     }
     pub fn complete_initiative(
@@ -619,6 +634,7 @@ impl CampaignStore {
                 confirmation.last_error = None;
             }
             initiative.open_questions.clear();
+            initiative.deferred_questions.clear();
             initiative.steering = None;
             initiative.pending_actions.clear();
             initiative.reservations.clear();
@@ -655,6 +671,7 @@ impl CampaignStore {
         if let Some(initiative) = self.find_initiative_mut(name) {
             initiative.status = InitiativeStatus::Cancelled;
             initiative.open_questions.clear();
+            initiative.deferred_questions.clear();
             initiative.steering = None;
             initiative.pending_actions.clear();
             initiative.reservations.clear();
@@ -667,16 +684,43 @@ impl CampaignStore {
         question: &str,
         members: &[String],
     ) -> Result<InitiativeQuestion> {
+        self.record_question_inner(name, question, members, false)
+    }
+
+    /// Retain an execution's unanswered fact even when the attention surface is full.
+    pub fn record_required_question(
+        &mut self,
+        name: &str,
+        question: &str,
+        members: &[String],
+    ) -> Result<InitiativeQuestion> {
+        self.record_question_inner(name, question, members, true)
+    }
+
+    fn record_question_inner(
+        &mut self,
+        name: &str,
+        question: &str,
+        members: &[String],
+        required: bool,
+    ) -> Result<InitiativeQuestion> {
         if question.trim().is_empty() {
             return Err(InitiativeError::Invalid("question must be non-empty".into()));
         }
+        if self.require_initiative(name)?.status.is_terminal() {
+            return Err(InitiativeError::Precondition(
+                "terminal initiative cannot ask questions".into(),
+            ));
+        }
         let applicable = self.applicable_members(name, members)?;
+        self.refresh_questions(name)?;
         let initiative = self
             .find_initiative_mut(name)
             .ok_or_else(|| InitiativeError::NotFound(name.into()))?;
         if let Some(existing) = initiative
             .open_questions
             .iter_mut()
+            .chain(&mut initiative.deferred_questions)
             .find(|q| q.question.trim() == question.trim())
         {
             for member in applicable {
@@ -684,78 +728,80 @@ impl CampaignStore {
                     existing.members.push(member);
                 }
             }
+            existing.from_members = false;
             initiative.status = InitiativeStatus::Escalated;
             return Ok(existing.clone());
         }
-        if initiative.open_questions.len() >= initiative.budget.max_open_questions {
+        if !required && initiative.open_questions.len() >= initiative.budget.max_open_questions {
             return Err(InitiativeError::Precondition(
                 "initiative is waiting on its owner; open question budget exhausted".into(),
             ));
         }
         let record = InitiativeQuestion {
-            id: format!(
-                "question_{}",
-                hex::encode(Sha256::digest(format!("{name}:{}", question.trim()).as_bytes()))
-            ),
+            id: question_id(name, question),
             question: question.trim().into(),
             members: applicable,
             opened_at: Utc::now(),
             from_members: false,
         };
-        initiative.open_questions.push(record.clone());
+        if initiative.open_questions.len() < initiative.budget.max_open_questions {
+            initiative.open_questions.push(record.clone());
+        } else {
+            initiative.deferred_questions.push(record.clone());
+        }
         initiative.status = InitiativeStatus::Escalated;
         Ok(record)
     }
-    /// Rebuild derived questions from current member escalations, preserving owner policy.
-    /// Existing member facts stay visible even when the asking budget is exhausted.
+
+    /// Coalesce live facts, retaining their oldest age and enforcing the owner attention cap.
+    /// Deferred facts still block their members and become visible as answers free slots.
     pub fn refresh_questions(&mut self, name: &str) -> Result<()> {
         if self.require_initiative(name)?.status.is_terminal() {
             return Ok(());
         }
+        let prior: Vec<_> = self
+            .require_initiative(name)?
+            .open_questions
+            .iter()
+            .chain(&self.require_initiative(name)?.deferred_questions)
+            .cloned()
+            .collect();
         let members = self.applicable_members(name, &[])?;
         let has_progress = members.iter().filter_map(|member| self.find(member)).any(|campaign| {
             campaign.status == CampaignStatus::Active || campaign.cycles_completed > 0
         });
-        let questions: Vec<_> = members
-            .into_iter()
-            .filter_map(|member| {
-                let campaign = self.find(&member)?;
-                if campaign.status != CampaignStatus::Escalated {
-                    return None;
-                }
-                let question = campaign.open_escalation.as_ref().map_or_else(
-                    || "Member requires an owner decision".into(),
-                    |escalation| {
-                        escalation.question.clone().unwrap_or_else(|| escalation.reason.clone())
-                    },
-                );
-                let opened_at = campaign
-                    .open_escalation
-                    .as_ref()
-                    .map_or_else(Utc::now, |escalation| escalation.escalated_at);
-                Some((member, question, opened_at))
-            })
-            .collect();
-        let initiative = self
-            .find_initiative_mut(name)
-            .ok_or_else(|| InitiativeError::NotFound(name.into()))?;
-        initiative.open_questions.retain(|question| !question.from_members);
-        for (member, text, opened_at) in questions {
-            if let Some(question) = initiative
-                .open_questions
-                .iter_mut()
-                .find(|question| question.question.trim() == text.trim())
+        let mut questions: Vec<_> =
+            prior.iter().filter(|question| !question.from_members).cloned().collect();
+        for member in members {
+            let Some(campaign) = self.find(&member) else {
+                continue;
+            };
+            if campaign.status != CampaignStatus::Escalated {
+                continue;
+            }
+            let text = campaign.open_escalation.as_ref().map_or_else(
+                || "Member requires an owner decision".into(),
+                |escalation| {
+                    escalation.question.clone().unwrap_or_else(|| escalation.reason.clone())
+                },
+            );
+            let prior_question =
+                prior.iter().find(|question| question.question.trim() == text.trim());
+            let opened_at = campaign.open_escalation.as_ref().map_or_else(
+                || prior_question.map_or_else(Utc::now, |question| question.opened_at),
+                |escalation| escalation.escalated_at,
+            );
+            let opened_at =
+                prior_question.map_or(opened_at, |question| question.opened_at.min(opened_at));
+            if let Some(question) = questions.iter_mut().find(|q| q.question.trim() == text.trim())
             {
                 if !question.members.contains(&member) {
                     question.members.push(member);
                 }
                 question.opened_at = question.opened_at.min(opened_at);
             } else {
-                initiative.open_questions.push(InitiativeQuestion {
-                    id: format!(
-                        "question_{}",
-                        hex::encode(Sha256::digest(format!("{name}:{}", text.trim()).as_bytes()))
-                    ),
+                questions.push(InitiativeQuestion {
+                    id: question_id(name, &text),
                     question: text.trim().into(),
                     members: vec![member],
                     opened_at,
@@ -763,6 +809,17 @@ impl CampaignStore {
                 });
             }
         }
+        // Stable ordering prevents a refresh or restart from rotating the owner's questions.
+        questions.sort_by(|left, right| {
+            left.opened_at.cmp(&right.opened_at).then(left.id.cmp(&right.id))
+        });
+        let initiative = self
+            .find_initiative_mut(name)
+            .ok_or_else(|| InitiativeError::NotFound(name.into()))?;
+        let deferred =
+            questions.split_off(questions.len().min(initiative.budget.max_open_questions));
+        initiative.open_questions = questions;
+        initiative.deferred_questions = deferred;
         if !initiative.open_questions.is_empty() || initiative.completion_proposal.is_some() {
             initiative.status = InitiativeStatus::Escalated;
         } else if has_progress || initiative.status == InitiativeStatus::Active {
@@ -772,6 +829,7 @@ impl CampaignStore {
         }
         Ok(())
     }
+
     pub fn enforce_can_form(&self, member: &str, active_members: &[String]) -> Result<()> {
         let Some(campaign) = self.find(member) else {
             return Err(InitiativeError::NotFound(format!("campaign '{member}' not found")));
@@ -929,3 +987,10 @@ impl CampaignStore {
 
 #[cfg(test)]
 mod tests;
+
+fn question_id(name: &str, question: &str) -> String {
+    format!(
+        "question_{}",
+        hex::encode(Sha256::digest(format!("{name}:{}", question.trim()).as_bytes()))
+    )
+}

@@ -8,8 +8,8 @@ In Tracker, Maya has an approved goal, `explain-delays`, and a journey,
 `understand-delay`. Its interactions cover publishing a reason and displaying it
 to the customer. The journey puts the API interaction before the portal one.
 
-This story includes initiative outcome evidence and owner-confirmed Tracker
-closure, available in Foundry 0.49.0.
+This story includes initiative outcome evidence, owner attention in the
+dashboard and owner-confirmed Tracker closure.
 
 ## Bring the intent into Foundry
 
@@ -87,8 +87,14 @@ create an idle loop.
 ## Give both sides the same answer
 
 The existing response uses an internal status code. The members need to know
-whether customers should see that code. Maya checks the question and records
-one policy:
+whether customers should see that code. Both campaigns ask the same question.
+Maya opens Sources in ops-visualizer. The initiative appears above its campaigns.
+She sees one question with both members and the time it has waited.
+
+Maya selects both members and writes one policy in the decision form.
+The form retains her draft if a new member result arrives while she types.
+She submits the answer. Both campaigns receive it, and the shared question closes.
+The equivalent CLI command is:
 
 ```bash
 foundry initiative show understand-delay
@@ -98,6 +104,16 @@ foundry initiative decide understand-delay \
 
 That decision reaches applicable campaign members, including active ones.
 Formation that used the older policy must reassess before applying its result.
+
+Another question needs the customer's input. Maya leaves it open overnight.
+After it has waited more than a day, the ops digest names the initiative
+and question.
+She can return to Sources and answer the affected members.
+
+The initiative allows three open questions at once.
+If another campaign escalates, its question remains on that campaign
+until a slot opens.
+The dashboard shows the waiting count. Unblocked members can still make progress.
 
 Foundry can now advance eligible member work. Each campaign still chooses its
 own next coding objective. After Foundry records a member's result and finishes

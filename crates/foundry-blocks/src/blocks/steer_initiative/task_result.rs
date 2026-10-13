@@ -99,7 +99,7 @@ impl RecordInitiativeTaskResult {
             events.push(super::finding_event(trigger, &finding)?);
         }
         if let TaskVerdict::BlockedOnDecision { finding, options } = &result.verdict {
-            guard.store.record_question(
+            guard.store.record_required_question(
                 name,
                 &format!("{finding}\nOptions: {}", options.join("; ")),
                 std::slice::from_ref(&receipt.member),
