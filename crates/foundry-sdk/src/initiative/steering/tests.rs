@@ -311,7 +311,7 @@ fn decision_refusals_precede_the_spent_budget_refusal() {
 #[test]
 fn a_spent_shared_budget_does_not_block_completion() {
     let mut store = spent_store();
-    store
+    let _ = store
         .complete_initiative("shared", "Owner accepts the outcome", Utc::now())
         .unwrap();
     assert_eq!(
