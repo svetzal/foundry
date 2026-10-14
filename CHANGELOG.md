@@ -7,6 +7,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.50.2] - 2026-10-13
+
+### Fixed
+
+- The test suite lints clean on all targets again. 0.50.1 was tagged with a
+  clippy failure in test code, so its Linux release build stopped at the lint
+  gate and it was never deployed. 0.50.2 carries the same runtime changes.
+
 ## [0.50.1] - 2026-10-13
 
 ### Fixed
