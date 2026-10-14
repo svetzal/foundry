@@ -7,7 +7,7 @@
     },
     {
       "name": "lint",
-      "command": "cargo clippy --workspace -- -D warnings",
+      "command": "cargo clippy --workspace --all-targets -- -D warnings",
       "required": true
     },
     {
