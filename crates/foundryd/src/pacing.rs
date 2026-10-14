@@ -674,7 +674,11 @@ mod tests {
         let h = Harness::new(vec![item]);
 
         let outcome = h.scheduler.tick().await;
-        assert!(outcome.started.is_empty());
+        assert!(
+            outcome.started.is_empty(),
+            "expected `outcome.started` to be empty: {:?}",
+            outcome.started
+        );
         assert_eq!(outcome.next_not_before, Some(at(45)));
         assert_eq!(h.item("wi_late").reason, "not before 2026-10-10T12:00:45+00:00");
 
@@ -698,7 +702,11 @@ mod tests {
         pauses.save(&Harness::pacing_paths(h.dir.path()).state).expect("save pause");
 
         h.scheduler.tick().await;
-        assert!(h.dispatched_ids().is_empty());
+        assert!(
+            h.dispatched_ids().is_empty(),
+            "expected `h.dispatched_ids()` to be empty: {:?}",
+            h.dispatched_ids()
+        );
         assert_eq!(h.item("wi_a").reason, "lane paused");
         assert_eq!(h.item("wi_running").state, WorkItemState::Running, "untouched");
 
@@ -807,7 +815,11 @@ mod tests {
 
         h.scheduler.tick().await;
 
-        assert!(h.dispatched_ids().is_empty());
+        assert!(
+            h.dispatched_ids().is_empty(),
+            "expected `h.dispatched_ids()` to be empty: {:?}",
+            h.dispatched_ids()
+        );
         assert_eq!(h.item("wi_task").reason, "repository busy: wi_nightly");
     }
 
@@ -839,10 +851,18 @@ mod tests {
 
         let outcome = h.scheduler.tick().await;
 
-        assert!(outcome.started.is_empty());
+        assert!(
+            outcome.started.is_empty(),
+            "expected `outcome.started` to be empty: {:?}",
+            outcome.started
+        );
         assert_eq!(h.item("wi_orphan").state, WorkItemState::Failed);
         assert_eq!(h.item("wi_orphan").reason, NO_ROOT_REASON);
-        assert!(h.dispatched_ids().is_empty());
+        assert!(
+            h.dispatched_ids().is_empty(),
+            "expected `h.dispatched_ids()` to be empty: {:?}",
+            h.dispatched_ids()
+        );
     }
 
     #[tokio::test]
@@ -853,8 +873,16 @@ mod tests {
 
         let outcome = h.scheduler.tick().await;
 
-        assert!(outcome.started.is_empty());
-        assert!(h.dispatched_ids().is_empty());
+        assert!(
+            outcome.started.is_empty(),
+            "expected `outcome.started` to be empty: {:?}",
+            outcome.started
+        );
+        assert!(
+            h.dispatched_ids().is_empty(),
+            "expected `h.dispatched_ids()` to be empty: {:?}",
+            h.dispatched_ids()
+        );
         assert_eq!(h.item("wi_a").state, WorkItemState::Queued, "the ledger is as it was");
     }
 

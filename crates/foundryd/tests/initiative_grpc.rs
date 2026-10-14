@@ -257,7 +257,11 @@ async fn typed_outcome_evidence_and_owner_confirmation_survive_rpc_round_trip() 
         .unwrap();
     assert_eq!(completed.status, "completed");
     assert_eq!(completed.completion_confirmation.as_ref().unwrap().proposal_id, "wire_done");
-    assert!(completed.completion_receipts.is_empty());
+    assert!(
+        completed.completion_receipts.is_empty(),
+        "expected `completed.completion_receipts` to be empty: {:?}",
+        completed.completion_receipts
+    );
     let retried = client
         .complete_initiative(proto::EndInitiativeRequest {
             name: "shared".into(),
@@ -474,7 +478,7 @@ async fn owner_hold_stays_passive_and_member_pin_releases_it() {
         .await
         .unwrap()
         .into_inner();
-    assert!(!response.event_id.is_empty());
+    assert!(!response.event_id.is_empty(), "expected `response.event_id` to be non-empty");
     let event_id = response.event_id;
     let response = response.initiative.unwrap();
     assert!(!response.steering_enabled);
@@ -503,7 +507,8 @@ async fn owner_hold_stays_passive_and_member_pin_releases_it() {
         foundry_sdk::work_item::WorkItemStore::load(&home.path().join("work-items.json"))
             .unwrap()
             .items
-            .is_empty()
+            .is_empty(),
+        "holding a member queues no work"
     );
     assert!(response.holds[0].owner);
     let response = client
@@ -517,7 +522,11 @@ async fn owner_hold_stays_passive_and_member_pin_releases_it() {
         .into_inner()
         .initiative
         .unwrap();
-    assert!(response.holds.is_empty());
+    assert!(
+        response.holds.is_empty(),
+        "expected `response.holds` to be empty: {:?}",
+        response.holds
+    );
     assert!(response.steering_enabled);
     server.abort();
 }
@@ -679,7 +688,8 @@ async fn derivation_reads_intent_on_the_daemon_and_keeps_targets_registered() {
         foundry_sdk::work_item::WorkItemStore::load(&home.path().join("work-items.json"))
             .unwrap()
             .items
-            .is_empty()
+            .is_empty(),
+        "no work item is queued"
     );
     server.abort();
 }
@@ -1428,7 +1438,7 @@ fn control_projection(initiative: &proto::Initiative, home: &std::path::Path) ->
         "holds":initiative.holds.iter().map(|hold| json!({"member":hold.member,"until":hold.until,"reason":hold.reason,"owner":hold.owner})).collect::<Vec<_>>(),
         "milestones":initiative.milestones.iter().map(|milestone| json!({"member":milestone.member,"name":milestone.name,"evidence":milestone.evidence})).collect::<Vec<_>>(),
         "reservations":initiative.reservations.iter().map(|reservation| {
-            assert!(!reservation.operation_id.is_empty());
+            assert!(!reservation.operation_id.is_empty(), "expected `reservation.operation_id` to be non-empty");
             json!({"member":reservation.member,"kind":reservation.kind})
         }).collect::<Vec<_>>(),
         "taskDispatches":initiative.task_dispatches.iter().map(|task| json!({"member":task.member,"workItem":task.work_item,"project":task.project})).collect::<Vec<_>>(),

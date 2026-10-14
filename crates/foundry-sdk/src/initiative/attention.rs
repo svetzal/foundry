@@ -125,7 +125,8 @@ mod tests {
             store
                 .initiative_attention_events(&WorkItemStore::default(), now)
                 .unwrap()
-                .is_empty()
+                .is_empty(),
+            "a question exactly one day old is not yet overdue"
         );
         let events = store
             .initiative_attention_events(&WorkItemStore::default(), now + Duration::seconds(1))
@@ -138,7 +139,8 @@ mod tests {
             store
                 .initiative_attention_events(&WorkItemStore::default(), now + Duration::days(2))
                 .unwrap()
-                .is_empty()
+                .is_empty(),
+            "a decided question raises no attention event"
         );
     }
 
@@ -151,14 +153,16 @@ mod tests {
             store
                 .initiative_attention_events(&WorkItemStore::default(), now)
                 .unwrap()
-                .is_empty()
+                .is_empty(),
+            "an initiative with no known age is never inactive"
         );
         store.find_initiative_mut("sample").unwrap().created_at = Some(now - Duration::days(30));
         assert!(
             store
                 .initiative_attention_events(&WorkItemStore::default(), now)
                 .unwrap()
-                .is_empty()
+                .is_empty(),
+            "an initiative exactly thirty days old is not yet inactive"
         );
         assert_eq!(
             store
@@ -172,7 +176,8 @@ mod tests {
             store
                 .initiative_attention_events(&WorkItemStore::default(), now + Duration::days(2))
                 .unwrap()
-                .is_empty()
+                .is_empty(),
+            "an active member keeps the initiative from reading inactive"
         );
     }
     #[test]
@@ -210,7 +215,11 @@ mod tests {
             items: vec![item],
             ..Default::default()
         };
-        assert!(store.initiative_attention_events(&ledger, now).unwrap().is_empty());
+        assert!(
+            store.initiative_attention_events(&ledger, now).unwrap().is_empty(),
+            "expected `store.initiative_attention_events(&ledger, now).unwrap()` to be empty: {:?}",
+            store.initiative_attention_events(&ledger, now).unwrap()
+        );
     }
     #[test]
     fn running_and_recently_settled_assessments_do_not_count_as_member_activity() {

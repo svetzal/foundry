@@ -451,7 +451,7 @@ mod tests {
     fn filter_workflows_by_trace_returns_empty_when_no_match() {
         let wfs = vec![test_workflow("a", "t1")];
         let out = filter_workflows_by_trace(wfs, Some("nope"));
-        assert!(out.is_empty());
+        assert!(out.is_empty(), "expected `out` to be empty: {out:?}");
     }
 
     // -- read_index_from_dir tests --

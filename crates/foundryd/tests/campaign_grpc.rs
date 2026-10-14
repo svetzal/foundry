@@ -129,7 +129,11 @@ async fn list_campaigns_returns_empty_for_empty_file() {
         .expect("list_campaigns should succeed for empty store")
         .into_inner();
 
-    assert!(response.campaigns.is_empty());
+    assert!(
+        response.campaigns.is_empty(),
+        "expected `response.campaigns` to be empty: {:?}",
+        response.campaigns
+    );
 }
 
 #[tokio::test]
@@ -145,7 +149,11 @@ async fn list_campaigns_returns_empty_for_missing_store() {
         .expect("list_campaigns should succeed for missing store")
         .into_inner();
 
-    assert!(response.campaigns.is_empty());
+    assert!(
+        response.campaigns.is_empty(),
+        "expected `response.campaigns` to be empty: {:?}",
+        response.campaigns
+    );
 }
 
 #[tokio::test]

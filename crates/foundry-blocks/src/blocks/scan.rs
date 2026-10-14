@@ -124,7 +124,11 @@ mod tests {
         let trigger = test_event!(EventType::ScanRequested, "unknown-project", {});
         let result = block.execute(&trigger).await.unwrap();
         assert!(!result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert!(result.summary.contains("not found in registry"));
     }
 
@@ -142,7 +146,11 @@ mod tests {
         let result = block.execute(&trigger).await.unwrap();
 
         assert!(result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert!(result.summary.contains("no vulnerabilities found"));
     }
 
@@ -301,7 +309,11 @@ mod tests {
 
         // A scanner error is not a block failure — the scan is simply skipped.
         assert!(result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert!(result.summary.contains("Scan skipped"));
     }
 }

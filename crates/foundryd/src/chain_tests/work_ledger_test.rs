@@ -522,7 +522,10 @@ async fn one_dispatch_broadcasts_and_logs_its_three_work_item_events() {
         assert_eq!(event.payload["lane"], "interactive");
         assert_eq!(event.payload["origin"], "foundry task");
         assert!(event.payload["state"].is_string());
-        assert!(!event.payload["reason"].as_str().unwrap().is_empty());
+        assert!(
+            !event.payload["reason"].as_str().unwrap().is_empty(),
+            "expected `event.payload[\"reason\"].as_str().unwrap()` to be non-empty"
+        );
     }
 
     let logged: String = std::fs::read_dir(&events_dir)
@@ -751,7 +754,10 @@ async fn a_charter_failed_dispatch_broadcasts_its_three_work_item_events() {
         assert_eq!(event.payload["kind"], "task");
         assert_eq!(event.payload["lane"], "interactive");
         assert_eq!(event.payload["origin"], "foundry task");
-        assert!(!event.payload["reason"].as_str().unwrap().is_empty());
+        assert!(
+            !event.payload["reason"].as_str().unwrap().is_empty(),
+            "expected `event.payload[\"reason\"].as_str().unwrap()` to be non-empty"
+        );
     }
     let settled = ledger_events[2];
     assert_eq!(settled.payload["state"], "failed");
@@ -996,7 +1002,11 @@ fn assert_resume_branch_cleanup(
                 .any(|r| r.remote && r.deleted)
         );
         assert!(remote.status.success());
-        assert!(remote.stdout.is_empty());
+        assert!(
+            remote.stdout.is_empty(),
+            "expected `remote.stdout` to be empty: {:?}",
+            remote.stdout
+        );
     }
 }
 
@@ -1301,7 +1311,8 @@ async fn resume_nonlanding_results_and_pre_agent_failure_keep_parent_open() {
                 &parent.id
             )
             .unwrap()
-            .is_empty()
+            .is_empty(),
+            "the parent records no lifecycle events"
         );
         let logged = foundry_sdk::work_item_events::read_work_item_events(
             &dir.path().join("events"),
@@ -1579,7 +1590,8 @@ async fn resume_settlement_save_failure_emits_no_false_child_or_parent_settlemen
             &parent.id
         )
         .unwrap()
-        .is_empty()
+        .is_empty(),
+        "the parent records no lifecycle events"
     );
     let child_events =
         foundry_sdk::work_item_events::read_work_item_events(&dir.path().join("events"), &child.id)
@@ -1601,7 +1613,11 @@ async fn assert_terminal_redelivery_is_inert(ledger: &Path, observed: &[Event]) 
         .clone();
     let before = std::fs::read(ledger).unwrap();
     let settle = foundry_blocks::blocks::SettleWorkItem::new(ledger.to_path_buf());
-    assert!(settle.execute(&terminal).await.unwrap().events.is_empty());
+    let unexpected = settle.execute(&terminal).await.unwrap().events;
+    assert!(
+        unexpected.is_empty(),
+        "expected `settle.execute(&terminal).await.unwrap().events` to be empty: {unexpected:?}"
+    );
     assert_eq!(std::fs::read(ledger).unwrap(), before);
 }
 
@@ -1942,7 +1958,7 @@ fn assert_rejected_resume_history(
             assert_eq!(event.trace_id, child.trace_id);
         }
     } else {
-        assert!(lifecycle.is_empty());
+        assert!(lifecycle.is_empty(), "expected `lifecycle` to be empty: {lifecycle:?}");
     }
 }
 

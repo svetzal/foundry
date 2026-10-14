@@ -473,7 +473,11 @@ async fn generated_client_span_returns_block_only_span_with_owning_trace() {
 
     assert!(response.found);
     assert_eq!(response.trace_id, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-    assert!(response.events.is_empty());
+    assert!(
+        response.events.is_empty(),
+        "expected `response.events` to be empty: {:?}",
+        response.events
+    );
     assert_eq!(response.block_executions.len(), 1);
     assert_eq!(response.block_executions[0].block_name, "RunAlpha");
     assert_eq!(response.block_executions[0].span_id, "2222222222222222");
@@ -495,8 +499,20 @@ async fn generated_client_unknown_span_keeps_not_found_shape() {
         .into_inner();
 
     assert!(!response.found);
-    assert!(response.trace_id.is_empty());
-    assert!(response.events.is_empty());
-    assert!(response.block_executions.is_empty());
+    assert!(
+        response.trace_id.is_empty(),
+        "expected `response.trace_id` to be empty: {:?}",
+        response.trace_id
+    );
+    assert!(
+        response.events.is_empty(),
+        "expected `response.events` to be empty: {:?}",
+        response.events
+    );
+    assert!(
+        response.block_executions.is_empty(),
+        "expected `response.block_executions` to be empty: {:?}",
+        response.block_executions
+    );
     assert_eq!(response.total_duration_ms, 0);
 }

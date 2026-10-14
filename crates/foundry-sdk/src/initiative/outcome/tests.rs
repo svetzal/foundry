@@ -112,7 +112,11 @@ fn absent_report_artifact_wrong_host_and_dirty_trunks_cannot_pass() {
             _ => evidence.snapshot.repositories[0].status = " M source.rs".into(),
         }
         assert!(store.record_integration_result("test", evidence).is_err());
-        assert!(store.find_initiative("test").unwrap().integration_results.is_empty());
+        assert!(
+            store.find_initiative("test").unwrap().integration_results.is_empty(),
+            "expected `store.find_initiative(\"test\").unwrap().integration_results` to be empty: {:?}",
+            store.find_initiative("test").unwrap().integration_results
+        );
     }
 }
 
@@ -166,7 +170,11 @@ fn stage_inherits_owner_budget_providers_and_requires_a_later_advance() {
         store.find_initiative("test").unwrap().providers
     );
     assert_eq!(store.shared_cycles_used("test").unwrap(), 0);
-    assert!(store.find_initiative("test").unwrap().reservations.is_empty());
+    assert!(
+        store.find_initiative("test").unwrap().reservations.is_empty(),
+        "expected `store.find_initiative(\"test\").unwrap().reservations` to be empty: {:?}",
+        store.find_initiative("test").unwrap().reservations
+    );
     assert!(
         store
             .commit_steering(
@@ -343,7 +351,11 @@ fn owner_reconsideration_starts_a_new_completion_generation_and_retains_history(
         store.initiative_view("test").unwrap().status,
         crate::initiative::InitiativeStatus::Escalated
     );
-    assert!(store.initiative_view("test").unwrap().open_questions.is_empty());
+    assert!(
+        store.initiative_view("test").unwrap().open_questions.is_empty(),
+        "expected `store.initiative_view(\"test\").unwrap().open_questions` to be empty: {:?}",
+        store.initiative_view("test").unwrap().open_questions
+    );
     store
         .find_initiative_mut("test")
         .unwrap()
@@ -385,7 +397,11 @@ fn owner_reconsideration_starts_a_new_completion_generation_and_retains_history(
         serde_json::json!({"intent_ref":"et:goal:old","completed_at":Utc::now()}),
     )
     .unwrap();
-    assert!(old.proposal_id.is_empty());
+    assert!(
+        old.proposal_id.is_empty(),
+        "expected `old.proposal_id` to be empty: {:?}",
+        old.proposal_id
+    );
 }
 
 #[test]

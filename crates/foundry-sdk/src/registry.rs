@@ -1349,7 +1349,7 @@ mod tests {
     #[test]
     fn mutation_error_display_conflicting_install() {
         let e = RegistryMutationError::ConflictingInstall;
-        assert!(!e.to_string().is_empty());
+        assert!(!e.to_string().is_empty(), "expected `e.to_string()` to be non-empty");
     }
 
     // --- update policy ---

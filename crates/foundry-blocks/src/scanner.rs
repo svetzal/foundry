@@ -1776,7 +1776,11 @@ mod tests {
     fn a_commented_out_mix_audit_does_not_count() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "mix.exs", "# {:mix_audit, \"~> 2.1\"}\n");
-        assert!(mix_audit_projects(dir.path()).is_empty());
+        assert!(
+            mix_audit_projects(dir.path()).is_empty(),
+            "expected `mix_audit_projects(dir.path())` to be empty: {:?}",
+            mix_audit_projects(dir.path())
+        );
     }
 
     #[tokio::test]
@@ -2983,7 +2987,7 @@ mod tests {
         let result = result_with(vec![vuln(Some("CVE-2026-45829"))]);
         let (live, accepted, _) =
             triage_ids(&result, &["CVE-2026-45829".to_string()], &SupplyChainAllowlist::default());
-        assert!(live.is_empty());
+        assert!(live.is_empty(), "expected `live` to be empty: {live:?}");
         assert_eq!(accepted, ["CVE-2026-45829"]);
     }
 
@@ -3029,7 +3033,7 @@ mod tests {
         let result = result_with(vec![v]);
         let (live, _, _) =
             triage_ids(&result, &["CVE-2026-45829".to_string()], &SupplyChainAllowlist::default());
-        assert!(live.is_empty());
+        assert!(live.is_empty(), "expected `live` to be empty: {live:?}");
     }
 
     #[test]
@@ -3038,7 +3042,7 @@ mod tests {
         let (live, accepted, lapsed) =
             triage_ids(&result, &[], &allow(&[("CVE-2026-45829", Some("2026-09-01"))]));
         assert_eq!(live, ["CVE-2026-45829"], "lapsed acceptance is live again");
-        assert!(accepted.is_empty());
+        assert!(accepted.is_empty(), "expected `accepted` to be empty: {accepted:?}");
         assert_eq!(lapsed, ["CVE-2026-45829"]);
     }
 

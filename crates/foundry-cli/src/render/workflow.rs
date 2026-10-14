@@ -352,7 +352,7 @@ mod tests {
     fn scout_result_explanation_absent() {
         let payload = r#"{"candidate_count":1,"high_value_count":0,"candidates":[{"rank":1,"summary":"s","divergence_type":"dt","high_value":false,"confidence":"high","suggested_next_step":"ns"}]}"#;
         let r = scout_result("myproj", payload);
-        assert!(!r.is_empty());
+        assert!(!r.is_empty(), "expected `r` to be non-empty");
     }
 
     // -- validation_result tests --

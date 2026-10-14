@@ -1213,7 +1213,11 @@ mod cli_surface_tests {
             Commands::Task(args) => {
                 assert_eq!(args.after, vec!["wi_a".to_string(), "wi_b".to_string()]);
                 assert_eq!(args.not_before.as_deref(), Some("2h"));
-                assert!(args.continues.is_empty());
+                assert!(
+                    args.continues.is_empty(),
+                    "expected `args.continues` to be empty: {:?}",
+                    args.continues
+                );
             }
             _ => panic!("expected the task subcommand"),
         }

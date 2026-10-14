@@ -429,7 +429,11 @@ mod tests {
         )]);
         let b = build(Some(UpdatePolicy::Minor), &c);
         assert_eq!(targets(&b.apply), [("phoenix", "1.9.0", ChangeKind::Manifest)]);
-        assert!(b.held_by_policy.is_empty());
+        assert!(
+            b.held_by_policy.is_empty(),
+            "expected `b.held_by_policy` to be empty: {:?}",
+            b.held_by_policy
+        );
         assert_eq!(b.apply[0].class, UpdateClass::Minor);
     }
 
@@ -500,7 +504,7 @@ mod tests {
         let mut d = with(dep("jose", "0.9.0"), None, None, Some("1.2.0"));
         d.advisories = vec![advisory("CVE-jose", "1.0.1")];
         let b = build(Some(UpdatePolicy::Patch), &classification(vec![d]));
-        assert!(b.apply.is_empty());
+        assert!(b.apply.is_empty(), "expected `b.apply` to be empty: {:?}", b.apply);
         assert_eq!(targets(&b.majors), [("jose", "1.0.1", ChangeKind::Manifest)]);
         assert_eq!(b.majors[0].security.as_deref(), Some("CVE-jose"));
     }

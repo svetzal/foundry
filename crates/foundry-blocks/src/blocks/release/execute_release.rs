@@ -183,7 +183,11 @@ mod tests {
         let trigger = release_trigger(serde_json::json!({}));
         let result = block.execute(&trigger).await.unwrap();
         assert!(result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert!(result.summary.contains("Skipped"));
     }
 
@@ -205,7 +209,11 @@ mod tests {
         let trigger = release_trigger(serde_json::json!({}));
         let result = block.execute(&trigger).await.unwrap();
         assert!(!result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert!(result.summary.contains("AGENTS.md not found"));
     }
 
@@ -274,7 +282,11 @@ mod tests {
             Throttle::DryRun,
             serde_json::json!({}),
         );
-        assert!(block.dry_run_events(&trigger).is_empty());
+        assert!(
+            block.dry_run_events(&trigger).is_empty(),
+            "expected `block.dry_run_events(&trigger)` to be empty: {:?}",
+            block.dry_run_events(&trigger)
+        );
     }
 
     #[test]
@@ -294,7 +306,11 @@ mod tests {
             serde_json::json!({}),
         );
 
-        assert!(block.dry_run_events(&trigger).is_empty());
+        assert!(
+            block.dry_run_events(&trigger).is_empty(),
+            "expected `block.dry_run_events(&trigger)` to be empty: {:?}",
+            block.dry_run_events(&trigger)
+        );
     }
 
     fn git_revparse_sequence(

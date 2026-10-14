@@ -354,7 +354,7 @@ impl Harness {
                     .is_some_and(|root| root.event_type == EventType::CampaignAdvanceRequested)
             })
             .collect();
-        items.sort_by(|a, b| a.submitted_at.cmp(&b.submitted_at));
+        items.sort_by_key(|item| item.submitted_at);
         items
     }
 
@@ -484,7 +484,7 @@ async fn an_advance_for_another_campaign_is_admitted_while_one_forms() {
     let harness = Harness::new(&["alpha", "beta"], agent.clone());
 
     let first = harness.advance("alpha").await;
-    assert!(!first.event_id.is_empty());
+    assert!(!first.event_id.is_empty(), "expected `first.event_id` to be non-empty");
     wait_until("alpha's formation to reach its agent", || agent.entered() >= 1).await;
 
     // The production hang: this call waited on alpha's formation.
@@ -585,7 +585,11 @@ async fn a_campaign_paused_while_it_forms_stays_paused_and_its_advance_lands() {
     let stored = harness.stored("alpha");
     assert_eq!(stored.status, CampaignStatus::Paused, "the operator's pause stands");
     assert_eq!(stored.cycles_completed, 0, "the formed objective was not dispatched");
-    assert!(stored.objective_history.is_empty());
+    assert!(
+        stored.objective_history.is_empty(),
+        "expected `stored.objective_history` to be empty: {:?}",
+        stored.objective_history
+    );
     let events = harness.drain();
     assert_eq!(count_of(&events, &EventType::ExecutionRequested), 0);
     let completions = advance_completions(&events, "alpha");
@@ -963,7 +967,11 @@ async fn an_advance_while_an_advance_waits_in_the_ledger_names_it() {
 
     let response = harness.advance("alpha").await;
 
-    assert!(response.event_id.is_empty());
+    assert!(
+        response.event_id.is_empty(),
+        "expected `response.event_id` to be empty: {:?}",
+        response.event_id
+    );
     let in_flight = response.in_flight.expect("the queued advance is named");
     assert_eq!(in_flight.kind, "advance");
     assert_eq!(in_flight.work_item_id, queued.id);
@@ -971,7 +979,11 @@ async fn an_advance_while_an_advance_waits_in_the_ledger_names_it() {
     assert_eq!(in_flight.event_id, queued.pending_root.unwrap().id);
     harness.settled().await;
     assert_eq!(agent.entered(), 0);
-    assert!(harness.drain_events().is_empty());
+    assert!(
+        harness.drain_events().is_empty(),
+        "expected `harness.drain_events()` to be empty: {:?}",
+        harness.drain_events()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

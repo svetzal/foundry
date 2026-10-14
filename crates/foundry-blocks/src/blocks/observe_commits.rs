@@ -359,7 +359,11 @@ mod tests {
             "first project should carry the captured error"
         );
         assert!(payload.projects[0].error.as_deref().unwrap().contains("128"));
-        assert!(payload.projects[0].commits.is_empty());
+        assert!(
+            payload.projects[0].commits.is_empty(),
+            "expected `payload.projects[0].commits` to be empty: {:?}",
+            payload.projects[0].commits
+        );
         assert!(payload.projects[1].error.is_none());
         assert_eq!(payload.projects[1].commits.len(), 1);
         assert_eq!(payload.total_commits(), 1);

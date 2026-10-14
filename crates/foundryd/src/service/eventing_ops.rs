@@ -872,8 +872,20 @@ mod tests {
 
     #[test]
     fn nothing_is_dispatched_under_dry_run_or_for_a_review() {
-        assert!(planned_major_dispatches(&summary_with(vec![plan_event(false, false)])).is_empty());
-        assert!(planned_major_dispatches(&summary_with(vec![plan_event(true, true)])).is_empty());
-        assert!(planned_major_dispatches(&summary_with(vec![])).is_empty());
+        assert!(
+            planned_major_dispatches(&summary_with(vec![plan_event(false, false)])).is_empty(),
+            "expected `planned_major_dispatches(&summary_with(vec![plan_event(false, false)]))` to be empty: {:?}",
+            planned_major_dispatches(&summary_with(vec![plan_event(false, false)]))
+        );
+        assert!(
+            planned_major_dispatches(&summary_with(vec![plan_event(true, true)])).is_empty(),
+            "expected `planned_major_dispatches(&summary_with(vec![plan_event(true, true)]))` to be empty: {:?}",
+            planned_major_dispatches(&summary_with(vec![plan_event(true, true)]))
+        );
+        assert!(
+            planned_major_dispatches(&summary_with(vec![])).is_empty(),
+            "expected `planned_major_dispatches(&summary_with(vec![]))` to be empty: {:?}",
+            planned_major_dispatches(&summary_with(vec![]))
+        );
     }
 }

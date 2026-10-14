@@ -239,7 +239,7 @@ mod tests {
     fn a_missing_events_directory_is_an_empty_history() {
         let dir = tempfile::tempdir().expect("tempdir");
         let records = read_work_item_events(&dir.path().join("absent"), "wi_a").expect("no fault");
-        assert!(records.is_empty());
+        assert!(records.is_empty(), "expected `records` to be empty: {records:?}");
     }
 
     #[test]
@@ -310,7 +310,11 @@ mod tests {
         std::fs::write(dir.path().join("2026-01.jsonl"), format!("{}\n", line(&unrelated)))
             .expect("write");
 
-        assert!(read_work_item_events(dir.path(), "wi_a").expect("read").is_empty());
+        assert!(
+            read_work_item_events(dir.path(), "wi_a").expect("read").is_empty(),
+            "expected `read_work_item_events(dir.path(), \"wi_a\").expect(\"read\")` to be empty: {:?}",
+            read_work_item_events(dir.path(), "wi_a").expect("read")
+        );
     }
 
     #[test]
@@ -321,7 +325,11 @@ mod tests {
         std::fs::write(dir.path().join("2026-01.jsonl"), format!("{}\n", line(&longer)))
             .expect("write");
 
-        assert!(read_work_item_events(dir.path(), "wi_ab").expect("read").is_empty());
+        assert!(
+            read_work_item_events(dir.path(), "wi_ab").expect("read").is_empty(),
+            "expected `read_work_item_events(dir.path(), \"wi_ab\").expect(\"read\")` to be empty: {:?}",
+            read_work_item_events(dir.path(), "wi_ab").expect("read")
+        );
     }
 
     #[test]
@@ -330,7 +338,11 @@ mod tests {
         let stray = event(EventType::WorkItemSubmitted, "wi_a", WorkItemState::Submitted, at(1, 1));
         std::fs::write(dir.path().join("notes.txt"), format!("{}\n", line(&stray))).expect("write");
 
-        assert!(read_work_item_events(dir.path(), "wi_a").expect("read").is_empty());
+        assert!(
+            read_work_item_events(dir.path(), "wi_a").expect("read").is_empty(),
+            "expected `read_work_item_events(dir.path(), \"wi_a\").expect(\"read\")` to be empty: {:?}",
+            read_work_item_events(dir.path(), "wi_a").expect("read")
+        );
     }
 
     #[test]

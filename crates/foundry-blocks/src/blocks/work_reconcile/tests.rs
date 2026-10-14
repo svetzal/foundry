@@ -524,7 +524,11 @@ async fn assert_missing_origin(
                 && finding.detail.contains("registered trunk refs/heads/main")
         }));
     } else {
-        assert!(report.settled_ids.is_empty());
+        assert!(
+            report.settled_ids.is_empty(),
+            "expected `report.settled_ids` to be empty: {:?}",
+            report.settled_ids
+        );
         assert_eq!(stored.items[0].state, WorkItemState::Preserved);
     }
 }

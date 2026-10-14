@@ -508,7 +508,11 @@ async fn nightly_resume_retains_eligibility_inflight_and_non_dispatch_modes() {
         let summary = f.plan(throttle, policy, succeeded).await;
         let plan: MajorUpgradesPlannedPayload = summary.events[0].parse_payload().unwrap();
         assert_eq!(plan.upgrades[0].status, expected);
-        assert!(crate::service::eventing_ops::planned_major_dispatches(&summary).is_empty());
+        assert!(
+            crate::service::eventing_ops::planned_major_dispatches(&summary).is_empty(),
+            "expected `crate::service::eventing_ops::planned_major_dispatches(&summary)` to be empty: {:?}",
+            crate::service::eventing_ops::planned_major_dispatches(&summary)
+        );
     }
     let summary = f.plan(Throttle::Full, UpdatePolicy::Major, true).await;
     let mut request = Event::new(
@@ -525,7 +529,8 @@ async fn nightly_resume_retains_eligibility_inflight_and_non_dispatch_modes() {
             block_executions: vec![],
             total_duration_ms: 0
         })
-        .is_empty()
+        .is_empty(),
+        "an interrupted plan dispatches no majors"
     );
     let trace = f.ctx.trace_writer.read("maintenance").unwrap();
     request = trace.events[0].clone();
@@ -537,7 +542,8 @@ async fn nightly_resume_retains_eligibility_inflight_and_non_dispatch_modes() {
             block_executions: vec![],
             total_duration_ms: 0
         })
-        .is_empty()
+        .is_empty(),
+        "a review-phase plan dispatches no majors"
     );
     let writer = foundry_engine::event_writer::EventWriter::new(f.dir.path().join("events"));
     writer
@@ -752,7 +758,11 @@ async fn nightly_unmatched_preserved_history_still_suppresses_and_ledger_fault_d
     let plan: MajorUpgradesPlannedPayload = summary.events[0].parse_payload().unwrap();
     assert!(!plan.dispatch_enabled);
     assert!(plan.history_warning.as_deref().unwrap().contains("ledger unreadable"));
-    assert!(crate::service::eventing_ops::planned_major_dispatches(&summary).is_empty());
+    assert!(
+        crate::service::eventing_ops::planned_major_dispatches(&summary).is_empty(),
+        "expected `crate::service::eventing_ops::planned_major_dispatches(&summary)` to be empty: {:?}",
+        crate::service::eventing_ops::planned_major_dispatches(&summary)
+    );
 }
 
 #[tokio::test]

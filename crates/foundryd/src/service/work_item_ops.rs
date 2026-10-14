@@ -1149,7 +1149,8 @@ mod tests {
         assert!(
             super::cancel_waiting_initiative(&path, "shared", &["member".into()], "Retry")
                 .unwrap()
-                .is_empty()
+                .is_empty(),
+            "no waiting initiative item is cancelled"
         );
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }

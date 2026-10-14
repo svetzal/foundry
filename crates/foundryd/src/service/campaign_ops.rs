@@ -1039,7 +1039,11 @@ mod in_flight_tests {
         .unwrap();
         assert_eq!(found.kind, "advance");
         assert_eq!(found.state, "submitted");
-        assert!(found.work_item_id.is_empty());
+        assert!(
+            found.work_item_id.is_empty(),
+            "expected `found.work_item_id` to be empty: {:?}",
+            found.work_item_id
+        );
         assert_eq!(found.event_id, "evt_tracked");
     }
 

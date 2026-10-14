@@ -293,7 +293,11 @@ mod tests {
     #[test]
     fn dry_run_events_default_is_empty_for_observer() {
         let event = make_event();
-        assert!(StubObserver.dry_run_events(&event).is_empty());
+        assert!(
+            StubObserver.dry_run_events(&event).is_empty(),
+            "expected `StubObserver.dry_run_events(&event)` to be empty: {:?}",
+            StubObserver.dry_run_events(&event)
+        );
     }
 
     #[test]
@@ -308,10 +312,18 @@ mod tests {
         let result = TaskBlockResult::success("all good", vec![]);
         assert!(result.success);
         assert_eq!(result.summary, "all good");
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert!(result.raw_output.is_none());
         assert!(result.exit_code.is_none());
-        assert!(result.audit_artifacts.is_empty());
+        assert!(
+            result.audit_artifacts.is_empty(),
+            "expected `result.audit_artifacts` to be empty: {:?}",
+            result.audit_artifacts
+        );
     }
 
     #[test]
@@ -319,7 +331,11 @@ mod tests {
         let result = TaskBlockResult::failure("something broke");
         assert!(!result.success);
         assert_eq!(result.summary, "something broke");
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
     }
 
     #[test]
@@ -341,11 +357,23 @@ mod tests {
     fn task_block_result_default_is_an_empty_failure() {
         let result = TaskBlockResult::default();
         assert!(!result.success);
-        assert!(result.summary.is_empty());
-        assert!(result.events.is_empty());
+        assert!(
+            result.summary.is_empty(),
+            "expected `result.summary` to be empty: {:?}",
+            result.summary
+        );
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert!(result.raw_output.is_none());
         assert!(result.exit_code.is_none());
-        assert!(result.audit_artifacts.is_empty());
+        assert!(
+            result.audit_artifacts.is_empty(),
+            "expected `result.audit_artifacts` to be empty: {:?}",
+            result.audit_artifacts
+        );
         assert!(result.scatter.is_none());
     }
 
@@ -376,7 +404,11 @@ mod tests {
         };
         assert!(result.success);
         assert_eq!(result.summary, "done");
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
     }
 
     #[test]

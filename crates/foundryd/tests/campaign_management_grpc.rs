@@ -385,7 +385,11 @@ async fn complete_persist_failure_returns_internal_keeps_store_bytes_and_emits_n
     let stored = CampaignStore::load(&campaigns_path).expect("load store after failure");
     let campaign = stored.find("c").expect("campaign remains present");
     assert_eq!(campaign.status, CampaignStatus::Paused);
-    assert!(campaign.owner_decisions.is_empty());
+    assert!(
+        campaign.owner_decisions.is_empty(),
+        "expected `campaign.owner_decisions` to be empty: {:?}",
+        campaign.owner_decisions
+    );
 
     while let Ok(event) = rx.try_recv() {
         assert_ne!(

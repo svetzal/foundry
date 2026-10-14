@@ -254,7 +254,11 @@ async fn assert_supersession(proof: &str, source: &str) {
     assert!(std::fs::read(history_path).unwrap().starts_with(&history));
     let bytes = std::fs::read(&ledger).unwrap();
     let repeat = foundry_blocks::blocks::SettleWorkItem::with_registry(ledger.clone(), registry);
-    assert!(repeat.execute(terminal).await.unwrap().events.is_empty());
+    let unexpected = repeat.execute(terminal).await.unwrap().events;
+    assert!(
+        unexpected.is_empty(),
+        "expected `repeat.execute(terminal).await.unwrap().events` to be empty: {unexpected:?}"
+    );
     assert_eq!(std::fs::read(&ledger).unwrap(), bytes);
     assert_eq!(*agent.0.lock().unwrap(), 2);
     server.abort();
@@ -410,7 +414,7 @@ async fn supersession_git_failures_no_landing_and_failed_save_are_not_proof() {
             .collect();
         if fault == "save-failure" {
             assert_eq!(std::fs::read(&ledger).unwrap(), bytes);
-            assert!(settlements.is_empty());
+            assert!(settlements.is_empty(), "expected `settlements` to be empty: {settlements:?}");
         } else {
             assert_eq!(settlements.len(), 1);
             assert_eq!(settlements[0].payload["item_id"], running.id);
@@ -426,7 +430,8 @@ async fn supersession_git_failures_no_landing_and_failed_save_are_not_proof() {
         assert!(
             foundry_sdk::work_item_events::read_work_item_events(&events_dir, &preserved.id)
                 .unwrap()
-                .is_empty()
+                .is_empty(),
+            "the preserved item records no lifecycle events"
         );
         while let Ok(event) = watch.try_recv() {
             if event.event_type == EventType::WorkItemSettled {
@@ -664,7 +669,11 @@ async fn automatic_supersession_respects_concurrent_owner_cancellation_and_unrel
     assert_eq!(recorded[1].trace_id, preserved.trace_id);
     assert!(std::fs::read(log_path).unwrap().starts_with(&history));
     let repeat = foundry_blocks::blocks::SettleWorkItem::with_registry(ledger, registry);
-    assert!(repeat.execute(terminal).await.unwrap().events.is_empty());
+    let unexpected = repeat.execute(terminal).await.unwrap().events;
+    assert!(
+        unexpected.is_empty(),
+        "expected `repeat.execute(terminal).await.unwrap().events` to be empty: {unexpected:?}"
+    );
     server.abort();
 }
 
@@ -937,7 +946,11 @@ async fn scheduled_reconciliation_proves_registered_trunk_and_preserves_history(
                 .into_inner();
             let repeat: WorkReconcileCompletedPayload =
                 serde_json::from_str(&repeat.completion_json).unwrap();
-            assert!(repeat.settled_ids.is_empty());
+            assert!(
+                repeat.settled_ids.is_empty(),
+                "expected `repeat.settled_ids` to be empty: {:?}",
+                repeat.settled_ids
+            );
             assert_eq!(
                 foundry_sdk::work_item_events::read_work_item_events(
                     &dir.path().join("events"),
@@ -1050,7 +1063,7 @@ async fn reconcile_service_surfaces_fetch_git_ledger_and_digest_failures() {
             .parse_payload()
             .unwrap();
         assert!(!report.success);
-        assert!(!report.errors.is_empty());
+        assert!(!report.errors.is_empty(), "expected `report.errors` to be non-empty");
         assert!(observed.iter().any(
             |e| e.event_type == EventType::OpsObserved && e.payload["anomaly_present"] == true
         ));
@@ -1063,7 +1076,11 @@ async fn reconcile_service_surfaces_fetch_git_ledger_and_digest_failures() {
             assert!(report.digest_path.is_none());
             assert!(report.markdown.contains("digest write"));
         } else {
-            assert!(report.settled_ids.is_empty());
+            assert!(
+                report.settled_ids.is_empty(),
+                "expected `report.settled_ids` to be empty: {:?}",
+                report.settled_ids
+            );
             assert_eq!(std::fs::read(&ledger).unwrap(), bytes);
             assert!(!observed.iter().any(|e| e.event_type == EventType::WorkItemSettled));
             assert!(report.digest_path.is_some());
@@ -1145,7 +1162,11 @@ async fn reconcile_reloads_under_owner_gate_and_keeps_concurrent_cancellation_an
         .into_inner();
     let report: foundry_sdk::payload::WorkReconcileCompletedPayload =
         serde_json::from_str(&response.completion_json).unwrap();
-    assert!(report.settled_ids.is_empty());
+    assert!(
+        report.settled_ids.is_empty(),
+        "expected `report.settled_ids` to be empty: {:?}",
+        report.settled_ids
+    );
     assert!(
         report
             .findings

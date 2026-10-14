@@ -288,7 +288,11 @@ mod tests {
 
         let result = block.execute(&t).await.unwrap();
         assert!(!result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert!(result.summary.contains("not found in registry"));
     }
 
@@ -453,7 +457,11 @@ mod tests {
             "run_id": 1,
             "run_name": "CI",
         });
-        assert!(block.dry_run_events(&t).is_empty());
+        assert!(
+            block.dry_run_events(&t).is_empty(),
+            "expected `block.dry_run_events(&t)` to be empty: {:?}",
+            block.dry_run_events(&t)
+        );
     }
 
     #[test]

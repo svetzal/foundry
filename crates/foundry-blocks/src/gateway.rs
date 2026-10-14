@@ -686,7 +686,7 @@ mod claude_agent_gateway_streaming_tests {
         assert_eq!(started.payload["access"], "full");
         assert_eq!(started.payload["project"], "demo-project");
         let session_id = started.payload["session_id"].as_str().unwrap().to_string();
-        assert!(!session_id.is_empty());
+        assert!(!session_id.is_empty(), "expected `session_id` to be non-empty");
         let log_path = started.payload["source_log_path"].as_str().unwrap();
         assert!(
             std::path::Path::new(log_path)

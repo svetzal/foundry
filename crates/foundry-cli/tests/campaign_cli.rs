@@ -841,7 +841,11 @@ fn offline_campaign_show_recovers_a_pre_record_escalation_from_the_event_log() {
         parsed["owner_options"][0]["command"],
         "foundry campaign decide legacy --decision \"<text>\""
     );
-    assert!(parsed["cycles"].as_array().expect("cycles array").is_empty());
+    assert!(
+        parsed["cycles"].as_array().expect("cycles array").is_empty(),
+        "expected `parsed[\"cycles\"].as_array().expect(\"cycles array\")` to be empty: {:?}",
+        parsed["cycles"].as_array().expect("cycles array")
+    );
 
     assert_eq!(
         std::fs::read(&campaigns).expect("read campaigns"),

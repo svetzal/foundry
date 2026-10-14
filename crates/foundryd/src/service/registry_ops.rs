@@ -486,7 +486,11 @@ mod tests {
         assert!(!proto.installs_skill_default);
         assert!(!proto.installs_skill_explicitly_disabled);
         assert_eq!(proto.installs_skill_command, "");
-        assert!(proto.audit_exceptions.is_empty());
+        assert!(
+            proto.audit_exceptions.is_empty(),
+            "expected `proto.audit_exceptions` to be empty: {:?}",
+            proto.audit_exceptions
+        );
     }
 
     #[test]

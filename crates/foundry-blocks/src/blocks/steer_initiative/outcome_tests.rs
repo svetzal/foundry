@@ -148,9 +148,21 @@ async fn current_gates_and_reviews_propose_done_until_owner_confirmation() {
     let initiative = store.initiative_view("shared").unwrap();
     assert!(initiative.completion_proposal.is_some());
     assert!(!initiative.status.is_terminal());
-    assert!(initiative.completion_receipts.is_empty());
-    assert!(initiative.pending_actions.is_empty());
-    assert!(applied.events.is_empty());
+    assert!(
+        initiative.completion_receipts.is_empty(),
+        "expected `initiative.completion_receipts` to be empty: {:?}",
+        initiative.completion_receipts
+    );
+    assert!(
+        initiative.pending_actions.is_empty(),
+        "expected `initiative.pending_actions` to be empty: {:?}",
+        initiative.pending_actions
+    );
+    assert!(
+        applied.events.is_empty(),
+        "expected `applied.events` to be empty: {:?}",
+        applied.events
+    );
 }
 
 #[tokio::test]
@@ -220,7 +232,11 @@ async fn a_review_only_pending_proposal_refreshes_trunks_before_reassessment() {
     let initiative =
         CampaignStore::load(&fixture.store).unwrap().initiative_view("shared").unwrap();
     assert!(initiative.completion_proposal.is_none());
-    assert!(initiative.integration_results.is_empty());
+    assert!(
+        initiative.integration_results.is_empty(),
+        "expected `initiative.integration_results` to be empty: {:?}",
+        initiative.integration_results
+    );
     assert_eq!(
         std::fs::read_to_string(fixture.temp.path().join("contract.rs")).unwrap(),
         "current origin contract"
@@ -257,7 +273,11 @@ async fn stage_records_one_campaign_without_starting_or_spending_a_cycle() {
     .await
     .unwrap();
     assert!(applied.success, "{}", applied.summary);
-    assert!(applied.events.is_empty());
+    assert!(
+        applied.events.is_empty(),
+        "expected `applied.events` to be empty: {:?}",
+        applied.events
+    );
 }
 
 #[tokio::test]

@@ -637,7 +637,11 @@ mod tests {
         assert!((estimate.list_usd.unwrap() - 2.34).abs() < 1e-9);
         assert_eq!(estimate.total_tokens, 1_100_000);
         assert_eq!(estimate.basis, CostBasis::PartiallyPriced);
-        assert!(estimate.unpriced_models.is_empty());
+        assert!(
+            estimate.unpriced_models.is_empty(),
+            "expected `estimate.unpriced_models` to be empty: {:?}",
+            estimate.unpriced_models
+        );
         assert!(!estimate.pricing_limitations.iter().any(|s| s.contains("cache-write")));
         assert!(estimate.pricing_limitations.iter().any(|s| s.contains("session totals")));
         let u = crate::token_usage::parse_transcript_str(

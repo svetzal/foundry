@@ -804,6 +804,10 @@ mod tests {
             let project = trigger.project.clone();
             let throttle = trigger.throttle;
             Box::pin(async move {
+                #[allow(
+                    deprecated,
+                    reason = "Rust 1.99 renames fetch_update to try_update, which is newer than the MSRV"
+                )]
                 let prev = remaining.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
                     if v > 0 { Some(v - 1) } else { None }
                 });
