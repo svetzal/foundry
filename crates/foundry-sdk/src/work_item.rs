@@ -964,7 +964,7 @@ mod tests {
     fn loading_a_missing_path_yields_an_empty_ledger() {
         let dir = tempfile::tempdir().unwrap();
         let store = WorkItemStore::load(&dir.path().join("absent.json")).unwrap();
-        assert!(store.items.is_empty());
+        assert!(store.items.is_empty(), "expected `store.items` to be empty: {:?}", store.items);
         assert_eq!(store.version, WORK_ITEM_STORE_VERSION);
     }
 

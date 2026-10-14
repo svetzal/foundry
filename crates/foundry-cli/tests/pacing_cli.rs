@@ -278,7 +278,11 @@ async fn pacing_pause_and_resume_change_the_persisted_lanes() {
     let output = run_foundry(home.path(), &daemon, &daemon.addr, &["pacing", "resume"]);
     assert_command_succeeded(&output);
     assert_eq!(stdout_string(&output), "resumed; paused lanes: none\n");
-    assert!(PauseState::load(&daemon.pacing.state).unwrap().paused.is_empty());
+    assert!(
+        PauseState::load(&daemon.pacing.state).unwrap().paused.is_empty(),
+        "expected `PauseState::load(&daemon.pacing.state).unwrap().paused` to be empty: {:?}",
+        PauseState::load(&daemon.pacing.state).unwrap().paused
+    );
 
     let output =
         run_foundry(home.path(), &daemon, &daemon.addr, &["pacing", "pause", "--lane", "nightly"]);

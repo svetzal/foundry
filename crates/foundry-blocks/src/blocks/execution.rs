@@ -608,8 +608,16 @@ mod tests {
 
     #[test]
     fn workflows_foundry_does_not_push_keep_the_remote() {
-        assert!(execution_environment(WorkflowType::Prompt).is_empty());
-        assert!(execution_environment(WorkflowType::Scout).is_empty());
+        assert!(
+            execution_environment(WorkflowType::Prompt).is_empty(),
+            "expected `execution_environment(WorkflowType::Prompt)` to be empty: {:?}",
+            execution_environment(WorkflowType::Prompt)
+        );
+        assert!(
+            execution_environment(WorkflowType::Scout).is_empty(),
+            "expected `execution_environment(WorkflowType::Scout)` to be empty: {:?}",
+            execution_environment(WorkflowType::Scout)
+        );
     }
 
     // --- iterate: clean tree → failure override ---

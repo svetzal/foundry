@@ -203,7 +203,11 @@ fn committed_action_is_invalidated_by_a_later_owner_hold() {
     store.hold_member("shared", "one", "Wait for owner review").unwrap();
     assert!(store.enforce_steering_action("shared", &action.id, &[]).is_err());
     store.discard_steering_action("shared", &action.id).unwrap();
-    assert!(store.find_initiative("shared").unwrap().reservations.is_empty());
+    assert!(
+        store.find_initiative("shared").unwrap().reservations.is_empty(),
+        "expected `store.find_initiative(\"shared\").unwrap().reservations` to be empty: {:?}",
+        store.find_initiative("shared").unwrap().reservations
+    );
 }
 
 #[test]
@@ -370,7 +374,11 @@ fn refreshed_intent_preserves_links_and_history_and_revokes_only_approved_work()
         .unwrap();
     store.activate_candidate_campaign("goal", "intent", "sample").unwrap();
     store.find_mut("intent").unwrap().cycles_completed = 1;
-    assert!(store.refresh_derived_intent("goal", &projection("created")).unwrap().is_empty());
+    assert!(
+        store.refresh_derived_intent("goal", &projection("created")).unwrap().is_empty(),
+        "expected `store.refresh_derived_intent(\"goal\", &projection(\"created\")).unwrap()` to be empty: {:?}",
+        store.refresh_derived_intent("goal", &projection("created")).unwrap()
+    );
     assert_eq!(store.find("intent").unwrap().cycles_completed, 1);
     assert_ne!(store.find("intent").unwrap().status, CampaignStatus::Cancelled);
     assert_eq!(
@@ -417,7 +425,11 @@ fn historical_realised_audits_do_not_restore_revoked_close_proposals() {
             .record_audits("goal", "historical", vec![audit("src/current.rs")])
             .unwrap();
         let initiative = store.find_initiative("goal").unwrap();
-        assert!(initiative.close_proposals.is_empty());
+        assert!(
+            initiative.close_proposals.is_empty(),
+            "expected `initiative.close_proposals` to be empty: {:?}",
+            initiative.close_proposals
+        );
         assert_eq!(initiative.milestones, milestones);
         assert!(initiative.members[0].audit_finding_id.is_none());
         assert!(store.find_finding("fnd_historical_audit_0").is_some());

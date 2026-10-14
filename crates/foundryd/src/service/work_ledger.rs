@@ -199,7 +199,11 @@ mod tests {
         landed.reason = "task completed, reviewed, and landed".to_string();
         store.upsert(landed);
 
-        assert!(settle_running(&mut store).is_empty());
+        assert!(
+            settle_running(&mut store).is_empty(),
+            "expected `settle_running(&mut store)` to be empty: {:?}",
+            settle_running(&mut store)
+        );
         assert_eq!(store.items[0].state, WorkItemState::Landed);
         assert_eq!(store.items[0].reason, "task completed, reviewed, and landed");
     }
@@ -222,7 +226,11 @@ mod tests {
         assert!(!settled.occupies_slot());
         assert_eq!(settled.state, WorkItemState::Cancelled);
         assert_eq!(settled.reason, "campaign ended");
-        assert!(settle_running(&mut store).is_empty());
+        assert!(
+            settle_running(&mut store).is_empty(),
+            "expected `settle_running(&mut store)` to be empty: {:?}",
+            settle_running(&mut store)
+        );
     }
 
     #[test]

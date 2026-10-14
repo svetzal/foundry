@@ -317,7 +317,11 @@ mod tests {
         let result = block.execute(&trigger).await.unwrap();
 
         assert!(!result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert!(result.summary.contains("not found"));
     }
 
@@ -406,7 +410,7 @@ mod tests {
 
         let events = block.dry_run_events(&trigger);
 
-        assert!(events.is_empty());
+        assert!(events.is_empty(), "expected `events` to be empty: {events:?}");
     }
 
     #[tokio::test]

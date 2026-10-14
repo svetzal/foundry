@@ -224,7 +224,10 @@ async fn generated_client_decide_campaign_appends_record_and_preserves_pending_r
     assert_eq!(detail.owner_decisions.len(), 1);
     assert_eq!(detail.owner_decisions[0].decision, "Use the generated tonic client path.");
     assert_eq!(detail.owner_decisions[0].authorized_by, "owner");
-    assert!(!detail.owner_decisions[0].decided_at.is_empty());
+    assert!(
+        !detail.owner_decisions[0].decided_at.is_empty(),
+        "expected `detail.owner_decisions[0].decided_at` to be non-empty"
+    );
 
     let stored = CampaignStore::load(tmp_campaigns.path()).expect("load store");
     let campaign = stored.find("c").expect("campaign must exist");
@@ -363,5 +366,9 @@ async fn generated_client_decide_campaign_persist_failure_returns_internal_and_s
     let stored = CampaignStore::load(&campaigns_path).expect("load store after failure");
     let campaign = stored.find("c").expect("campaign remains present");
     assert_eq!(campaign.status, CampaignStatus::Escalated);
-    assert!(campaign.owner_decisions.is_empty());
+    assert!(
+        campaign.owner_decisions.is_empty(),
+        "expected `campaign.owner_decisions` to be empty: {:?}",
+        campaign.owner_decisions
+    );
 }

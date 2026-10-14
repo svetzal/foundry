@@ -887,7 +887,11 @@ mod tests {
         let mut c = campaign(CampaignStatus::Active, false);
         assert_eq!(c.cancel("stop", at()), Ok(Transition::Applied));
         assert_eq!(c.status, CampaignStatus::Cancelled);
-        assert!(c.owner_decisions.is_empty());
+        assert!(
+            c.owner_decisions.is_empty(),
+            "expected `c.owner_decisions` to be empty: {:?}",
+            c.owner_decisions
+        );
     }
 
     #[test]
@@ -1089,8 +1093,16 @@ mod tests {
         assert_eq!(exhausted[1].command, "foundry campaign resume mojentic-x --add-cycles <n>");
         let unauthorized = owner_options("mojentic-x", CampaignStatus::Escalated, false, false);
         assert_eq!(unauthorized.len(), 1, "only cancel needs no owner");
-        assert!(owner_options("c", CampaignStatus::Completed, true, false).is_empty());
-        assert!(owner_options("c", CampaignStatus::Cancelled, true, false).is_empty());
+        assert!(
+            owner_options("c", CampaignStatus::Completed, true, false).is_empty(),
+            "expected `owner_options(\"c\", CampaignStatus::Completed, true, false)` to be empty: {:?}",
+            owner_options("c", CampaignStatus::Completed, true, false)
+        );
+        assert!(
+            owner_options("c", CampaignStatus::Cancelled, true, false).is_empty(),
+            "expected `owner_options(\"c\", CampaignStatus::Cancelled, true, false)` to be empty: {:?}",
+            owner_options("c", CampaignStatus::Cancelled, true, false)
+        );
     }
 
     #[test]

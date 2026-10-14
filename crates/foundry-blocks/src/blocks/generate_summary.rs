@@ -828,7 +828,10 @@ mod tests {
 
         assert!(result.success);
         assert!(result.summary.contains("summary.md"));
-        assert!(!result.audit_artifacts.is_empty());
+        assert!(
+            !result.audit_artifacts.is_empty(),
+            "expected `result.audit_artifacts` to be non-empty"
+        );
 
         // Verify the file was written.
         let artifact_path = &result.audit_artifacts[0];

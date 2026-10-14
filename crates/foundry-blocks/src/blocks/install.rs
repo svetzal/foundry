@@ -789,7 +789,10 @@ mod tests {
         let skill_event = &result.events[1];
         assert_eq!(skill_event.event_type, EventType::LocalSkillInstallCompleted);
         assert_eq!(skill_event.payload["success"], false);
-        assert!(!skill_event.payload["stderr_tail"].as_str().unwrap().is_empty());
+        assert!(
+            !skill_event.payload["stderr_tail"].as_str().unwrap().is_empty(),
+            "expected `skill_event.payload[\"stderr_tail\"].as_str().unwrap()` to be non-empty"
+        );
     }
 
     #[tokio::test]

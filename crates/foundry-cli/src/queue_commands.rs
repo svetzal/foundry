@@ -715,8 +715,16 @@ mod tests {
             render_with_initiatives(&items, &campaigns, &[initiative], View::Open, true).unwrap();
         let value: serde_json::Value = serde_json::from_str(&output).unwrap();
         assert_eq!(value["escalated_initiatives"].as_array().unwrap().len(), 1);
-        assert!(value["escalated_campaigns"].as_array().unwrap().is_empty());
-        assert!(value["items"].as_array().unwrap().is_empty());
+        assert!(
+            value["escalated_campaigns"].as_array().unwrap().is_empty(),
+            "expected `value[\"escalated_campaigns\"].as_array().unwrap()` to be empty: {:?}",
+            value["escalated_campaigns"].as_array().unwrap()
+        );
+        assert!(
+            value["items"].as_array().unwrap().is_empty(),
+            "expected `value[\"items\"].as_array().unwrap()` to be empty: {:?}",
+            value["items"].as_array().unwrap()
+        );
     }
 
     use chrono::{DateTime, Utc};
@@ -819,7 +827,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let missing = dir.path().join("nope/work-items.json");
         let items = load_offline(&missing).expect("a missing ledger is empty, not a fault");
-        assert!(items.is_empty());
+        assert!(items.is_empty(), "expected `items` to be empty: {items:?}");
     }
 
     #[test]
@@ -1082,7 +1090,7 @@ mod tests {
             load_one_offline(tmp.path(), &dir.path().join("absent"), "wi_running")
                 .expect("a missing events dir is empty, not a fault");
         assert_eq!(record.id, "wi_running");
-        assert!(events.is_empty());
+        assert!(events.is_empty(), "expected `events` to be empty: {events:?}");
     }
 
     // ── view plumbing ─────────────────────────────────────────────────────────
@@ -1181,7 +1189,7 @@ mod tests {
         let campaigns_path = dir.path().join("campaigns.json");
         let missing = load_campaigns_offline(&campaigns_path, &dir.path().join("events"))
             .expect("a missing store has no campaigns");
-        assert!(missing.is_empty());
+        assert!(missing.is_empty(), "expected `missing` to be empty: {missing:?}");
         assert!(!campaigns_path.exists(), "a read never creates the store");
 
         let mut legacy: foundry_sdk::campaign::Campaign =

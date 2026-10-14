@@ -942,7 +942,10 @@ mod tests {
             assert!(result.summary.contains(wt.canonicalize().unwrap().to_str().unwrap()));
             if scenario == "running" || scenario == "race" {
                 // Review/finalization can still spawn Git after validation.
-                assert!(!git(&wt, &["rev-parse", "HEAD"]).is_empty());
+                assert!(
+                    !git(&wt, &["rev-parse", "HEAD"]).is_empty(),
+                    "expected `git(&wt, &[\"rev-parse\", \"HEAD\"])` to be non-empty"
+                );
             }
         }
     }

@@ -1160,7 +1160,11 @@ mod tests {
 
         let result = SettleFailedDispatch::new(path.clone()).execute(&elsewhere).await.unwrap();
 
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert_eq!(
             WorkItemStore::load(&path).unwrap().items[0].state,
             WorkItemState::Running,
@@ -1229,7 +1233,11 @@ mod tests {
             .await
             .unwrap();
         assert!(result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
     }
 
     #[tokio::test]

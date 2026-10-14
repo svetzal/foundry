@@ -2468,7 +2468,11 @@ mod tests {
         }
         gates[0].passed = true;
         let compact = formation_gate_results(&gates);
-        assert!(compact[0].output.is_empty());
+        assert!(
+            compact[0].output.is_empty(),
+            "expected `compact[0].output` to be empty: {:?}",
+            compact[0].output
+        );
         assert!(compact[1].output.ends_with("FINAL ERROR"));
         assert!(compact[1].output.contains("full output in advance event"));
         assert!(compact.iter().map(|g| g.output.len()).sum::<usize>() < 17 * 1024);
@@ -4816,7 +4820,7 @@ mod tests {
 
         let events = block.dry_run_events(&trigger);
 
-        assert!(events.is_empty());
+        assert!(events.is_empty(), "expected `events` to be empty: {events:?}");
         assert!(events.iter().all(|e| !format!("{e:?}").contains("unknown")));
     }
 
@@ -4849,7 +4853,7 @@ mod tests {
 
         let events = block.dry_run_events(&trigger);
 
-        assert!(events.is_empty());
+        assert!(events.is_empty(), "expected `events` to be empty: {events:?}");
         assert!(events.iter().all(|e| !format!("{e:?}").contains("unknown")));
     }
     #[tokio::test]

@@ -347,7 +347,11 @@ mod tests {
         let result = block.execute(&t).await.unwrap();
 
         assert!(!result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert!(result.summary.contains("gh run list failed"));
     }
 
@@ -422,7 +426,11 @@ mod tests {
         let result = block.execute(&t).await.unwrap();
 
         assert!(!result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert!(result.summary.contains("not found in registry"));
     }
 }

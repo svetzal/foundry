@@ -296,7 +296,11 @@ async fn a_submitted_cycle_carries_every_earlier_open_cycle_of_its_campaign() {
     assert_announced(&events, &carried.iter().collect::<Vec<_>>(), &ledger);
     // A repeated trigger settles nothing more.
     let bytes = std::fs::read(&fixture.ledger).unwrap();
-    assert!(fixture.run(&lifecycle(EventType::WorkItemStarted, &submitted)).await.is_empty());
+    let unexpected = fixture.run(&lifecycle(EventType::WorkItemStarted, &submitted)).await;
+    assert!(
+        unexpected.is_empty(),
+        "expected `fixture.run(&lifecycle(EventType::WorkItemStarted, &submitted)).await` to be empty: {unexpected:?}"
+    );
     assert_eq!(std::fs::read(&fixture.ledger).unwrap(), bytes);
 }
 
@@ -314,7 +318,11 @@ async fn an_escalated_cycle_stays_open_until_the_campaign_advances_again() {
 
     // The owner decides; the campaign is live again and the question stands.
     fixture.set_campaign(campaign(CampaignStatus::Active));
-    assert!(fixture.run(&lifecycle(EventType::WorkItemSettled, &escalated)).await.is_empty());
+    let unexpected = fixture.run(&lifecycle(EventType::WorkItemSettled, &escalated)).await;
+    assert!(
+        unexpected.is_empty(),
+        "expected `fixture.run(&lifecycle(EventType::WorkItemSettled, &escalated)).await` to be empty: {unexpected:?}"
+    );
     assert_eq!(fixture.ledger().find(&escalated.id), Some(&escalated));
 
     // The next advance submits cycle 5, which carries the escalated cycle.
@@ -396,7 +404,11 @@ async fn an_owner_cancelled_carrier_carries_nothing() {
     let fixture =
         Fixture::new(&[open.clone(), stopped_cycle.clone()], campaign(CampaignStatus::Active));
 
-    assert!(fixture.run(&lifecycle(EventType::WorkItemSettled, &open)).await.is_empty());
+    let unexpected = fixture.run(&lifecycle(EventType::WorkItemSettled, &open)).await;
+    assert!(
+        unexpected.is_empty(),
+        "expected `fixture.run(&lifecycle(EventType::WorkItemSettled, &open)).await` to be empty: {unexpected:?}"
+    );
 
     assert_eq!(fixture.ledger().find(&open.id), Some(&open));
 }
@@ -417,7 +429,7 @@ fn a_concurrent_owner_action_wins_because_the_decision_is_taken_under_the_gate()
 
     let settled = super::settle_campaign_cycles(&mut store, CAMPAIGN, PROJECT, Some("x"), start());
 
-    assert!(settled.is_empty());
+    assert!(settled.is_empty(), "expected `settled` to be empty: {settled:?}");
     assert_eq!(store.find("wi_1"), Some(&closed));
 }
 
@@ -456,7 +468,8 @@ fn a_dry_run_reads_and_writes_nothing() {
         fixture
             .block()
             .dry_run_events(&lifecycle(EventType::WorkItemSubmitted, &cycle_item))
-            .is_empty()
+            .is_empty(),
+        "a dry run announces nothing"
     );
     assert_eq!(std::fs::read(path).unwrap(), before);
 }

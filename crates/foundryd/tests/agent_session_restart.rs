@@ -133,7 +133,11 @@ async fn a_properly_ended_session_records_nothing() {
     let (ctx, mut rx) = runtime_context(&events_dir, &dir.path().join("traces"));
     end_interrupted_agent_sessions_on_start(&ctx, &events_dir).await;
 
-    assert!(ended_events(&mut rx).is_empty());
+    assert!(
+        ended_events(&mut rx).is_empty(),
+        "expected `ended_events(&mut rx)` to be empty: {:?}",
+        ended_events(&mut rx)
+    );
 }
 
 #[tokio::test]
@@ -194,7 +198,11 @@ async fn a_session_older_than_the_lookback_is_left_alone() {
     let (ctx, mut rx) = runtime_context(&events_dir, &dir.path().join("traces"));
     end_interrupted_agent_sessions_on_start(&ctx, &events_dir).await;
 
-    assert!(ended_events(&mut rx).is_empty());
+    assert!(
+        ended_events(&mut rx).is_empty(),
+        "expected `ended_events(&mut rx)` to be empty: {:?}",
+        ended_events(&mut rx)
+    );
 }
 
 #[tokio::test]
@@ -205,5 +213,9 @@ async fn a_missing_events_directory_is_not_a_start_failure() {
     let (ctx, mut rx) = runtime_context(&events_dir, &dir.path().join("traces"));
     end_interrupted_agent_sessions_on_start(&ctx, &events_dir).await;
 
-    assert!(ended_events(&mut rx).is_empty());
+    assert!(
+        ended_events(&mut rx).is_empty(),
+        "expected `ended_events(&mut rx)` to be empty: {:?}",
+        ended_events(&mut rx)
+    );
 }

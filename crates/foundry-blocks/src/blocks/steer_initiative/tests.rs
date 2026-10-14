@@ -88,8 +88,16 @@ async fn steering_is_read_only_and_records_exact_prompt_once_without_idle_loop()
         fixture.store.clone(),
         fixture.ledger.clone(),
     );
-    assert!(apply.execute(action).await.unwrap().events.is_empty());
-    assert!(apply.execute(action).await.unwrap().events.is_empty());
+    let unexpected = apply.execute(action).await.unwrap().events;
+    assert!(
+        unexpected.is_empty(),
+        "expected `apply.execute(action).await.unwrap().events` to be empty: {unexpected:?}"
+    );
+    let unexpected = apply.execute(action).await.unwrap().events;
+    assert!(
+        unexpected.is_empty(),
+        "expected `apply.execute(action).await.unwrap().events` to be empty: {unexpected:?}"
+    );
     assert!(!block.execute(&trigger).await.unwrap().success);
     assert_eq!(agent.invocations().len(), 1);
     assert!(
@@ -98,7 +106,8 @@ async fn steering_is_read_only_and_records_exact_prompt_once_without_idle_loop()
             .initiative_view("shared")
             .unwrap()
             .pending_actions
-            .is_empty()
+            .is_empty(),
+        "no steering action is left pending"
     );
 }
 
@@ -122,7 +131,11 @@ async fn an_agent_cannot_replace_the_owners_requested_member() {
     );
     let initiative =
         CampaignStore::load(&fixture.store).unwrap().initiative_view("shared").unwrap();
-    assert!(initiative.pending_actions.is_empty());
+    assert!(
+        initiative.pending_actions.is_empty(),
+        "expected `initiative.pending_actions` to be empty: {:?}",
+        initiative.pending_actions
+    );
     assert!(initiative.steering.is_none());
 }
 
@@ -183,7 +196,8 @@ async fn owner_change_during_agent_discards_output_and_requests_one_fresh_assess
             .initiative_view("shared")
             .unwrap()
             .steering_history
-            .is_empty()
+            .is_empty(),
+        "no steering decision is recorded"
     );
 }
 
@@ -298,7 +312,11 @@ fn task_landing_consumes_only_the_shown_findings_and_records_verified_milestones
     admission::record_task_evidence(&mut store, "shared", &ledger).unwrap();
     admission::record_task_evidence(&mut store, "shared", &ledger).unwrap();
     assert_eq!(store.find_finding(&finding.id).unwrap().consumed_by.len(), 1);
-    assert!(store.find_finding(&unseen.id).unwrap().consumed_by.is_empty());
+    assert!(
+        store.find_finding(&unseen.id).unwrap().consumed_by.is_empty(),
+        "expected `store.find_finding(&unseen.id).unwrap().consumed_by` to be empty: {:?}",
+        store.find_finding(&unseen.id).unwrap().consumed_by
+    );
     assert_eq!(store.initiative_view("shared").unwrap().milestones.len(), 2);
     assert!(fixture.temp.path().exists());
 }
@@ -369,8 +387,16 @@ async fn committed_action_rechecks_external_evidence_and_releases_stale_reservat
     )));
     let initiative =
         CampaignStore::load(&fixture.store).unwrap().initiative_view("shared").unwrap();
-    assert!(initiative.pending_actions.is_empty());
-    assert!(initiative.reservations.is_empty());
+    assert!(
+        initiative.pending_actions.is_empty(),
+        "expected `initiative.pending_actions` to be empty: {:?}",
+        initiative.pending_actions
+    );
+    assert!(
+        initiative.reservations.is_empty(),
+        "expected `initiative.reservations` to be empty: {:?}",
+        initiative.reservations
+    );
 }
 
 #[tokio::test]
@@ -430,8 +456,16 @@ async fn cleanup_owner_that_arrives_after_steer_refuses_child_and_releases_reser
             .any(|event| event.event_type == EventType::InitiativeAdvanceRequested)
     );
     let mut store = CampaignStore::load(&fixture.store).unwrap();
-    assert!(store.initiative_view("shared").unwrap().pending_actions.is_empty());
-    assert!(store.initiative_view("shared").unwrap().reservations.is_empty());
+    assert!(
+        store.initiative_view("shared").unwrap().pending_actions.is_empty(),
+        "expected `store.initiative_view(\"shared\").unwrap().pending_actions` to be empty: {:?}",
+        store.initiative_view("shared").unwrap().pending_actions
+    );
+    assert!(
+        store.initiative_view("shared").unwrap().reservations.is_empty(),
+        "expected `store.initiative_view(\"shared\").unwrap().reservations` to be empty: {:?}",
+        store.initiative_view("shared").unwrap().reservations
+    );
     assert!(store.begin_steering("shared", "next-event").is_ok());
 }
 
@@ -502,19 +536,19 @@ async fn accumulated_broadcast_findings_do_not_strand_a_new_task_action() {
 
     assert_eq!(child.source.as_ref().unwrap().reference, "shared");
     let findings = child.payload["initiative_findings"].as_array().unwrap();
-    assert!(!findings.is_empty());
+    assert!(!findings.is_empty(), "expected `findings` to be non-empty");
     assert!(findings.len() < 12);
     assert!(serde_json::to_vec(findings).unwrap().len() <= 8192);
     let ids = child.payload["finding_ids"].as_array().unwrap();
     assert_eq!(ids, &findings.iter().map(|finding| finding["id"].clone()).collect::<Vec<_>>());
     assert!(child.payload.get("campaign").is_none());
     assert!(child.payload.get("campaign_limits").is_some());
-    assert!(
+    assert_eq!(
         child.payload["steering_external_context"]["repositories"]
             .as_array()
             .unwrap()
-            .len()
-            == 1
+            .len(),
+        1
     );
     let replay = apply.execute(&event).await.unwrap();
     assert_eq!(replay.events[0].id, child.id);

@@ -1310,7 +1310,7 @@ mod tests {
             h.policy.result_writer.clone(),
         );
         assert!(policy.prepare(&root(EventType::ReleaseRequested, "alpha"), None).is_err());
-        assert!(h.items().is_empty());
+        assert!(h.items().is_empty(), "expected `h.items()` to be empty: {:?}", h.items());
     }
     #[tokio::test]
     async fn digest_agents_wait_for_the_same_host_capacity() {
@@ -1390,7 +1390,11 @@ mod tests {
             let _gate = ledger_write_gate().lock().expect("gate");
             let mut store = h.policy.store().expect("store");
             store.find_mut(&id).expect("item").hold();
-            assert!(crate::service::work_ledger::settle_running(&mut store).is_empty());
+            assert!(
+                crate::service::work_ledger::settle_running(&mut store).is_empty(),
+                "expected `crate::service::work_ledger::settle_running(&mut store)` to be empty: {:?}",
+                crate::service::work_ledger::settle_running(&mut store)
+            );
             store.save(&h.policy.path).expect("save");
         }
         h.scheduler.tick().await;
@@ -1560,7 +1564,11 @@ mod tests {
             &foundry_sdk::pacing::PauseState::default(),
             &str::to_string,
         );
-        assert!(snapshot.running.is_empty());
+        assert!(
+            snapshot.running.is_empty(),
+            "expected `snapshot.running` to be empty: {:?}",
+            snapshot.running
+        );
         std::fs::remove_file(h.dir.path().join("events")).expect("restore log");
         let pending = h.submit(EventType::ProjectMaintenanceRequested, "alpha");
         h.admitted(1).await;
@@ -1656,7 +1664,11 @@ mod tests {
             .expect("plan")
             .expect("item");
         assert_eq!(item.kind, WorkItemKind::Workflow);
-        assert!(item.reserved_projects.is_empty());
+        assert!(
+            item.reserved_projects.is_empty(),
+            "expected `item.reserved_projects` to be empty: {:?}",
+            item.reserved_projects
+        );
     }
     #[tokio::test]
     async fn unregistered_digest_roots_are_refused_before_observers_even_when_host_is_full() {
@@ -1951,7 +1963,11 @@ mod tests {
         assert_eq!(h.items().len(), 1);
         let store = foundry_sdk::campaign::CampaignStore::load(&path).unwrap();
         let initiative = store.find_initiative("shared").unwrap();
-        assert!(initiative.pending_actions.is_empty());
+        assert!(
+            initiative.pending_actions.is_empty(),
+            "expected `initiative.pending_actions` to be empty: {:?}",
+            initiative.pending_actions
+        );
         assert_eq!(initiative.task_dispatches.len(), 1);
         assert_eq!(initiative.work_admissions.len(), 1);
         assert_eq!(store.shared_cycles_used("shared").unwrap(), 1);
@@ -2039,7 +2055,11 @@ mod tests {
             let store =
                 foundry_sdk::campaign::CampaignStore::load(&h.policy.campaigns_path).unwrap();
             let initiative = store.find_initiative("shared").unwrap();
-            assert!(initiative.pending_actions.is_empty());
+            assert!(
+                initiative.pending_actions.is_empty(),
+                "expected `initiative.pending_actions` to be empty: {:?}",
+                initiative.pending_actions
+            );
             assert_eq!(initiative.work_admissions.len(), 1);
             assert_eq!(initiative.task_dispatches.len(), usize::from(!campaign));
         }
@@ -2134,7 +2154,11 @@ mod tests {
             let store = foundry_sdk::campaign::CampaignStore::load(&path).unwrap();
             let initiative = store.find_initiative("shared").unwrap();
             assert!(!initiative.steering_enabled);
-            assert!(initiative.reservations.is_empty());
+            assert!(
+                initiative.reservations.is_empty(),
+                "expected `initiative.reservations` to be empty: {:?}",
+                initiative.reservations
+            );
             assert_eq!(initiative.work_admissions.len(), number + 1);
         }
         assert_eq!(h.items().len(), 3, "passive cleanup does not schedule a steer");
@@ -2210,13 +2234,25 @@ mod tests {
         child.payload = serde_json::json!({"project":"alpha","workflow":"task","prompt":"Write contract","initiative":"shared","steering_action_id":action.id,"steering_external_context":action.external_context});
         let error = h.policy.prepare(&child, None).err().unwrap();
         assert!(error.to_string().contains("context changed"));
-        assert!(h.items().is_empty());
+        assert!(h.items().is_empty(), "expected `h.items()` to be empty: {:?}", h.items());
         h.policy.failure_events(&child, &error.to_string());
         let store = foundry_sdk::campaign::CampaignStore::load(&path).unwrap();
         let initiative = store.find_initiative("shared").unwrap();
-        assert!(initiative.pending_actions.is_empty());
-        assert!(initiative.reservations.is_empty());
-        assert!(initiative.work_admissions.is_empty());
+        assert!(
+            initiative.pending_actions.is_empty(),
+            "expected `initiative.pending_actions` to be empty: {:?}",
+            initiative.pending_actions
+        );
+        assert!(
+            initiative.reservations.is_empty(),
+            "expected `initiative.reservations` to be empty: {:?}",
+            initiative.reservations
+        );
+        assert!(
+            initiative.work_admissions.is_empty(),
+            "expected `initiative.work_admissions` to be empty: {:?}",
+            initiative.work_admissions
+        );
     }
     #[test]
     fn formation_cleanup_waits_for_cycle_result_accounting_before_steering() {

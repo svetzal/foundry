@@ -253,7 +253,11 @@ mod tests {
         let trigger = retry_event("unknown-project", 1, "maintain");
         let result = block.execute(&trigger).await.unwrap();
         assert!(!result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
     }
 
     #[tokio::test]

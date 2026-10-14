@@ -233,7 +233,11 @@ mod tests {
 
         let result = block.execute(&trigger).await.unwrap();
         assert!(!result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert!(result.summary.contains("not found in registry"));
     }
 
@@ -361,7 +365,11 @@ mod tests {
             })),
         );
         let trigger = clean_trigger("proj");
-        assert!(block.dry_run_events(&trigger).is_empty());
+        assert!(
+            block.dry_run_events(&trigger).is_empty(),
+            "expected `block.dry_run_events(&trigger)` to be empty: {:?}",
+            block.dry_run_events(&trigger)
+        );
     }
 
     #[test]

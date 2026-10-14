@@ -283,15 +283,31 @@ fn assert_project_proto_matches_entry(
     match &expected.install {
         Some(InstallConfig::Command(command)) => {
             assert_eq!(actual.install_command, *command);
-            assert!(actual.install_brew.is_empty());
+            assert!(
+                actual.install_brew.is_empty(),
+                "expected `actual.install_brew` to be empty: {:?}",
+                actual.install_brew
+            );
         }
         Some(InstallConfig::Brew(formula)) => {
             assert_eq!(actual.install_brew, *formula);
-            assert!(actual.install_command.is_empty());
+            assert!(
+                actual.install_command.is_empty(),
+                "expected `actual.install_command` to be empty: {:?}",
+                actual.install_command
+            );
         }
         None => {
-            assert!(actual.install_command.is_empty());
-            assert!(actual.install_brew.is_empty());
+            assert!(
+                actual.install_command.is_empty(),
+                "expected `actual.install_command` to be empty: {:?}",
+                actual.install_command
+            );
+            assert!(
+                actual.install_brew.is_empty(),
+                "expected `actual.install_brew` to be empty: {:?}",
+                actual.install_brew
+            );
         }
     }
     assert_eq!(actual.audit_exceptions, expected.audit_exceptions);

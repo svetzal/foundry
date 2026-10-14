@@ -193,7 +193,7 @@ mod tests {
         let (changed, files) =
             detect_post_execution_changes(&*shell, Path::new("/tmp"), Some("abc123")).await;
         assert!(!changed);
-        assert!(files.is_empty());
+        assert!(files.is_empty(), "expected `files` to be empty: {files:?}");
     }
 
     #[tokio::test]

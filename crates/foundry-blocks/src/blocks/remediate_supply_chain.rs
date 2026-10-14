@@ -1571,7 +1571,11 @@ mod tests {
         let result = block.execute(&trigger(&p, Throttle::Full)).await.unwrap();
 
         let out = remediated(&result);
-        assert!(out.outcomes.is_empty());
+        assert!(
+            out.outcomes.is_empty(),
+            "expected `out.outcomes` to be empty: {:?}",
+            out.outcomes
+        );
         assert!(shell.invocations().is_empty());
     }
 

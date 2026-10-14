@@ -402,7 +402,11 @@ async fn a_missing_events_directory_yields_the_record_and_an_empty_event_list() 
         .item
         .expect("record present");
     assert_eq!(record.id, "wi_task");
-    assert!(events_of(&fx.service, "wi_task").await.is_empty());
+    let unexpected = events_of(&fx.service, "wi_task").await;
+    assert!(
+        unexpected.is_empty(),
+        "expected `events_of(&fx.service, \"wi_task\").await` to be empty: {unexpected:?}"
+    );
     assert!(!fx.events_dir.exists(), "a read must not create the events directory");
 }
 

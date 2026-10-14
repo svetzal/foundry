@@ -270,7 +270,11 @@ async fn an_unauthorized_campaign_can_still_be_cancelled() {
     let stored = store.find("c").expect("campaign");
     assert_eq!(stored.status, CampaignStatus::Cancelled);
     // Nothing to attach an owner decision to; the reason still reached the event.
-    assert!(stored.owner_decisions.is_empty());
+    assert!(
+        stored.owner_decisions.is_empty(),
+        "expected `stored.owner_decisions` to be empty: {:?}",
+        stored.owner_decisions
+    );
 }
 
 #[tokio::test]

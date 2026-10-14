@@ -1148,13 +1148,25 @@ mod steering_recovery_tests {
         let child_id = child.id.clone();
         ledger.upsert(child);
         ledger.save(&ledger_path).unwrap();
-        assert!(recover(&path, &ledger_path).unwrap().is_empty());
+        assert!(
+            recover(&path, &ledger_path).unwrap().is_empty(),
+            "expected `recover(&path, &ledger_path).unwrap()` to be empty: {:?}",
+            recover(&path, &ledger_path).unwrap()
+        );
         let store = CampaignStore::load(&path).unwrap();
         let initiative = store.find_initiative("shared").unwrap();
-        assert!(initiative.pending_actions.is_empty());
+        assert!(
+            initiative.pending_actions.is_empty(),
+            "expected `initiative.pending_actions` to be empty: {:?}",
+            initiative.pending_actions
+        );
         assert_eq!(initiative.task_dispatches.len(), 1);
         assert_eq!(initiative.task_dispatches[0].work_item, child_id);
-        assert!(recover(&path, &ledger_path).unwrap().is_empty());
+        assert!(
+            recover(&path, &ledger_path).unwrap().is_empty(),
+            "expected `recover(&path, &ledger_path).unwrap()` to be empty: {:?}",
+            recover(&path, &ledger_path).unwrap()
+        );
         assert_eq!(
             CampaignStore::load(&path)
                 .unwrap()
@@ -1193,8 +1205,16 @@ mod steering_recovery_tests {
         store.enable_steering("shared").unwrap();
         store.begin_steering("shared", "interrupted").unwrap();
         store.save(&path).unwrap();
-        assert!(recover(&path, &ledger_path).unwrap().is_empty());
-        assert!(recover(&path, &ledger_path).unwrap().is_empty());
+        assert!(
+            recover(&path, &ledger_path).unwrap().is_empty(),
+            "expected `recover(&path, &ledger_path).unwrap()` to be empty: {:?}",
+            recover(&path, &ledger_path).unwrap()
+        );
+        assert!(
+            recover(&path, &ledger_path).unwrap().is_empty(),
+            "expected `recover(&path, &ledger_path).unwrap()` to be empty: {:?}",
+            recover(&path, &ledger_path).unwrap()
+        );
         let ledger = foundry_sdk::work_item::WorkItemStore::load(&ledger_path).unwrap();
         assert_eq!(ledger.items.len(), 1);
         assert_eq!(

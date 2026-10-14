@@ -338,7 +338,7 @@ mod tests {
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::GateResolutionCompleted);
         let gates = result.events[0].payload.get("gates").unwrap().as_array().unwrap();
-        assert!(gates.is_empty());
+        assert!(gates.is_empty(), "expected `gates` to be empty: {gates:?}");
         assert_eq!(result.events[0].payload["workflow"], "maintain");
     }
 

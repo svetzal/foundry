@@ -881,13 +881,21 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(campaign.owner_decisions.is_empty());
+        assert!(
+            campaign.owner_decisions.is_empty(),
+            "expected `campaign.owner_decisions` to be empty: {:?}",
+            campaign.owner_decisions
+        );
         assert!(campaign.pending_run_result.is_none());
-        assert!(campaign.objective_history.is_empty());
+        assert!(
+            campaign.objective_history.is_empty(),
+            "expected `campaign.objective_history` to be empty: {:?}",
+            campaign.objective_history
+        );
         let DoneEvidence::Gate { artifacts, .. } = &campaign.done_evidence[0] else {
             panic!("expected gate evidence");
         };
-        assert!(artifacts.is_empty());
+        assert!(artifacts.is_empty(), "expected `artifacts` to be empty: {artifacts:?}");
     }
 
     /// The live store holds campaigns written before objective history existed;
@@ -915,7 +923,11 @@ mod tests {
 
         let store = CampaignStore::load(&path).unwrap();
         let campaign = store.find("legacy").unwrap();
-        assert!(campaign.objective_history.is_empty());
+        assert!(
+            campaign.objective_history.is_empty(),
+            "expected `campaign.objective_history` to be empty: {:?}",
+            campaign.objective_history
+        );
         assert!(campaign.open_escalation.is_none());
         assert_eq!(campaign.cycles_completed, 4);
 
@@ -982,7 +994,11 @@ mod tests {
     fn a_second_result_does_not_rewrite_a_closed_or_absent_cycle() {
         let mut campaign = campaign_with_gate("cargo test", true);
         campaign.record_cycle_outcome(&remainder_result("nothing dispatched this", false));
-        assert!(campaign.objective_history.is_empty());
+        assert!(
+            campaign.objective_history.is_empty(),
+            "expected `campaign.objective_history` to be empty: {:?}",
+            campaign.objective_history
+        );
 
         campaign.cycles_completed = 1;
         campaign.record_dispatched_objective("First slice.".to_string());

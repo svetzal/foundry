@@ -476,7 +476,11 @@ mod tests {
         );
         let result = b.execute(&gates_trigger("maintain")).await.unwrap();
         assert!(!result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
     }
 
     #[tokio::test]
@@ -547,7 +551,7 @@ mod tests {
     fn stale_or_missing_scans_say_so() {
         let dir = tempfile::tempdir().unwrap();
         let a = latest_advisories(dir.path(), "my-project");
-        assert!(a.findings.is_empty());
+        assert!(a.findings.is_empty(), "expected `a.findings` to be empty: {:?}", a.findings);
         assert!(a.source.unwrap().contains("no supply-chain scan"));
 
         write_scan(dir.path(), "other", chrono::Utc::now() - chrono::Duration::hours(2), "1.0.0");

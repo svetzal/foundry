@@ -230,7 +230,11 @@ mod tests {
         assert_eq!(proto.duration_ms, 42);
         assert_eq!(proto.raw_output, ""); // None → ""
         assert_eq!(proto.exit_code, 0); // None → 0
-        assert!(proto.emitted_payload_jsons.is_empty());
+        assert!(
+            proto.emitted_payload_jsons.is_empty(),
+            "expected `proto.emitted_payload_jsons` to be empty: {:?}",
+            proto.emitted_payload_jsons
+        );
         assert_eq!(proto.span_id, "");
         assert_eq!(proto.parent_span_id, "");
     }
@@ -348,8 +352,12 @@ mod tests {
         .into_inner();
 
         assert!(!resp.found);
-        assert!(resp.events.is_empty());
-        assert!(resp.block_executions.is_empty());
+        assert!(resp.events.is_empty(), "expected `resp.events` to be empty: {:?}", resp.events);
+        assert!(
+            resp.block_executions.is_empty(),
+            "expected `resp.block_executions` to be empty: {:?}",
+            resp.block_executions
+        );
         assert_eq!(resp.total_duration_ms, 0);
     }
 
@@ -393,8 +401,12 @@ mod tests {
         .into_inner();
 
         assert!(!resp.found);
-        assert!(resp.events.is_empty());
-        assert!(resp.block_executions.is_empty());
+        assert!(resp.events.is_empty(), "expected `resp.events` to be empty: {:?}", resp.events);
+        assert!(
+            resp.block_executions.is_empty(),
+            "expected `resp.block_executions` to be empty: {:?}",
+            resp.block_executions
+        );
         assert_eq!(resp.total_duration_ms, 0);
     }
 }

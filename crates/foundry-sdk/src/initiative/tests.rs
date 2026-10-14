@@ -47,7 +47,10 @@ fn completion_stops_exhausted_members_and_preserves_terminal_members() {
         });
         store.find_mut("two").unwrap().status = terminal_status;
         store.refresh_questions("sample").unwrap();
-        assert!(!store.initiative_view("sample").unwrap().open_questions.is_empty());
+        assert!(
+            !store.initiative_view("sample").unwrap().open_questions.is_empty(),
+            "expected `store.initiative_view(\"sample\").unwrap().open_questions` to be non-empty"
+        );
 
         assert_eq!(
             store.complete_initiative("sample", "Overall outcome verified", at).unwrap(),
@@ -64,7 +67,11 @@ fn completion_stops_exhausted_members_and_preserves_terminal_members() {
         assert_eq!(store.find("two").unwrap().status, terminal_status);
         let view = store.initiative_view("sample").unwrap();
         assert_eq!(view.status, InitiativeStatus::Completed);
-        assert!(view.open_questions.is_empty());
+        assert!(
+            view.open_questions.is_empty(),
+            "expected `view.open_questions` to be empty: {:?}",
+            view.open_questions
+        );
         let before_retry = serde_json::to_string(&store).unwrap();
         assert_eq!(
             store.complete_initiative("sample", "Retry", at).unwrap(),
@@ -103,10 +110,18 @@ fn decision_fans_out_to_active_members_and_closes_only_applicable_questions() {
         .decide_initiative("sample", "One first", &["one".into()], chrono::Utc::now())
         .unwrap();
     assert_eq!(store.find("one").unwrap().owner_decisions.len(), 1);
-    assert!(store.find("two").unwrap().owner_decisions.is_empty());
+    assert!(
+        store.find("two").unwrap().owner_decisions.is_empty(),
+        "expected `store.find(\"two\").unwrap().owner_decisions` to be empty: {:?}",
+        store.find("two").unwrap().owner_decisions
+    );
     assert_eq!(store.find_initiative("sample").unwrap().open_questions[0].members, ["two"]);
     store.decide_initiative("sample", "Proceed", &[], chrono::Utc::now()).unwrap();
-    assert!(store.find_initiative("sample").unwrap().open_questions.is_empty());
+    assert!(
+        store.find_initiative("sample").unwrap().open_questions.is_empty(),
+        "expected `store.find_initiative(\"sample\").unwrap().open_questions` to be empty: {:?}",
+        store.find_initiative("sample").unwrap().open_questions
+    );
     assert_eq!(store.find("two").unwrap().owner_decisions.len(), 1);
 }
 
@@ -132,9 +147,17 @@ fn findings_are_newest_first_bounded_and_consumed_only_for_seen_member() {
     assert_eq!(context.findings[0].text, "second");
     let ids = context.finding_ids();
     assert_eq!(store.consume_findings("sample", "one", "wi_1", &ids).unwrap().len(), 2);
-    assert!(store.formation_context("one", 4096).unwrap().unwrap().findings.is_empty());
+    assert!(
+        store.formation_context("one", 4096).unwrap().unwrap().findings.is_empty(),
+        "expected `store.formation_context(\"one\", 4096).unwrap().unwrap().findings` to be empty: {:?}",
+        store.formation_context("one", 4096).unwrap().unwrap().findings
+    );
     assert_eq!(store.formation_context("two", 4096).unwrap().unwrap().findings.len(), 2);
-    assert!(store.formation_context("two", 1).unwrap().unwrap().findings.is_empty());
+    assert!(
+        store.formation_context("two", 1).unwrap().unwrap().findings.is_empty(),
+        "expected `store.formation_context(\"two\", 1).unwrap().unwrap().findings` to be empty: {:?}",
+        store.formation_context("two", 1).unwrap().unwrap().findings
+    );
 }
 
 #[test]
@@ -352,7 +375,11 @@ fn member_questions_respect_the_budget_without_losing_deferred_escalations() {
     store.find_mut("one").unwrap().status = CampaignStatus::Completed;
     store.find_mut("two").unwrap().status = CampaignStatus::Active;
     store.refresh_questions("sample").unwrap();
-    assert!(store.find_initiative("sample").unwrap().open_questions.is_empty());
+    assert!(
+        store.find_initiative("sample").unwrap().open_questions.is_empty(),
+        "expected `store.find_initiative(\"sample\").unwrap().open_questions` to be empty: {:?}",
+        store.find_initiative("sample").unwrap().open_questions
+    );
     assert_eq!(store.find_initiative("sample").unwrap().status, InitiativeStatus::Active);
 }
 
@@ -453,7 +480,11 @@ fn required_task_question_waits_for_a_slot_and_still_blocks_its_member() {
         .unwrap();
     let view = store.initiative_view("sample").unwrap();
     assert_eq!(view.open_questions, [queued]);
-    assert!(view.deferred_questions.is_empty());
+    assert!(
+        view.deferred_questions.is_empty(),
+        "expected `view.deferred_questions` to be empty: {:?}",
+        view.deferred_questions
+    );
     assert!(store.enforce_can_form("one", &[]).is_ok());
     assert!(store.enforce_can_form("two", &[]).is_err());
 }

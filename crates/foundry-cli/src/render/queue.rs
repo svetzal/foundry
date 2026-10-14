@@ -787,9 +787,21 @@ mod tests {
         let items = vec![item("wi_strange", "quantum_superposition")];
         let groups = group(&items);
         assert_eq!(ids(&groups.open), vec!["wi_strange"]);
-        assert!(groups.running.is_empty());
-        assert!(groups.queued.is_empty());
-        assert!(groups.settled.is_empty());
+        assert!(
+            groups.running.is_empty(),
+            "expected `groups.running` to be empty: {:?}",
+            groups.running
+        );
+        assert!(
+            groups.queued.is_empty(),
+            "expected `groups.queued` to be empty: {:?}",
+            groups.queued
+        );
+        assert!(
+            groups.settled.is_empty(),
+            "expected `groups.settled` to be empty: {:?}",
+            groups.settled
+        );
     }
 
     #[test]

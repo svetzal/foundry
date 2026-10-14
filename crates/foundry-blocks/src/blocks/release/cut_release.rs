@@ -224,7 +224,11 @@ mod tests {
         let block = CutRelease::new(FakeAgentGateway::success(), empty_registry());
         let result = block.execute(&dirty_trigger()).await.unwrap();
         assert!(result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert!(result.summary.contains("Skipped"));
     }
 
@@ -243,7 +247,11 @@ mod tests {
         let block = CutRelease::new(FakeAgentGateway::success(), registry);
         let result = block.execute(&clean_trigger()).await.unwrap();
         assert!(!result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert!(result.summary.contains("AGENTS.md not found"));
     }
 

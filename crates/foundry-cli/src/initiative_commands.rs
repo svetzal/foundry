@@ -832,9 +832,17 @@ mod steering_transport_tests {
                 .to_string()
                 .contains("only gate declarations")
         );
-        assert!(read_integration_gates(None).unwrap().is_empty());
+        assert!(
+            read_integration_gates(None).unwrap().is_empty(),
+            "expected `read_integration_gates(None).unwrap()` to be empty: {:?}",
+            read_integration_gates(None).unwrap()
+        );
         std::fs::write(&path, "[]").unwrap();
-        assert!(read_integration_gates(Some(&path)).unwrap().is_empty());
+        assert!(
+            read_integration_gates(Some(&path)).unwrap().is_empty(),
+            "expected `read_integration_gates(Some(&path)).unwrap()` to be empty: {:?}",
+            read_integration_gates(Some(&path)).unwrap()
+        );
     }
 
     #[tokio::test]

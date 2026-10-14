@@ -194,8 +194,16 @@ mod tests {
         let result = run(&tmp(), "true", &[], None, None).await.expect("true should succeed");
 
         assert!(result.success);
-        assert!(result.stdout.is_empty());
-        assert!(result.stderr.is_empty());
+        assert!(
+            result.stdout.is_empty(),
+            "expected `result.stdout` to be empty: {:?}",
+            result.stdout
+        );
+        assert!(
+            result.stderr.is_empty(),
+            "expected `result.stderr` to be empty: {:?}",
+            result.stderr
+        );
     }
 
     // --- TRACEPARENT propagation tests --------------------------------------

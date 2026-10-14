@@ -226,7 +226,11 @@ mod tests {
 
         let result = block.execute(&trigger).await.expect("should succeed");
         assert!(result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert!(result.scatter.is_none(), "a per-project trigger declares no scatter");
     }
 
@@ -327,7 +331,11 @@ mod tests {
         assert!(result.success);
         // An empty scatter is still a scatter — the engine reduces it at once.
         let scatter = result.scatter.expect("system trigger declares a scatter");
-        assert!(scatter.children.is_empty());
+        assert!(
+            scatter.children.is_empty(),
+            "expected `scatter.children` to be empty: {:?}",
+            scatter.children
+        );
     }
 
     #[tokio::test]

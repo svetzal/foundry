@@ -40,7 +40,9 @@ async fn initiative_findings_and_brief_reach_formation_and_execution() {
     assert_eq!(execution.payload["initiative_brief"]["hash"], brief.hash);
     assert_eq!(execution.payload["providers"]["review"], "claude");
     assert!(execution.source.as_ref().unwrap().matches(foundry_sdk::work_source::WorkSourceKind::Initiative, "both"));
-    assert!(CampaignStore::load(&path).unwrap().find_finding(&finding.id).unwrap().consumed_by.is_empty());
+    let store = CampaignStore::load(&path).unwrap();
+    let consumed_by = &store.find_finding(&finding.id).unwrap().consumed_by;
+    assert!(consumed_by.is_empty(), "expected the finding to stay unconsumed: {consumed_by:?}");
 }
 
 #[tokio::test]
@@ -72,7 +74,9 @@ async fn initiative_consumes_only_seen_findings_when_the_cycle_lands() {
     result.context.initiative = Some("both".into());
     result.context.campaign_cycle = Some(1);
     block.execute(&automatic_advance_trigger(result.clone())).await.unwrap();
-    assert!(CampaignStore::load(&path).unwrap().find_finding(&finding.id).unwrap().consumed_by.is_empty());
+    let store = CampaignStore::load(&path).unwrap();
+    let consumed_by = &store.find_finding(&finding.id).unwrap().consumed_by;
+    assert!(consumed_by.is_empty(), "expected the finding to stay unconsumed: {consumed_by:?}");
     let mut guard = CampaignStore::lock_exclusive(&path).unwrap();
     let campaign = guard.store.find_mut("c").unwrap();
     campaign.status = CampaignStatus::Active;

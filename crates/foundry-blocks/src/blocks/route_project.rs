@@ -200,7 +200,11 @@ mod tests {
         let result = RouteProjectWorkflow.execute(&trigger).await.unwrap();
 
         assert!(result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert!(result.summary.contains("no automation actions enabled"));
     }
 
@@ -210,7 +214,11 @@ mod tests {
         let result = RouteProjectWorkflow.execute(&trigger).await.unwrap();
 
         assert!(result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert!(result.summary.contains("validation status=error"));
     }
 
@@ -220,7 +228,11 @@ mod tests {
         let result = RouteProjectWorkflow.execute(&trigger).await.unwrap();
 
         assert!(result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
     }
 
     #[tokio::test]
@@ -235,7 +247,11 @@ mod tests {
 
         // Status defaults to "" which is not "ok"
         assert!(result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
     }
 
     fn validation_event_in_cycle(status: &str, iterate: bool, maintain: bool) -> Event {
@@ -290,7 +306,11 @@ mod tests {
         let result = RouteProjectWorkflow.execute(&trigger).await.unwrap();
 
         assert!(result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert!(result.summary.contains("no automation actions enabled"));
     }
 }

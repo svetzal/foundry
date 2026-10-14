@@ -1084,7 +1084,7 @@ mod tests {
         let c =
             classify(repo.path(), &Stack::Rust, Ok(holds), Advisories::default(), &source, day())
                 .await;
-        assert!(c.outdated.is_empty());
+        assert!(c.outdated.is_empty(), "expected `c.outdated` to be empty: {:?}", c.outdated);
         assert_eq!(c.stale_holds[0].package, "serde");
     }
 
@@ -1102,7 +1102,7 @@ mod tests {
             day(),
         )
         .await;
-        assert!(c.outdated.is_empty());
+        assert!(c.outdated.is_empty(), "expected `c.outdated` to be empty: {:?}", c.outdated);
         assert_eq!(c.unclassified[0].scope, "cpp");
         assert!(c.unclassified[0].reason.contains("no dependency classifier"));
     }
@@ -1175,7 +1175,11 @@ mod tests {
         after.insert("cargo . rand".to_string(), (Ecosystem::Cargo, "0.9.2".to_string()));
         after.insert("cargo . serde".to_string(), (Ecosystem::Cargo, "1.0.228".to_string()));
         assert_eq!(major_moves(&before, &after), ["cargo . rand 0.8.5 -> 0.9.2"]);
-        assert!(major_moves(&before, &before).is_empty());
+        assert!(
+            major_moves(&before, &before).is_empty(),
+            "expected `major_moves(&before, &before)` to be empty: {:?}",
+            major_moves(&before, &before)
+        );
     }
 
     #[tokio::test]

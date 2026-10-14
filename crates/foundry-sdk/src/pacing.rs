@@ -958,7 +958,8 @@ mod tests {
     fn held_items_are_not_candidates() {
         let mut held = queued("wi_h", "alpha", WorkLane::Interactive, 1);
         held.hold();
-        assert!(decisions(&[held], &Limits::default(), &PauseState::default()).is_empty());
+        let decided = decisions(&[held], &Limits::default(), &PauseState::default());
+        assert!(decided.is_empty(), "expected no start decisions: {decided:?}");
     }
 
     // --- the files -------------------------------------------------------
@@ -1007,8 +1008,16 @@ mod tests {
 
         let mut resumed = loaded;
         assert_eq!(resumed.resume(&WorkLane::ALL), vec![WorkLane::Interactive, WorkLane::Campaign]);
-        assert!(resumed.paused.is_empty());
-        assert!(resumed.resume(&[WorkLane::Campaign]).is_empty());
+        assert!(
+            resumed.paused.is_empty(),
+            "expected `resumed.paused` to be empty: {:?}",
+            resumed.paused
+        );
+        assert!(
+            resumed.resume(&[WorkLane::Campaign]).is_empty(),
+            "expected `resumed.resume(&[WorkLane::Campaign])` to be empty: {:?}",
+            resumed.resume(&[WorkLane::Campaign])
+        );
     }
 
     #[test]

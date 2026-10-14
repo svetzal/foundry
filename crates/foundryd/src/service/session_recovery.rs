@@ -134,20 +134,30 @@ mod tests {
             lifecycle(EventType::AgentSessionStarted, "s1", at(2, 6)),
             lifecycle(EventType::AgentSessionEnded, "s1", at(2, 7)),
         ];
-        assert!(find_unended_sessions(&events, at(0, 0)).is_empty());
+        assert!(
+            find_unended_sessions(&events, at(0, 0)).is_empty(),
+            "expected `find_unended_sessions(&events, at(0, 0))` to be empty: {:?}",
+            find_unended_sessions(&events, at(0, 0))
+        );
     }
 
     #[test]
     fn a_session_started_before_the_lookback_is_left_alone() {
         let events = vec![lifecycle(EventType::AgentSessionStarted, "s1", at(2, 6))];
-        assert!(find_unended_sessions(&events, at(3, 0)).is_empty());
+        assert!(
+            find_unended_sessions(&events, at(3, 0)).is_empty(),
+            "expected `find_unended_sessions(&events, at(3, 0))` to be empty: {:?}",
+            find_unended_sessions(&events, at(3, 0))
+        );
     }
 
     #[test]
     fn a_started_event_with_no_session_id_is_ignored() {
         let mut started = lifecycle(EventType::AgentSessionStarted, "s1", at(2, 6));
         started.payload = serde_json::json!({});
-        assert!(find_unended_sessions(&[started], at(0, 0)).is_empty());
+        let events = [started];
+        let unended = find_unended_sessions(&events, at(0, 0));
+        assert!(unended.is_empty(), "expected no unended sessions: {unended:?}");
     }
 
     #[test]
@@ -166,6 +176,8 @@ mod tests {
         assert_eq!(payload.ended_at, at(2, 8).to_rfc3339());
 
         // Once recorded, the same session is no longer found.
-        assert!(find_unended_sessions(&[started, end], at(0, 0)).is_empty());
+        let events = [started, end];
+        let unended = find_unended_sessions(&events, at(0, 0));
+        assert!(unended.is_empty(), "expected no unended sessions: {unended:?}");
     }
 }

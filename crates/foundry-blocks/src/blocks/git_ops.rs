@@ -764,7 +764,11 @@ mod tests {
         let result = block.execute(&trigger).await.unwrap();
 
         assert!(!result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
     }
 
     #[tokio::test]
@@ -778,7 +782,11 @@ mod tests {
         let result = block.execute(&trigger).await.unwrap();
 
         assert!(result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert_eq!(result.summary, "No changes to commit; nothing ahead of origin/main");
     }
 
@@ -1094,7 +1102,11 @@ mod tests {
 
         let result = block.execute(&trigger).await.unwrap();
 
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert!(result.summary.contains("run_failed"), "{}", result.summary);
         assert!(result.summary.contains("3 commit(s)"), "{}", result.summary);
         let calls = git_calls(&shell);
@@ -1236,7 +1248,11 @@ mod tests {
 
         // Should NOT skip (no nested-loop guard) but returns failure: project not in registry.
         assert!(!result.success);
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
     }
 
     #[tokio::test]
@@ -1270,7 +1286,7 @@ mod tests {
         let result = block.execute(&trigger).await.unwrap();
 
         assert!(result.success);
-        assert!(!result.events.is_empty());
+        assert!(!result.events.is_empty(), "expected `result.events` to be non-empty");
         let msg = result.events[0].payload["message"].as_str().unwrap();
         assert!(msg.contains("remediation"), "expected 'remediation' in '{msg}'");
     }
@@ -1374,7 +1390,11 @@ mod tests {
         let result = block.execute(&trigger).await.unwrap();
 
         assert!(result.success, "should be success, not error");
-        assert!(result.events.is_empty());
+        assert!(
+            result.events.is_empty(),
+            "expected `result.events` to be empty: {:?}",
+            result.events
+        );
         assert_eq!(result.summary, "No changes to commit; push disabled");
     }
 
@@ -1505,14 +1525,22 @@ mod tests {
             "success": true,
             "loop_context": { "strategic": { "iteration": 1 } }
         });
-        assert!(block.dry_run_events(&trigger).is_empty());
+        assert!(
+            block.dry_run_events(&trigger).is_empty(),
+            "expected `block.dry_run_events(&trigger)` to be empty: {:?}",
+            block.dry_run_events(&trigger)
+        );
     }
 
     #[test]
     fn dry_run_returns_empty_for_no_changes_trigger() {
         let block = CommitAndPush::new(test_helpers::empty_registry());
         let trigger = make_trigger_no_changes(EventType::ProjectIterationCompleted, "proj");
-        assert!(block.dry_run_events(&trigger).is_empty());
+        assert!(
+            block.dry_run_events(&trigger).is_empty(),
+            "expected `block.dry_run_events(&trigger)` to be empty: {:?}",
+            block.dry_run_events(&trigger)
+        );
     }
 
     #[test]
@@ -1535,7 +1563,11 @@ mod tests {
         let block = CommitAndPush::new(test_helpers::empty_registry());
         let trigger = make_trigger_no_changes(EventType::ProjectIterationCompleted, "proj");
         assert!(block.accepts(&trigger));
-        assert!(block.dry_run_events(&trigger).is_empty());
+        assert!(
+            block.dry_run_events(&trigger).is_empty(),
+            "expected `block.dry_run_events(&trigger)` to be empty: {:?}",
+            block.dry_run_events(&trigger)
+        );
     }
 
     #[test]

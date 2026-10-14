@@ -473,7 +473,11 @@ diff --git a/mix.exs b/mix.exs
         let diff = "+++ b/mix.exs\n+      {:phoenix, \"~> 1.8.15\"},\n\
 +++ b/mix.lock\n+  \"phoenix\": {:hex, :phoenix, \"1.8.15\"},\n\
 +++ b/CHANGELOG.md\n+- Upgraded jose to fix CVE-2026-2.\n";
-        assert!(added_suppressions(diff).is_empty());
+        assert!(
+            added_suppressions(diff).is_empty(),
+            "expected `added_suppressions(diff)` to be empty: {:?}",
+            added_suppressions(diff)
+        );
     }
 
     /// The archived controller log mojentic-py's campaign committed on
@@ -640,7 +644,8 @@ diff --git a/mix.exs b/mix.exs
         let after = r#"{"overrides": {"axios": "^1.18.0"}}"#;
         assert!(
             vulnerable_overrides(None, after, &[finding("axios", Some("1.18.0"), Some("<1.18.0"))])
-                .is_empty()
+                .is_empty(),
+            "an override to the fixed release is not a suppression"
         );
         let unchanged = r#"{"overrides": {"axios": "1.17.0"}}"#;
         assert!(

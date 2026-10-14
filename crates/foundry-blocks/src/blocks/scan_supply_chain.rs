@@ -288,7 +288,11 @@ mod tests {
         assert_eq!(p.affected_project_count, 1);
         assert_eq!(p.projects[0].findings[0].cve, "CVE-2026-1234");
         assert_eq!(p.projects[0].findings[0].fix_package.as_deref(), Some("direct-parent"));
-        assert!(p.projects[0].suppressed.is_empty());
+        assert!(
+            p.projects[0].suppressed.is_empty(),
+            "expected `p.projects[0].suppressed` to be empty: {:?}",
+            p.projects[0].suppressed
+        );
     }
 
     #[tokio::test]
@@ -449,7 +453,11 @@ mod tests {
         assert!(result.success, "a gateway spawn failure must not fail the formation");
         let p = scanned(&result);
         assert!(p.projects[0].scan_error.is_some());
-        assert!(p.projects[0].findings.is_empty());
+        assert!(
+            p.projects[0].findings.is_empty(),
+            "expected `p.projects[0].findings` to be empty: {:?}",
+            p.projects[0].findings
+        );
     }
 
     #[tokio::test]

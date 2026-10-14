@@ -494,7 +494,11 @@ async fn a_graceful_cancel_changes_no_item_and_records_no_cancellation() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(std::fs::read(&ledger).unwrap(), before, "the ledger file is byte-identical");
     assert_eq!(item_state(&ledger, &item_id), WorkItemState::Running);
-    assert!(cancelled_events(&mut harness.events).is_empty());
+    assert!(
+        cancelled_events(&mut harness.events).is_empty(),
+        "expected `cancelled_events(&mut harness.events)` to be empty: {:?}",
+        cancelled_events(&mut harness.events)
+    );
 }
 
 /// A cycle the pacing scheduler has not started yet, queued for this campaign.
@@ -596,7 +600,11 @@ async fn a_cancellation_whose_trace_matches_no_running_item_changes_nothing() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(std::fs::read(&ledger).unwrap(), before, "the ledger file is byte-identical");
     assert_eq!(item_state(&ledger, &item_id), WorkItemState::Running);
-    assert!(cancelled_events(&mut harness.events).is_empty());
+    assert!(
+        cancelled_events(&mut harness.events).is_empty(),
+        "expected `cancelled_events(&mut harness.events)` to be empty: {:?}",
+        cancelled_events(&mut harness.events)
+    );
 }
 
 /// Cancelling an already-cancelled campaign is a no-op that emits no
@@ -622,7 +630,11 @@ async fn an_already_cancelled_campaign_changes_no_item() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(std::fs::read(&ledger).unwrap(), before, "the ledger file is byte-identical");
     assert_eq!(item_state(&ledger, &item_id), WorkItemState::Running);
-    assert!(cancelled_events(&mut harness.events).is_empty());
+    assert!(
+        cancelled_events(&mut harness.events).is_empty(),
+        "expected `cancelled_events(&mut harness.events)` to be empty: {:?}",
+        cancelled_events(&mut harness.events)
+    );
 }
 
 /// The ledger is bookkeeping beside the cancellation, never a precondition for

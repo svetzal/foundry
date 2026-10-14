@@ -254,7 +254,11 @@ mod tests {
         let mut store = CampaignStore::load(&fixture.store).unwrap();
         let snapshot = store.begin_steering("shared", "contract-guidance").unwrap();
         assert!(snapshot.initiative.brief.is_none());
-        assert!(store.list_findings("shared").unwrap().is_empty());
+        assert!(
+            store.list_findings("shared").unwrap().is_empty(),
+            "expected `store.list_findings(\"shared\").unwrap()` to be empty: {:?}",
+            store.list_findings("shared").unwrap()
+        );
         let prompt = prompt(&snapshot, &store, &[], None, "[]", fixture.temp.path()).unwrap();
         assert!(
             prompt

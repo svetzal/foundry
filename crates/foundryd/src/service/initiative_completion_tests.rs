@@ -236,12 +236,17 @@ fn restart_resumes_only_owner_confirmed_completion_and_recovers_accepted_close_w
     assert!(
         recover_with(&fixture.path, &fixture.ledger, &fixture.registry, &fixture.tracker)
             .unwrap()
-            .is_empty()
+            .is_empty(),
+        "a fresh store has no completion to recover"
     );
     assert!(fixture.tracker.calls.borrow().is_empty());
     fixture.tracker.lose_receipt.set(true);
     fixture.complete().unwrap_err();
-    assert!(fixture.view().completion_receipts.is_empty());
+    assert!(
+        fixture.view().completion_receipts.is_empty(),
+        "expected `fixture.view().completion_receipts` to be empty: {:?}",
+        fixture.view().completion_receipts
+    );
     assert_eq!(fixture.tracker.intent.borrow().interactions[0].state, "created");
     let recovered =
         recover_with(&fixture.path, &fixture.ledger, &fixture.registry, &fixture.tracker).unwrap();

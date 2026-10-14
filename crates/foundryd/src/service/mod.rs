@@ -1252,8 +1252,12 @@ mod tests {
             .into_inner();
 
         assert!(!resp.found);
-        assert!(resp.events.is_empty());
-        assert!(resp.block_executions.is_empty());
+        assert!(resp.events.is_empty(), "expected `resp.events` to be empty: {:?}", resp.events);
+        assert!(
+            resp.block_executions.is_empty(),
+            "expected `resp.block_executions` to be empty: {:?}",
+            resp.block_executions
+        );
         assert_eq!(resp.total_duration_ms, 0);
     }
 
@@ -2447,7 +2451,11 @@ mod tests {
     async fn a_missing_ledger_lists_nothing_and_finds_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
         let service = test_service_with_work_items_path(dir.path().join("absent.json"));
-        assert!(listed_ids(&service, "", "").await.is_empty());
+        let unexpected = listed_ids(&service, "", "").await;
+        assert!(
+            unexpected.is_empty(),
+            "expected `listed_ids(&service, \"\", \"\").await` to be empty: {unexpected:?}"
+        );
         let err = service
             .get_work_item(Request::new(GetWorkItemRequest {
                 id: "wi_anything".to_string(),
@@ -2462,7 +2470,11 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().expect("tempfile");
         std::fs::write(tmp.path(), br#"{"version":1,"items":[]}"#).expect("write");
         let service = test_service_with_work_items_path(tmp.path().to_path_buf());
-        assert!(listed_ids(&service, "", "").await.is_empty());
+        let unexpected = listed_ids(&service, "", "").await;
+        assert!(
+            unexpected.is_empty(),
+            "expected `listed_ids(&service, \"\", \"\").await` to be empty: {unexpected:?}"
+        );
         let err = service
             .get_work_item(Request::new(GetWorkItemRequest {
                 id: "wi_anything".to_string(),
