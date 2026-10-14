@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.50.1] - 2026-10-13
+
 ### Fixed
 
 - `foundry initiative decide` on a spent shared budget now requires
