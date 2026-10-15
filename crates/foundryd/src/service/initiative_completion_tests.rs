@@ -51,15 +51,24 @@ struct Fixture {
     tracker: FakeTracker,
 }
 
+/// Runs a fixture git command isolated from ambient command-line config.
+///
+/// A Foundry agent session injects `remote.origin.pushurl` through
+/// `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`, which would redirect this
+/// fixture's push to its local `origin` into a disabled remote. Git ignores
+/// the numbered keys once the count is removed.
 fn git(repo: &Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .env_remove("GIT_CONFIG_COUNT")
+        .env_remove("GIT_CONFIG_PARAMETERS")
+        .output()
+        .unwrap();
     assert!(
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(repo)
-            .output()
-            .unwrap()
-            .status
-            .success()
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 

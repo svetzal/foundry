@@ -102,21 +102,34 @@ fn definition() -> String {
         "providers":{"formation":"claude","execution":"codex","review":"claude"}}).to_string()
 }
 
+/// Runs a fixture git command isolated from ambient command-line config.
+///
+/// A Foundry agent session injects `remote.origin.pushurl` through
+/// `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`, which would redirect the fixture's
+/// push to its local `origin` into a disabled remote. Git ignores the
+/// numbered keys once the count is removed.
+fn git(repo: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .env_remove("GIT_CONFIG_COUNT")
+        .env_remove("GIT_CONFIG_PARAMETERS")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn seed_outcome_repository(home: &std::path::Path) {
     for args in [
         vec!["init", "--quiet", "--initial-branch=main"],
         vec!["config", "user.name", "Test"],
         vec!["config", "user.email", "test@example.invalid"],
     ] {
-        assert!(
-            std::process::Command::new("git")
-                .args(args)
-                .current_dir(home)
-                .output()
-                .unwrap()
-                .status
-                .success()
-        );
+        git(home, &args);
     }
     std::fs::write(home.join(".gitignore"), "*\n!.gitignore\n!README.md\n").unwrap();
     std::fs::write(home.join("README.md"), "Synthetic trunk").unwrap();
@@ -124,15 +137,7 @@ fn seed_outcome_repository(home: &std::path::Path) {
         vec!["add", ".gitignore", "README.md"],
         vec!["commit", "--quiet", "-m", "Seed trunk"],
     ] {
-        assert!(
-            std::process::Command::new("git")
-                .args(args)
-                .current_dir(home)
-                .output()
-                .unwrap()
-                .status
-                .success()
-        );
+        git(home, &args);
     }
     let origin = home.join("origin.git");
     for args in [
@@ -146,15 +151,7 @@ fn seed_outcome_repository(home: &std::path::Path) {
         vec!["remote", "add", "origin", origin.to_str().unwrap()],
         vec!["push", "--quiet", "origin", "main"],
     ] {
-        assert!(
-            std::process::Command::new("git")
-                .args(args)
-                .current_dir(home)
-                .output()
-                .unwrap()
-                .status
-                .success()
-        );
+        git(home, &args);
     }
 }
 
