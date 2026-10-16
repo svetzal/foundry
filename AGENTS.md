@@ -320,12 +320,26 @@ and proposes completion for owner confirmation.
 Only one assessment runs per initiative. Changed store or trunk evidence
 invalidates output. Durable pending actions recover on restart without double
 spending or dispatch. A steering hold, relay, ask, escalate or stage that
-changes state but dispatches nothing requests exactly one follow-up assessment
-when the recomputed precheck still lists an eligible member. The follow-up
+changes state but dispatches nothing, and a hold or relay already in force
+(`no_op`), requests exactly one follow-up assessment when the recomputed
+precheck still lists an eligible member. The follow-up
 carries `follow_up_of` (the earlier steer id and step) on its request, steering
-record and `initiative_steered` fact, and never requests another. Wait, no-op,
-skipped, rejected, stale and failed passes request none, and a queued or
-running assessment for the initiative absorbs the request. Existing initiatives remain passive until explicitly advanced.
+record and `initiative_steered` fact, and never requests another. Wait,
+skipped, rejected, stale and failed passes request none (a stale pass requests
+a fresh one instead), and a queued, running or coalesced assessment for the
+initiative absorbs the request. Settlement wakes steering in
+`DurableWorkAdmission::complete`, after cleanup and ledger accounting: always
+after an accounted cycle result or a standalone initiative task, and after any
+other successful member advance (escalated, stood down, finished, or, when a
+steer issued it, dispatched a cycle) only when it left its member no longer
+eligible while
+`steering_eligible_members` (the steer's own precheck, computed without the
+settled advance's item and slot reservation) lists another member. A queued or
+running cycle holds its member's slot, so steer-issued formations fill slots up
+to `max_active_members` one member per settlement and the chain stops when
+nothing is eligible.
+Initiative status `escalated` gates nothing: only open and deferred questions
+block the members they name, and a full question surface blocks nobody. Existing initiatives remain passive until explicitly advanced.
 
 Optional `provider_pairings` explicitly alternates stage maps. Member stage
 overrides remain binding, and continuations retain their admitted pairing.

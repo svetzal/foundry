@@ -404,6 +404,31 @@ mod tests {
     }
 
     #[test]
+    fn an_escalated_initiative_still_lists_a_member_without_a_question() {
+        let mut store = store();
+        store
+            .record_question("shared", "Which port is binding?", &["frontend".into()])
+            .unwrap();
+        store.find_initiative_mut("shared").unwrap().budget.max_open_questions = 1;
+        assert_eq!(
+            store.find_initiative("shared").unwrap().status,
+            crate::initiative::InitiativeStatus::Escalated
+        );
+
+        let checked = precheck(&store);
+
+        assert_eq!(checked.eligible, ["backend"], "the question surface is full: {checked:?}");
+        assert_eq!(
+            checked.blocked,
+            [BlockedMember {
+                member: "frontend".into(),
+                reason: "member 'frontend' waits on an initiative owner question".into()
+            }]
+        );
+        assert_eq!(checked.skip_reason(), None);
+    }
+
+    #[test]
     fn a_waiting_completion_proposal_is_never_reassessed() {
         let mut checked = precheck(&store());
         assert_eq!(checked.eligible, ["frontend", "backend"]);

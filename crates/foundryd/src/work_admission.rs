@@ -72,18 +72,31 @@ impl DurableWorkAdmission {
         Ok(WorkItemStore::load(&self.path)?)
     }
 
-    fn automatic_steer_after(&self, root: &Event) -> anyhow::Result<Option<Event>> {
-        let accounted_member = root.event_type == EventType::CampaignAdvanceRequested
-            && root
-                .parse_payload::<foundry_sdk::payload::CampaignAdvanceRequestedPayload>()
-                .is_ok_and(|payload| {
-                    payload.run_event_id.as_deref().is_some_and(|id| !id.trim().is_empty())
-                        && payload.run_result.is_some()
-                });
+    /// The steer that settling `root` requests, if any. `ledger` already
+    /// records `root`'s own work item as settled.
+    ///
+    /// An accounted member cycle result and a standalone initiative task
+    /// always wake steering: the agent judges their outcome. Any other
+    /// successful member advance (one that escalated, stood down, finished its
+    /// member or, when a steer issued it, dispatched a cycle) wakes it only
+    /// when it moved its member on and the precheck finds another member to
+    /// advance. See [`Self::advance_left_work_to_steer`].
+    fn automatic_steer_after(
+        &self,
+        root: &Event,
+        ledger: &WorkItemStore,
+    ) -> anyhow::Result<Option<Event>> {
+        let advance = (root.event_type == EventType::CampaignAdvanceRequested)
+            .then(|| root.parse_payload::<foundry_sdk::payload::CampaignAdvanceRequestedPayload>())
+            .and_then(Result::ok);
+        let accounted_member = advance.as_ref().is_some_and(|payload| {
+            payload.run_event_id.as_deref().is_some_and(|id| !id.trim().is_empty())
+                && payload.run_result.is_some()
+        });
         let standalone_task = root.event_type == EventType::ExecutionRequested
             && WorkflowType::from_payload(&root.payload) == WorkflowType::Task
             && root.payload_str("campaign").is_none();
-        if !accounted_member && !standalone_task {
+        if advance.is_none() && !standalone_task {
             return Ok(None);
         }
         let Some(name) = root.payload_str("initiative").or_else(|| {
@@ -98,7 +111,7 @@ impl DurableWorkAdmission {
         };
         // CampaignStore saves by atomic rename. Reading here does not take its
         // flock or invert the campaign-store-before-ledger mutation order.
-        let store = foundry_sdk::campaign::CampaignStore::load(&self.campaigns_path)?;
+        let mut store = foundry_sdk::campaign::CampaignStore::load(&self.campaigns_path)?;
         let enabled = store.find_initiative(name).is_some_and(|initiative| {
             initiative.steering_enabled
                 && !matches!(
@@ -109,6 +122,24 @@ impl DurableWorkAdmission {
         });
         if !enabled {
             return Ok(None);
+        }
+        if let Some(advance) = advance.as_ref().filter(|_| !accounted_member) {
+            // This completion releases the advance's admission reservation
+            // after the ledger is saved. Judge eligibility as if it had, or
+            // the settled member would still hold its slot.
+            if let Some(id) = root.payload_str(ADMITTED_WORK_ITEM_KEY) {
+                store.release_member_reservation(name, id)?;
+            }
+            let steer_issued = root.payload_str("steering_action_id").is_some();
+            if !self.advance_left_work_to_steer(
+                &store,
+                name,
+                &advance.campaign,
+                steer_issued,
+                ledger,
+            )? {
+                return Ok(None);
+            }
         }
         let trigger = root.causation_id.as_deref().unwrap_or(&root.id);
         let payload =
@@ -130,6 +161,38 @@ impl DurableWorkAdmission {
         .with_span_ids(Some(foundry_sdk::event::mint_span_id()), root.span_id.clone());
         event.id = format!("evt_{trigger}_initiative_advance");
         Ok(Some(event))
+    }
+
+    /// Whether `member`'s settled advance moved it on while another member of
+    /// `initiative` could advance.
+    ///
+    /// The member must no longer be eligible itself: it escalated, finished,
+    /// stopped, became blocked or, for an advance a steer issued, started a
+    /// cycle. Its dispatched objective and its queued cycle item both hold its
+    /// slot, so a steer requested here fills the next free slot, and the chain
+    /// ends when no slot or no eligible member remains. A formation another
+    /// path asked for that started a cycle waits for that cycle's result. An
+    /// advance that left its member eligible changed nothing, and steering
+    /// again could choose the same advance without end.
+    fn advance_left_work_to_steer(
+        &self,
+        store: &foundry_sdk::campaign::CampaignStore,
+        initiative: &str,
+        member: &str,
+        steer_issued: bool,
+        ledger: &WorkItemStore,
+    ) -> anyhow::Result<bool> {
+        let Some(campaign) = store.find(member) else {
+            return Ok(false);
+        };
+        if campaign.has_cycle_in_flight() && !steer_issued {
+            return Ok(false);
+        }
+        let registry = foundry_sdk::error::read_lock(&self.registry, "registry")?;
+        let eligible = foundry_blocks::blocks::steering_eligible_members(
+            store, initiative, ledger, &registry,
+        )?;
+        Ok(!eligible.is_empty() && !eligible.iter().any(|eligible| eligible == member))
     }
 
     fn validate_external_context(
@@ -624,7 +687,7 @@ impl WorkAdmission for DurableWorkAdmission {
             };
             if (root.event_type != EventType::CampaignAdvanceRequested
                 || workflow_succeeded(root, result))
-                && let Some(next_root) = self.automatic_steer_after(root)?
+                && let Some(next_root) = self.automatic_steer_after(root, &store)?
             {
                 self.queue_steering_root(&mut store, next_root, &mut events)?;
             }
@@ -2659,5 +2722,370 @@ mod tests {
         let pending = queued[0].pending_root.as_ref().unwrap();
         assert_eq!(pending.event_type, EventType::InitiativeAdvanceRequested);
         assert_eq!(pending.payload_str("trigger_id"), Some(accounting.id.as_str()));
+    }
+
+    /// Two port members of a steered initiative, `alpha-port` on alpha and
+    /// `beta-port` on beta. `setup` changes the store before it is saved.
+    fn port_initiative(h: &Harness, setup: impl FnOnce(&mut foundry_sdk::campaign::CampaignStore)) {
+        let mut campaigns = foundry_sdk::campaign::CampaignStore::default();
+        for (name, project) in [("alpha-port", "alpha"), ("beta-port", "beta")] {
+            let campaign = serde_json::from_value(serde_json::json!({
+                "name": name, "project": project, "mission": "Port the library",
+                "authorized_by": "Stacey",
+                "done_evidence": [{"kind": "review", "statement": "The port works"}]
+            }))
+            .unwrap();
+            campaigns.add(campaign).unwrap();
+        }
+        let initiative = serde_json::from_value(serde_json::json!({
+            "name": "shared", "outcome": "Every port works", "projects": ["alpha", "beta"],
+            "authorized_by": "Stacey",
+            "members": [
+                {"kind": "campaign", "name": "alpha-port"},
+                {"kind": "campaign", "name": "beta-port"}
+            ],
+            "done_evidence": [{"kind": "review", "statement": "Every port works"}]
+        }))
+        .unwrap();
+        campaigns.add_initiative(initiative, &["alpha".into(), "beta".into()]).unwrap();
+        campaigns.enable_steering("shared").unwrap();
+        setup(&mut campaigns);
+        campaigns.save(&h.policy.campaigns_path).unwrap();
+    }
+
+    /// Escalate `member` as its advance does: the owner question applies to
+    /// it alone, and the initiative becomes `escalated`.
+    fn escalate(store: &mut foundry_sdk::campaign::CampaignStore, member: &str) {
+        store.find_mut(member).unwrap().status = foundry_sdk::campaign::CampaignStatus::Escalated;
+        store.refresh_questions("shared").unwrap();
+    }
+
+    /// An advance a steer issued for `member`: it carries no cycle result.
+    fn steered_advance(member: &str, project: &str) -> Event {
+        let mut advance = root(EventType::CampaignAdvanceRequested, project);
+        advance.payload =
+            Event::serialize_payload(&foundry_sdk::payload::CampaignAdvanceRequestedPayload {
+                campaign: member.into(),
+                run_event_id: None,
+                run_result: None,
+                operator_origin: None,
+                providers: foundry_sdk::gateway::StageProviders::default(),
+            })
+            .unwrap();
+        advance.payload["initiative"] = serde_json::json!("shared");
+        advance.source = Some(WorkSource::initiative("shared", 1));
+        advance
+    }
+
+    /// A settled advance that started no cycle, ending with `terminal` if any.
+    fn advance_settled(project: &str, success: bool, terminal: Option<EventType>) -> ProcessResult {
+        let mut completed = root(EventType::CampaignAdvanceCompleted, project);
+        completed.payload = serde_json::json!({"success": success});
+        ProcessResult {
+            events: std::iter::once(completed)
+                .chain(terminal.map(|kind| root(kind, project)))
+                .collect(),
+            block_executions: vec![],
+            total_duration_ms: 0,
+        }
+    }
+
+    fn queued_steers(h: &Harness) -> Vec<Event> {
+        h.items()
+            .into_iter()
+            .filter(WorkItem::is_queued)
+            .filter_map(|item| item.pending_root)
+            .filter(|root| root.event_type == EventType::InitiativeAdvanceRequested)
+            .collect()
+    }
+
+    /// Steers like the real block's eligibility: it advances the first member
+    /// the real precheck lists, over the harness's own ledger and store.
+    struct SteerFirstEligible(Arc<std::sync::OnceLock<Arc<DurableWorkAdmission>>>);
+    impl TaskBlock for SteerFirstEligible {
+        fn name(&self) -> &'static str {
+            "Synthetic steer that advances the first eligible member"
+        }
+        fn kind(&self) -> BlockKind {
+            BlockKind::Mutator
+        }
+        fn sinks_on(&self) -> &[EventType] {
+            &[EventType::InitiativeAdvanceRequested]
+        }
+        fn execute(&self, event: &Event) -> BlockFuture<'_> {
+            let policy = self.0.get().expect("harness policy");
+            let store =
+                foundry_sdk::campaign::CampaignStore::load(&policy.campaigns_path).expect("store");
+            let registry = policy.registry.read().expect("registry").clone();
+            let eligible = foundry_blocks::blocks::steering_eligible_members(
+                &store,
+                "shared",
+                &policy.store().expect("ledger"),
+                &registry,
+            )
+            .expect("precheck");
+            let children = eligible
+                .first()
+                .map(|member| {
+                    Event::new(
+                        EventType::CampaignAdvanceRequested,
+                        store.find(member).expect("member campaign").project.clone(),
+                        event.throttle,
+                        serde_json::json!({"campaign": member, "initiative": "shared"}),
+                    )
+                })
+                .into_iter()
+                .collect();
+            Box::pin(async move { Ok(TaskBlockResult::success("steered", children)) })
+        }
+    }
+
+    #[tokio::test]
+    async fn an_escalated_steered_advance_wakes_steering_to_advance_another_member() {
+        let policy = Arc::new(std::sync::OnceLock::new());
+        let h = Harness::with_blocks(true, vec![Box::new(SteerFirstEligible(policy.clone()))]);
+        policy.set(h.policy.clone()).ok().expect("one policy");
+        std::fs::write(h.dir.path().join("pacing.json"), r#"{"max_running":4}"#).unwrap();
+        port_initiative(&h, |store| escalate(store, "alpha-port"));
+        let campaigns = foundry_sdk::campaign::CampaignStore::load(&h.policy.campaigns_path)
+            .unwrap()
+            .initiative_view("shared")
+            .unwrap();
+        assert_eq!(campaigns.status, foundry_sdk::initiative::InitiativeStatus::Escalated);
+        assert_eq!(campaigns.open_questions.len(), 1);
+        assert_eq!(campaigns.open_questions[0].members, ["alpha-port"]);
+        let advance = steered_advance("alpha-port", "alpha");
+        let (_, started) = start_admitted(&h, &advance);
+
+        h.policy
+            .complete(&started, &advance_settled("alpha", true, Some(EventType::CampaignEscalated)))
+            .unwrap();
+
+        let steers = queued_steers(&h);
+        assert_eq!(steers.len(), 1, "the settled advance requests one steer");
+        assert_eq!(steers[0].payload_str("trigger_id"), Some(advance.id.as_str()));
+        let started = |kind: EventType, matches: &dyn Fn(&Event) -> bool| {
+            h.effects
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| event.event_type == kind && matches(event))
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                h.scheduler.tick().await;
+                if started(EventType::InitiativeAdvanceRequested, &|event| {
+                    event.causation_id.as_deref() == Some(steers[0].id.as_str())
+                }) && started(EventType::CampaignAdvanceRequested, &|event| {
+                    event.project == "beta" && event.payload_str("campaign") == Some("beta-port")
+                }) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the steer starts and advances beta-port, the member without a question");
+    }
+
+    #[test]
+    fn a_settled_advance_frees_its_own_reservation_before_eligibility_is_judged() {
+        let h = Harness::new(true);
+        port_initiative(&h, |store| {
+            store.find_initiative_mut("shared").unwrap().budget.max_active_members = 1;
+            escalate(store, "alpha-port");
+        });
+        let advance = steered_advance("alpha-port", "alpha");
+        let (id, started) = start_admitted(&h, &advance);
+        // Admission moved the steer's slot reservation onto the advance's item.
+        let mut campaigns =
+            foundry_sdk::campaign::CampaignStore::load(&h.policy.campaigns_path).unwrap();
+        campaigns.find_initiative_mut("shared").unwrap().reservations.push(
+            foundry_sdk::initiative::MemberReservation {
+                member: "alpha-port".into(),
+                operation_id: id,
+                kind: foundry_sdk::initiative::ReservationKind::Formation,
+            },
+        );
+        campaigns.save(&h.policy.campaigns_path).unwrap();
+
+        h.policy
+            .complete(&started, &advance_settled("alpha", true, Some(EventType::CampaignEscalated)))
+            .unwrap();
+
+        assert_eq!(queued_steers(&h).len(), 1, "the one slot is free for beta-port");
+        let campaigns =
+            foundry_sdk::campaign::CampaignStore::load(&h.policy.campaigns_path).unwrap();
+        assert!(campaigns.find_initiative("shared").unwrap().reservations.is_empty());
+    }
+
+    /// Dispatch a cycle for `member` as its formation does: the campaign
+    /// records the objective, and the cycle waits queued in the ledger.
+    fn dispatch_cycle(h: &Harness, member: &str, project: &str) {
+        let mut campaigns =
+            foundry_sdk::campaign::CampaignStore::load(&h.policy.campaigns_path).unwrap();
+        let campaign = campaigns.find_mut(member).unwrap();
+        campaign.status = foundry_sdk::campaign::CampaignStatus::Active;
+        campaign.cycles_completed += 1;
+        campaign.record_dispatched_objective("Port the next module".into());
+        campaigns.save(&h.policy.campaigns_path).unwrap();
+        let mut cycle = root(EventType::ExecutionRequested, project);
+        cycle.payload = serde_json::json!({
+            "project": project, "workflow": "task", "prompt": "Port the next module",
+            "campaign": member, "initiative": "shared"
+        });
+        let id = seed_waiting(h, project);
+        let _gate = ledger_write_gate().lock().expect("gate");
+        let mut store = h.policy.store().expect("load");
+        store.find_mut(&id).unwrap().pending_root = Some(cycle);
+        store.save(&h.policy.path).expect("save");
+    }
+
+    /// A steer-issued advance already running. Its action receipt is not
+    /// modelled, so it starts without final action admission.
+    fn start_steer_issued_advance(h: &Harness, member: &str, project: &str) -> Event {
+        let mut advance = steered_advance(member, project);
+        advance.payload["steering_action_id"] = serde_json::json!("evt_earlier_steer");
+        let mut item = WorkItem::dispatched(
+            WorkItemSpec {
+                project: project.into(),
+                objective: "advance".into(),
+                kind: WorkItemKind::Workflow,
+                lane: WorkLane::Campaign,
+                origin: EventType::CampaignAdvanceRequested.to_string(),
+                trace_id: None,
+            },
+            Utc::now(),
+        );
+        advance.payload[ADMITTED_WORK_ITEM_KEY] = serde_json::json!(item.id);
+        item.started_root = Some(advance.clone());
+        item.source.clone_from(&advance.source);
+        let _gate = ledger_write_gate().lock().expect("gate");
+        let mut store = h.policy.store().expect("load");
+        store.upsert(item);
+        store.save(&h.policy.path).expect("save");
+        advance
+    }
+
+    #[tokio::test]
+    async fn a_steered_advance_that_dispatched_a_cycle_wakes_steering_to_fill_the_next_slot() {
+        let policy = Arc::new(std::sync::OnceLock::new());
+        let h = Harness::with_blocks(true, vec![Box::new(SteerFirstEligible(policy.clone()))]);
+        policy.set(h.policy.clone()).ok().expect("one policy");
+        std::fs::write(h.dir.path().join("pacing.json"), r#"{"max_running":4}"#).unwrap();
+        port_initiative(&h, |_| {});
+        let advance = start_steer_issued_advance(&h, "alpha-port", "alpha");
+        dispatch_cycle(&h, "alpha-port", "alpha");
+
+        h.policy.complete(&advance, &advance_settled("alpha", true, None)).unwrap();
+
+        let steers = queued_steers(&h);
+        assert_eq!(steers.len(), 1, "a free slot remains for beta-port");
+        let campaigns =
+            foundry_sdk::campaign::CampaignStore::load(&h.policy.campaigns_path).unwrap();
+        let registry = h.policy.registry.read().unwrap().clone();
+        assert_eq!(
+            foundry_blocks::blocks::steering_eligible_members(
+                &campaigns,
+                "shared",
+                &h.policy.store().unwrap(),
+                &registry,
+            )
+            .unwrap(),
+            ["beta-port"],
+            "alpha-port's queued cycle holds its slot"
+        );
+        let advanced = |member: &str| {
+            h.effects.lock().unwrap().iter().any(|event| {
+                event.event_type == EventType::CampaignAdvanceRequested
+                    && event.payload_str("campaign") == Some(member)
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !advanced("beta-port") {
+                h.scheduler.tick().await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the steer advances beta-port beside alpha-port's cycle");
+        assert!(!advanced("alpha-port"), "the steer never re-advances alpha-port");
+    }
+
+    #[test]
+    fn a_dispatching_advance_that_fills_the_last_slot_requests_no_steer() {
+        let h = Harness::new(true);
+        port_initiative(&h, |store| {
+            store.find_initiative_mut("shared").unwrap().budget.max_active_members = 1;
+        });
+        let advance = start_steer_issued_advance(&h, "alpha-port", "alpha");
+        dispatch_cycle(&h, "alpha-port", "alpha");
+
+        h.policy.complete(&advance, &advance_settled("alpha", true, None)).unwrap();
+
+        assert!(queued_steers(&h).is_empty(), "alpha-port's cycle holds the only slot");
+    }
+
+    #[test]
+    fn an_escalated_advance_requests_no_steer_when_no_other_member_can_advance() {
+        type Setup = fn(&mut foundry_sdk::campaign::CampaignStore);
+        let cases: [(&str, Setup); 2] = [
+            ("held", |store| {
+                store.hold_member("shared", "beta-port", "Owner reviews the port").unwrap();
+            }),
+            ("completed", |store| {
+                store.find_mut("beta-port").unwrap().status =
+                    foundry_sdk::campaign::CampaignStatus::Completed;
+            }),
+        ];
+        for (case, setup) in cases {
+            let h = Harness::new(true);
+            port_initiative(&h, |store| {
+                setup(store);
+                escalate(store, "alpha-port");
+            });
+            let (_, started) = start_admitted(&h, &steered_advance("alpha-port", "alpha"));
+
+            h.policy
+                .complete(
+                    &started,
+                    &advance_settled("alpha", true, Some(EventType::CampaignEscalated)),
+                )
+                .unwrap();
+
+            assert!(queued_steers(&h).is_empty(), "beta-port {case}: nothing could advance");
+        }
+    }
+
+    #[test]
+    fn a_stood_down_advance_requests_a_steer_while_another_member_can_advance() {
+        let h = Harness::new(true);
+        port_initiative(&h, |store| {
+            store.find_mut("alpha-port").unwrap().status =
+                foundry_sdk::campaign::CampaignStatus::Paused;
+        });
+        let advance = steered_advance("alpha-port", "alpha");
+        let (_, started) = start_admitted(&h, &advance);
+
+        h.policy.complete(&started, &advance_settled("alpha", true, None)).unwrap();
+
+        let steers = queued_steers(&h);
+        assert_eq!(steers.len(), 1);
+        assert_eq!(steers[0].payload_str("trigger_id"), Some(advance.id.as_str()));
+    }
+
+    #[test]
+    fn a_failed_advance_or_one_that_left_its_member_eligible_requests_no_steer() {
+        let h = Harness::new(true);
+        port_initiative(&h, |store| escalate(store, "alpha-port"));
+        let (_, failed) = start_admitted(&h, &steered_advance("alpha-port", "alpha"));
+        h.policy.complete(&failed, &advance_settled("alpha", false, None)).unwrap();
+        assert!(queued_steers(&h).is_empty(), "a broken member must not loop");
+
+        // beta-port is still eligible: its advance changed nothing, and
+        // steering again could choose the same advance without end.
+        let (_, unchanged) = start_admitted(&h, &steered_advance("beta-port", "beta"));
+        h.policy.complete(&unchanged, &advance_settled("beta", true, None)).unwrap();
+        assert!(queued_steers(&h).is_empty());
     }
 }

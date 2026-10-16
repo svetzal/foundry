@@ -8,6 +8,7 @@ mod packet;
 mod request;
 mod task_result;
 pub use action::ApplyInitiativeAction;
+pub use admission::steering_eligible_members;
 use admission::{
     ensure_action_repository_free, live_operations, record_task_evidence, validate_member_pin,
 };
@@ -663,18 +664,52 @@ impl SteerInitiative {
                 result.events.push(finding_event(trigger, &finding)?);
             }
         }
-        // A wait or a decision already in force needs no action, so it requests none.
-        let Some(action) = action else {
-            return Ok(result);
-        };
-        let mut requested = trigger.with_payload(
-            EventType::InitiativeActionRequested,
-            &InitiativeActionRequestedPayload { action },
-        )?;
-        requested.id = format!("evt_{}_action", trigger.id);
-        requested.source = Some(WorkSource::initiative(initiative, 0));
-        result.events.push(requested);
+        result.events.extend(self.next_request(
+            trigger,
+            initiative,
+            outcome,
+            action,
+            &ledger,
+            &guard.store,
+        )?);
         Ok(result)
+    }
+
+    /// What a committed pass requests next.
+    ///
+    /// A decision that needs an action requests it. A wait or a decision
+    /// already in force needs no action. A wait requests nothing more. A
+    /// decision already in force dispatches nothing, like an applied hold or
+    /// relay, so it may request the same one follow-up.
+    fn next_request(
+        &self,
+        trigger: &Event,
+        initiative: &str,
+        outcome: SteeringOutcome,
+        action: Option<foundry_sdk::initiative::DurableSteeringAction>,
+        ledger: &WorkItemStore,
+        store: &CampaignStore,
+    ) -> anyhow::Result<Option<Event>> {
+        if let Some(action) = action {
+            let mut requested = trigger.with_payload(
+                EventType::InitiativeActionRequested,
+                &InitiativeActionRequestedPayload { action },
+            )?;
+            requested.id = format!("evt_{}_action", trigger.id);
+            requested.source = Some(WorkSource::initiative(initiative, 0));
+            return Ok(Some(requested));
+        }
+        if outcome != SteeringOutcome::NoOp {
+            return Ok(None);
+        }
+        action::follow_up_request(
+            trigger,
+            initiative,
+            &trigger.id,
+            ledger,
+            &self.registry()?,
+            store,
+        )
     }
 }
 

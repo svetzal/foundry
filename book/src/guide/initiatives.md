@@ -185,15 +185,46 @@ Only one assessment can run per initiative. Store changes or a changed trunk
 invalidate stale output. Foundry releases the store guard during repository
 reads and agent execution. Durable action receipts prevent replay from starting
 work or spending cycles twice. Pending actions recover after daemon restart.
-Wait and the no-op decisions do not wake the initiative again.
+A wait does not wake the initiative again.
+
+### Wake steering after a member settles
+
+A member cycle result and an initiative task request the next assessment when
+they settle. Repository cleanup and ledger accounting occur first.
+
+A member advance can also settle without a cycle. The member can escalate,
+stand down or finish. An advance that a steer started can also start a cycle.
+Then Foundry calculates the eligibility again. The work item of the advance and
+its slot reservation are not in this calculation. Foundry requests an
+assessment when these two conditions are true:
+
+- At least one member can advance.
+- The member of the advance cannot advance at this time.
+
+A member with a cycle in the queue or in progress uses a slot, so it cannot
+advance. Thus each advance from a steer requests the next assessment, until all
+slots are in use or no member can advance. Then the members advance in
+parallel, up to `max_active_members`. When another path starts a cycle, the
+member waits for the result of that cycle.
+
+If the member of an advance can still advance, the advance changed nothing.
+Foundry does not request an assessment for it, because steering could choose
+the same advance again and again. A failed advance does not request an
+assessment. If an assessment of the initiative waits in the queue or runs, the
+request joins it.
+
+The `escalated` status does not stop steering. It shows that the owner has an
+open question. A member that the question applies to cannot advance. Other
+members can advance. A full set of open questions does not stop steering either.
+Steering can advance a member that has no open question.
 
 ### Follow up a step that dispatches nothing
 
 A steering `hold`, `relay`, `ask`, `escalate` or `stage` changes state but
-starts no work. After Foundry applies one of these steps, it computes the
-eligibility again. If at least one member can advance, Foundry requests exactly
-one follow-up assessment. Without it, the eligible member waits until the next
-settled fact.
+starts no work. A `hold` or `relay` that is already in force (`no_op`) starts no
+work either. After one of these steps, Foundry calculates the eligibility again.
+If at least one member can advance, Foundry requests exactly one follow-up
+assessment. Without it, the eligible member waits until the next settled fact.
 
 The follow-up is an ordinary `initiative_advance_requested` through the work
 ledger. Pacing, the precheck and the one-assessment rule apply to it. If an
@@ -206,8 +237,9 @@ The follow-up's steering record and its `initiative_steered` fact keep the same
 cause, so `initiative show` and the events show the chain. A follow-up pass
 never requests another follow-up, whatever it decides.
 
-These outcomes never request a follow-up: `waited`, `no_op`, `skipped`,
-`rejected`, `stale` and `failed`. A `done` proposal waits for the owner and does
+These outcomes never request a follow-up: `waited`, `skipped`, `rejected`,
+`stale` and `failed`. A `stale` assessment requests a fresh assessment, which
+keeps the follow-up cause. A `done` proposal waits for the owner and does
 not request one either. An owner's direct hold or relay records its own fact,
 and that fact already requests the next assessment.
 

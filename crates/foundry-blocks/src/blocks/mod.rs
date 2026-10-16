@@ -197,6 +197,7 @@ pub use scan::ScanDependencies;
 pub use scan_supply_chain::ScanSupplyChain;
 pub use scout_drift::ScoutDrift;
 pub use steer_initiative::capture_initiative_external_context;
+pub use steer_initiative::steering_eligible_members;
 pub use steer_initiative::validate_steering_external_context;
 pub use steer_initiative::{
     ApplyInitiativeAction, RecordInitiativeTaskResult, RequestInitiativeAdvance, SteerInitiative,

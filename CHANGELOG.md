@@ -9,6 +9,36 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- An initiative no longer stalls when a member advance settles, and its
+  members now advance side by side up to `max_active_members`. Initiative
+  `mojentic-3-0` idled on 0.52.1 with four members eligible: a steer advanced
+  `mojentic-3-0-ru`, that advance escalated with an owner question for `ru`
+  alone, and nothing steered again. Only an accounted cycle result or a
+  standalone task woke steering at settlement, and the `campaign_escalated`
+  fact skipped because the advance still held its slot. Work admission now
+  requests an assessment when a successful member advance moves its member on
+  while the precheck lists another member. Moving on means the member
+  escalated, stood down, finished or became blocked, or, for an advance a steer
+  issued, dispatched a cycle (its dispatched objective and queued cycle item
+  hold its slot). So each settled steer-issued formation asks for the next
+  member until the slots are full or nothing else is eligible. The precheck is
+  recomputed without the settled advance, its slot reservation and the
+  initiative's own assessments. A failed advance, a formation that another path
+  asked for and that dispatched a cycle, and an advance that left its member
+  eligible request none, so a member cannot loop.
+- A steering pass recorded as `no_op` (a hold or relay already in force) now
+  requests the one follow-up assessment an applied hold or relay requests,
+  under the same bounds: never from a follow-up, never for an owner action,
+  never while another assessment is queued, running or coalesced behind the
+  steer, and only when a member is eligible. On 0.52.1 a fresh pass after a
+  stale relay chose the same relay, recorded `no_op`, and the initiative idled
+  for about twenty minutes with four members eligible. The 0.52.0 rule that
+  no-op passes request no follow-up is withdrawn. A follow-up is now also
+  withheld while a fact waits coalesced behind the running steer, so the
+  follow-up no longer replaces that fact's request.
+- The `escalated` initiative status was confirmed to gate no steering path. A
+  new test pins that an escalated initiative still lists a member without an
+  open question as eligible, with its question surface full.
 - Tests that write a stand-in script and then run it no longer fail at random
   with "Text file busy". GitHub CI run 38902421734 failed
   `a_failed_mix_deps_get_is_reported_and_names_the_project` this way. The
