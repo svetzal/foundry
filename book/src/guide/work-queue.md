@@ -691,6 +691,15 @@ Candidates are considered interactive lane first, then oldest submission
 first. A start earlier in a tick counts against the repository and host rules
 for the items after it.
 
+An item can reserve the repositories of other projects.
+A supply-chain scan with auto-fix waits until all its reserved repositories are free.
+An initiative assessment reserves its repositories only if they are free.
+
+For an initiative assessment, rule 1 applies to its own repository only.
+When the other rules let it start, it holds all reserved repositories if all are free.
+If one of them is busy, it starts with its own repository only.
+Its work item then shows no reserved repositories.
+
 A dependency that can never land is not worth waiting for. When a dependency
 settles any way other than `landed`, or names an id that is not in the ledger,
 the dependent settles `needs_decision` with the reason `waits on <id>, which
@@ -753,8 +762,10 @@ foundry pacing drain [--timeout <duration>] [--origin <text>]
 
 `pacing show` prints the limits in force, every running item with the
 repository it occupies, every waiting item with its reason in the scheduler's
-priority order, and the paused lanes. `--offline` reads the ledger and the
-pacing files directly when the daemon is stopped.
+priority order, and the paused lanes. A waiting item that reserves
+repositories only if free shows them as `(and <repositories> if free)`.
+`--offline` reads the ledger and the pacing files directly when the daemon is
+stopped.
 
 `pacing pause` stops new starts in a lane (default `all`); running items are
 untouched. `pacing resume` allows starts again, and the next tick starts the

@@ -239,6 +239,7 @@ fn set_steering_receipts(response: &mut proto::Initiative, initiative: &Initiati
                 .follow_up_of
                 .as_ref()
                 .and_then(|cause| serde_json::to_string(cause).ok()),
+            integration_skipped: record.integration_skipped.clone(),
         })
         .collect();
     response.pending_actions = initiative

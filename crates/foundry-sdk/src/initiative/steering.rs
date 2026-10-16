@@ -219,8 +219,8 @@ pub struct SteeringRecord {
     /// The earlier steer and step this pass followed up, when it was one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub follow_up_of: Option<SteeringFollowUp>,
-    /// Why this pass ran without integration: member work held the
-    /// initiative trunks, so integration results predate it.
+    /// Why this pass ran without integration: it started without every
+    /// initiative trunk, so integration results predate it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub integration_skipped: Option<String>,
 }

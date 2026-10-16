@@ -823,6 +823,23 @@ mod steering_transport_tests {
     use super::*;
 
     #[test]
+    fn an_offline_show_keeps_why_the_last_steer_skipped_integration() {
+        let reason = "integration skipped: other work holds initiative trunks: sample";
+        let initiative: Initiative = serde_json::from_value(serde_json::json!({
+            "name":"shared", "outcome":"The trunks agree", "projects":["sample"],
+            "authorized_by":"Stacey", "members":[], "done_evidence":[],
+            "steering_history":[{
+                "id":"steer_1", "prompt":"", "decision":{"decision":"wait","reason":"busy"},
+                "provider":null, "recorded_at":"2026-10-16T12:00:00Z",
+                "integration_skipped":reason
+            }]
+        }))
+        .unwrap();
+        let shown = to_proto(&CampaignStore::default(), &initiative).unwrap();
+        assert_eq!(shown.steering_history[0].integration_skipped.as_deref(), Some(reason));
+    }
+
+    #[test]
     fn integration_gate_file_accepts_typed_gates_and_rejects_reviews() {
         let home = tempfile::tempdir().unwrap();
         let path = home.path().join("gates.json");

@@ -352,10 +352,13 @@ Commands and artifact paths start at the shared parent directory.
 `foundry capture` retains stdout and stderr. Results retain host, trunk commits
 and log references. Missing artifacts or failed updates cannot pass a gate.
 Failures become initiative findings.
-A steer reserves every initiative repository only when no queued or running
-work holds one (held work does not count). Otherwise it reserves none, starts
+A steer reserves every initiative repository only if free
+(`reservation_if_free`). Pacing never holds the steer for them. When it starts,
+it takes all of them if all are free, otherwise none, and the scheduler clears
+an untaken reservation from the record. A steer that starts without them runs
 beside member work, skips integration entirely (no sync, gate, result or
-finding) and records the reason as `integration_skipped` on its steering record.
+finding) and records the reason as `integration_skipped` on its steering record
+(`initiative show` prints it).
 
 Steering can `stage` a validated campaign within the initiative's projects.
 It becomes a member under the existing shared authorization and budget.
@@ -868,7 +871,7 @@ The `metadata.version` field in `skill/foundry/SKILL.md` should be kept in sync 
   records or restoring an old ledger over new work.
 
 - `~/.foundry/pacing.json` — operator-edited pacing limits: `{"max_running": 2}` (the host running cap). Missing means the defaults; malformed falls back to the defaults with a warning. Read on every scheduler tick and every `GetPacing`; never written by the daemon.
-- `~/.foundry/pacing-state.json` — daemon-owned pause state: `{"version": 1, "paused": ["campaign"]}` in lane order. Written by `PausePacing`/`ResumePacing` through an atomic rename; in force after a restart. A malformed file fails closed: every lane is treated as paused until repaired. The scheduler (`foundryd::pacing::PacingScheduler`) ticks under the ledger write gate: it loads the ledger and both files, runs the pure rules in `foundry_sdk::pacing::evaluate` (dependency settled non-landed or unknown → `needs_decision` first; then repository busy → host at capacity → not before → waits on → lane paused → start; interactive lane first, then oldest submission), saves the ledger once, then announces `work_item_started`/`work_item_settled` and dispatches each started root through `spawn_workflow`. It wakes on every `work_item_*`/`pacing_*` broadcast event, on the resume-admission wake handle, at the earliest `not_before`, and every 15 s. Admission is `DurableWorkAdmission` at the engine routing boundary and `admit_resume` for preserved task continuations. The scheduler retains each exact started root as durable ownership proof. It starts the original event type on the same source, trace and gather. `CheckCharter` also requires the marker for task roots.
+- `~/.foundry/pacing-state.json` — daemon-owned pause state: `{"version": 1, "paused": ["campaign"]}` in lane order. Written by `PausePacing`/`ResumePacing` through an atomic rename; in force after a restart. A malformed file fails closed: every lane is treated as paused until repaired. The scheduler (`foundryd::pacing::PacingScheduler`) ticks under the ledger write gate: it loads the ledger and both files, runs the pure rules in `foundry_sdk::pacing::evaluate` (dependency settled non-landed or unknown → `needs_decision` first; then repository busy → host at capacity → not before → waits on → lane paused → start; interactive lane first, then oldest submission; a `reservation_if_free` item waits only on its own repository and, at start, takes its reservation only if every reserved repository is free, else `StartWithoutReservation` and the scheduler clears `reserved_projects`), saves the ledger once, then announces `work_item_started`/`work_item_settled` and dispatches each started root through `spawn_workflow`. It wakes on every `work_item_*`/`pacing_*` broadcast event, on the resume-admission wake handle, at the earliest `not_before`, and every 15 s. Admission is `DurableWorkAdmission` at the engine routing boundary and `admit_resume` for preserved task continuations. The scheduler retains each exact started root as durable ownership proof. It starts the original event type on the same source, trace and gather. `CheckCharter` also requires the marker for task roots.
 - `~/.foundry/worktrees/` — disposable isolated worktrees used by one-shot task executions
 - `~/.foundry/preserved/` — fallback Git bundles when a non-complete task branch cannot be pushed to its remote
 - `~/.foundry/sentinels.json` — sentinel store; auto-seeded by the daemon on first start with the canonical entries (`nightly-maintenance`, `daily-commit-digest`, `ops-digest`) and additively merged with the canonical seed on every restart. Mutations (`enable`/`disable`) go through `foundryd` gRPC so the in-memory scheduler is kept in sync (use `--offline` to write the file directly when the daemon is not running)

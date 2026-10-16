@@ -324,6 +324,13 @@ pub struct WorkItem {
     /// Additional projects whose repositories this workflow uses.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reserved_projects: Vec<String>,
+    /// Whether [`Self::reserved_projects`] are taken only if every one is
+    /// free when the item starts. If one is busy then, the item starts with
+    /// its own project's repository alone and the scheduler clears the
+    /// reservation, so a running item's record names exactly what it holds
+    /// (see [`crate::pacing`]). The scheduler clears this flag on every start.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reservation_if_free: bool,
     /// Whether the entire admitted traversal has ended, including cleanup.
     #[serde(default)]
     pub execution_completed: bool,
@@ -416,6 +423,7 @@ impl WorkItem {
             pending_root: None,
             started_root: None,
             reserved_projects: Vec::new(),
+            reservation_if_free: false,
             execution_completed: false,
             coalesced_root: None,
         }

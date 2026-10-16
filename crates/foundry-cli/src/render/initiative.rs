@@ -216,6 +216,9 @@ fn render_steering(out: &mut String, initiative: &Initiative) {
         if let Some(cause) = &steer.follow_up_of_json {
             let _ = writeln!(out, "Follow-up of: {cause}");
         }
+        if let Some(reason) = &steer.integration_skipped {
+            let _ = writeln!(out, "Integration skipped: {reason}");
+        }
     }
     for proposal in &initiative.close_proposals {
         let _ = writeln!(
@@ -381,5 +384,31 @@ mod tests {
         };
         assert!(detail(&initiative).contains("Outcome awaits owner confirmation."));
         assert!(detail(&initiative).contains("Confirm: foundry initiative complete shared"));
+    }
+
+    #[test]
+    fn the_last_steer_names_why_it_skipped_integration_after_its_cause() {
+        let reason = "integration skipped: other work holds initiative trunks: alpha";
+        let initiative = Initiative {
+            name: "shared".into(),
+            steering_history: vec![crate::proto::SteeringRecord {
+                id: "steer_1".into(),
+                decision_json: r#"{"decision":"wait","reason":"busy"}"#.into(),
+                recorded_at: "now".into(),
+                follow_up_of_json: Some(r#"{"steer_id":"steer_0","step":"stage"}"#.into()),
+                integration_skipped: Some(reason.into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let out = detail(&initiative);
+        let cause = out.find("Follow-up of: ").expect("cause line");
+        let skipped = out.find(&format!("Integration skipped: {reason}\n")).expect("skip line");
+        assert!(cause < skipped, "{out}");
+        let quiet = Initiative {
+            steering_history: vec![crate::proto::SteeringRecord::default()],
+            ..initiative
+        };
+        assert!(!detail(&quiet).contains("Integration skipped"));
     }
 }

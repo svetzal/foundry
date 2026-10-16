@@ -2228,6 +2228,7 @@ mod tests {
             pending_root: None,
             started_root: None,
             reserved_projects: Vec::new(),
+            reservation_if_free: false,
             execution_completed: false,
             coalesced_root: None,
         }
@@ -2614,6 +2615,7 @@ mod tests {
             pending_root: None,
             started_root: None,
             reserved_projects: Vec::new(),
+            reservation_if_free: false,
             execution_completed: false,
             coalesced_root: None,
             disposition: Some(WorkDisposition {

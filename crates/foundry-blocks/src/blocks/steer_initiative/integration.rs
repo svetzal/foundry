@@ -44,10 +44,10 @@ pub(super) async fn run(
     if !has_gates && initiative.completion_proposal.is_none() {
         return Ok(Integration::default());
     }
-    // Admission reserves every trunk only while no member work holds one. A
-    // steer admitted beside member work never touches a trunk, even when that
-    // work settled before it started: evidence against a partly current
-    // snapshot would be stale on arrival, and a failed result would become a
+    // Pacing gives a steer every trunk or none when it starts. A steer that
+    // started beside other work never touches a trunk, even when that work
+    // settled before it got here: evidence against a partly current snapshot
+    // would be stale on arrival, and a failed result would become a
     // regression finding.
     if let Some(skipped) = trunks_not_held(ledger_path, &initiative.projects, trigger_id)? {
         return Ok(Integration {
@@ -167,15 +167,16 @@ fn trunks_not_held(
             items.items.iter().any(|item| {
                 (item.is_queued() || item.occupies_slot())
                     && !item.started_root.as_ref().is_some_and(|root| own_steer(root, trigger_id))
-                    && (item.project == **project || item.reserved_projects.contains(project))
+                    && (item.project == **project
+                        || (!item.reservation_if_free && item.reserved_projects.contains(project)))
             })
         })
         .map(String::as_str)
         .collect();
     Ok(Some(if busy.is_empty() {
-        "integration skipped: this steer was admitted without the initiative trunks".to_owned()
+        "integration skipped: this steer started without the initiative trunks".to_owned()
     } else {
-        format!("integration skipped: member work holds initiative trunks: {}", busy.join(", "))
+        format!("integration skipped: other work holds initiative trunks: {}", busy.join(", "))
     }))
 }
 
@@ -338,7 +339,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             reason.as_deref(),
-            Some("integration skipped: this steer was admitted without the initiative trunks")
+            Some("integration skipped: this steer started without the initiative trunks")
         );
     }
 

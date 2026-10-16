@@ -22,6 +22,14 @@
 //! then oldest `submitted_at` first. A start made earlier in the same tick
 //! counts against the repository and host rules for every later candidate.
 //!
+//! An item's repositories are its own project's and those of its
+//! `reserved_projects`. A reservation marked
+//! [`WorkItem::reservation_if_free`] is optional: rule 1 holds the item only
+//! for its own project's repository. When every rule lets it start, it takes
+//! the whole reservation if every reserved repository is free, and otherwise
+//! starts with its own repository alone ([`Decision::StartWithoutReservation`]).
+//! The reservation is all or nothing, settled at the moment of the start.
+//!
 //! Two small files feed the rules. [`Limits`] is operator-edited
 //! (`~/.foundry/pacing.json`) and never written by Foundry; [`PauseState`]
 //! is daemon-owned (`~/.foundry/pacing-state.json`) and saved through a
@@ -300,8 +308,12 @@ impl PacingPaths {
 /// What one tick decides for one queued item.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
-    /// Every rule allows it: start it now.
+    /// Every rule allows it: start it now, holding every repository it names.
     Start,
+    /// Every rule allows it, but a repository it reserves only if free is
+    /// busy: start it now with its own project's repository alone, and drop
+    /// the reservation from its record.
+    StartWithoutReservation,
     /// A rule holds it back, for this reason.
     Wait(String),
     /// A dependency can never land; only an owner can say what happens next.
@@ -381,12 +393,28 @@ fn repositories(item: &WorkItem, repository_of: &dyn Fn(&str) -> String) -> Vec<
         .collect()
 }
 
+/// The repositories `item` must find free to start, then those it takes only
+/// if every one is free (see [`WorkItem::reservation_if_free`]).
+fn claimed_repositories(
+    item: &WorkItem,
+    repository_of: &dyn Fn(&str) -> String,
+) -> (Vec<String>, Vec<String>) {
+    let mut required = repositories(item, repository_of);
+    let optional = if item.reservation_if_free {
+        required.split_off(1)
+    } else {
+        Vec::new()
+    };
+    (required, optional)
+}
+
 /// Decide every `queued` item in `items`, in priority order.
 ///
 /// `repository_of` maps a project to the repository it mutates (see
 /// [`repository_key`]). The verdicts come back in the order the candidates
-/// were considered; a `Start` earlier in the list already counts against the
-/// repository and host rules for the verdicts after it.
+/// were considered; a start earlier in the list already counts against the
+/// repository and host rules for the verdicts after it. A start without its
+/// reservation counts only its own project's repository.
 #[must_use]
 pub fn evaluate(
     items: &[WorkItem],
@@ -414,10 +442,16 @@ pub fn evaluate(
 
     let mut verdicts = Vec::with_capacity(candidates.len());
     for item in candidates {
-        let repositories = repositories(item, repository_of);
-        let decision = decide(item, items, &busy, running, limits, pauses, now, &repositories);
-        if decision == Decision::Start {
-            for repository in repositories {
+        let (required, optional) = claimed_repositories(item, repository_of);
+        let decision =
+            decide(item, items, &busy, running, limits, pauses, now, &required, &optional);
+        let taken = match decision {
+            Decision::Start => Some(required.into_iter().chain(optional).collect()),
+            Decision::StartWithoutReservation => Some(required),
+            Decision::Wait(_) | Decision::NeedsDecision(_) => None,
+        };
+        if let Some(taken) = taken {
+            for repository in taken {
                 busy.insert(repository, item.id.clone());
             }
             running += 1;
@@ -437,7 +471,8 @@ pub struct SnapshotItem {
     pub id: String,
     /// Registry project name.
     pub project: String,
-    /// The repository the per-repository rule keys the item on.
+    /// The repository the per-repository rule keys the item on, then any it
+    /// reserves, marked when it takes them only if free.
     pub repository: String,
     /// What sort of work it is.
     pub kind: WorkItemKind,
@@ -481,7 +516,12 @@ pub fn snapshot(
     let entry = |item: &WorkItem, since: Option<DateTime<Utc>>| SnapshotItem {
         id: item.id.clone(),
         project: item.project.clone(),
-        repository: repositories(item, repository_of).join(", "),
+        repository: match claimed_repositories(item, repository_of) {
+            (required, optional) if optional.is_empty() => required.join(", "),
+            (required, optional) => {
+                format!("{} (and {} if free)", required.join(", "), optional.join(", "))
+            }
+        },
         kind: item.kind,
         lane: item.lane,
         state: item.state,
@@ -522,7 +562,8 @@ fn decide(
     limits: &Limits,
     pauses: &PauseState,
     now: DateTime<Utc>,
-    repositories: &[String],
+    required: &[String],
+    optional: &[String],
 ) -> Decision {
     // A dependency that can never land takes the item out of the queue
     // whatever else holds it: waiting would not change the answer.
@@ -536,7 +577,7 @@ fn decide(
             }
         }
     }
-    if let Some(holder) = repositories.iter().find_map(|repository| busy.get(repository)) {
+    if let Some(holder) = required.iter().find_map(|repository| busy.get(repository)) {
         return Decision::Wait(repository_busy(holder));
     }
     if running >= limits.max_running {
@@ -557,6 +598,11 @@ fn decide(
     }
     if pauses.is_paused(item.lane) {
         return Decision::Wait(LANE_PAUSED_REASON.to_string());
+    }
+    // Only now, when nothing else holds the item, is an optional reservation
+    // settled: a waiting item keeps it, and never waits on it.
+    if optional.iter().any(|repository| busy.contains_key(repository)) {
+        return Decision::StartWithoutReservation;
     }
     Decision::Start
 }
@@ -904,6 +950,113 @@ mod tests {
         assert_eq!(decision(&items, &limits, &pauses), wait("lane paused"));
         pauses.resume(&[WorkLane::Campaign]);
         assert_eq!(decision(&items, &limits, &pauses), Decision::Start);
+    }
+
+    // --- optional reservations --------------------------------------------
+
+    /// A campaign-lane item on `system` that reserves `reserved` only if free.
+    fn optional_reservation(id: &str, reserved: &[&str], submitted: u32) -> WorkItem {
+        let mut item = queued(id, "system", WorkLane::Campaign, submitted);
+        item.reserved_projects = reserved.iter().map(ToString::to_string).collect();
+        item.reservation_if_free = true;
+        item
+    }
+
+    #[test]
+    fn an_optional_reservation_is_taken_when_every_reserved_repository_is_free() {
+        let items = vec![optional_reservation("wi_steer", &["alpha", "beta"], 1)];
+        assert_eq!(
+            decisions(&items, &Limits::default(), &PauseState::default()),
+            vec![("wi_steer".to_string(), Decision::Start)]
+        );
+    }
+
+    #[test]
+    fn an_optional_reservation_is_dropped_when_a_reserved_repository_is_busy() {
+        let items = vec![
+            running("wi_member", "beta", WorkItemKind::CampaignCycle),
+            optional_reservation("wi_steer", &["alpha", "beta"], 1),
+        ];
+        assert_eq!(
+            decisions(&items, &Limits::default(), &PauseState::default()),
+            vec![("wi_steer".to_string(), Decision::StartWithoutReservation)]
+        );
+    }
+
+    #[test]
+    fn an_optional_reservation_still_waits_for_its_own_repository() {
+        let items = vec![
+            running("wi_scan", "system", WorkItemKind::Workflow),
+            optional_reservation("wi_steer", &["alpha"], 1),
+        ];
+        assert_eq!(
+            decisions(&items, &Limits { max_running: 3 }, &PauseState::default()),
+            vec![("wi_steer".to_string(), Decision::Wait(repository_busy("wi_scan")))]
+        );
+    }
+
+    #[test]
+    fn an_item_held_by_another_rule_keeps_its_optional_reservation_and_never_names_it() {
+        let items = vec![
+            running("wi_member", "beta", WorkItemKind::CampaignCycle),
+            optional_reservation("wi_steer", &["alpha", "beta"], 1),
+        ];
+        assert_eq!(
+            decisions(&items, &Limits { max_running: 1 }, &PauseState::default()),
+            vec![("wi_steer".to_string(), Decision::Wait(host_at_capacity(1, 1)))]
+        );
+        let mut pauses = PauseState::default();
+        pauses.pause(&[WorkLane::Campaign]);
+        assert_eq!(
+            decisions(&items, &Limits::default(), &pauses),
+            vec![("wi_steer".to_string(), Decision::Wait(LANE_PAUSED_REASON.to_string()))]
+        );
+    }
+
+    #[test]
+    fn a_start_with_the_reservation_holds_every_reserved_repository_for_later_candidates() {
+        let items = vec![
+            optional_reservation("wi_steer", &["alpha", "beta"], 1),
+            queued("wi_member", "beta", WorkLane::Campaign, 2),
+        ];
+        assert_eq!(
+            decisions(&items, &Limits { max_running: 3 }, &PauseState::default()),
+            vec![
+                ("wi_steer".to_string(), Decision::Start),
+                ("wi_member".to_string(), Decision::Wait(repository_busy("wi_steer"))),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_start_without_the_reservation_leaves_the_reserved_repositories_to_later_candidates() {
+        let items = vec![
+            running("wi_beta", "beta", WorkItemKind::CampaignCycle),
+            optional_reservation("wi_steer", &["alpha", "beta"], 1),
+            queued("wi_alpha", "alpha", WorkLane::Campaign, 2),
+            queued("wi_system", "system", WorkLane::Campaign, 3),
+        ];
+        assert_eq!(
+            decisions(&items, &Limits { max_running: 4 }, &PauseState::default()),
+            vec![
+                ("wi_steer".to_string(), Decision::StartWithoutReservation),
+                ("wi_alpha".to_string(), Decision::Start),
+                ("wi_system".to_string(), Decision::Wait(repository_busy("wi_steer"))),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_snapshot_marks_a_reservation_taken_only_if_free() {
+        let mut required = optional_reservation("wi_scan", &["alpha"], 2);
+        required.reservation_if_free = false;
+        let items = [
+            optional_reservation("wi_steer", &["alpha", "beta"], 1),
+            required,
+        ];
+        let snap = snapshot(&items, &Limits::default(), &PauseState::default(), &by_project);
+        assert_eq!(snap.waiting[0].repository, "system (and alpha, beta if free)");
+        assert_eq!(snap.waiting[1].repository, "system, alpha");
     }
 
     #[test]
