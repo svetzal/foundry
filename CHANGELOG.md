@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.52.1] - 2026-10-16
+
 ### Fixed
 
 - An initiative steer no longer waits "repository busy" behind a member cycle
