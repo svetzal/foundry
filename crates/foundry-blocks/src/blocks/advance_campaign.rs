@@ -4014,16 +4014,18 @@ mod tests {
         store: std::path::PathBuf,
         edit: fn(&mut Campaign),
         asked: std::sync::atomic::AtomicUsize,
+        prompts: std::sync::Mutex<Vec<String>>,
     }
 
     impl crate::gateway::AgentGateway for EditsOnFirstAsk {
         fn invoke<'a>(
             &'a self,
-            _request: &'a crate::gateway::AgentRequest,
+            request: &'a crate::gateway::AgentRequest,
         ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = anyhow::Result<AgentResponse>> + Send + 'a>,
         > {
             Box::pin(async move {
+                self.prompts.lock().unwrap().push(request.prompt.clone());
                 if self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
                     let mut guard = CampaignStore::lock_exclusive(&self.store).unwrap();
                     (self.edit)(guard.store.find_mut("c").unwrap());
@@ -4045,6 +4047,7 @@ mod tests {
             store: store_path.clone(),
             edit,
             asked: std::sync::atomic::AtomicUsize::new(0),
+            prompts: std::sync::Mutex::new(Vec::new()),
         });
         let block =
             advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
@@ -4096,6 +4099,40 @@ mod tests {
                 EventType::ExecutionRequested
             ]
         );
+    }
+
+    /// An owner decision recorded through `decide` on the active campaign
+    /// while it forms is not overwritten by the formation's write-back. The
+    /// record changed, so the campaign is formed again, the second prompt
+    /// carries the decision as binding, and the campaign stays active with the
+    /// decision stored once.
+    #[tokio::test]
+    async fn a_decision_recorded_on_an_active_campaign_during_formation_survives_and_reforms() {
+        let dir = tempfile::tempdir().unwrap();
+        let (block, agent, store_path) = reforming_block(dir.path(), |campaign| {
+            campaign
+                .record_owner_decision(
+                    "Do not remove the v1 endpoint.".to_string(),
+                    chrono::Utc::now(),
+                    0,
+                )
+                .unwrap();
+        });
+
+        let result = block.execute(&manual_advance_trigger()).await.unwrap();
+
+        assert!(result.success, "{}", result.summary);
+        assert_eq!(agent.asked.load(std::sync::atomic::Ordering::SeqCst), 2, "formed twice");
+        let prompts = agent.prompts.lock().unwrap();
+        assert!(!prompts[0].contains("Do not remove the v1 endpoint."));
+        assert!(
+            prompts[1].contains("Do not remove the v1 endpoint."),
+            "the reformation sees the decision"
+        );
+        let stored = CampaignStore::load(&store_path).unwrap().find("c").unwrap().clone();
+        assert_eq!(stored.status, CampaignStatus::Active);
+        assert_eq!(stored.owner_decisions.len(), 1, "the decision survived formation");
+        assert_eq!(stored.owner_decisions[0].decision, "Do not remove the v1 endpoint.");
     }
 
     /// The second formation is held to the edited budget: an owner who cut the

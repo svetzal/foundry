@@ -253,7 +253,7 @@ foundry campaign show <name> [--json]
 foundry campaign report <name> [--json]
 foundry campaign advance <name> [--origin "<note>"]
 foundry campaign pause <name>
-foundry campaign decide <name> --decision "Use the generated tonic client path." [--add-cycles N]
+foundry campaign decide <name> --decision "Use the generated tonic client path." [--add-cycles N]  # --add-cycles: escalated only
 foundry campaign complete <name> --reason "Production evidence confirms the mission shipped."
 foundry campaign cancel <name> --reason "Superseded." [--now] [--discard-work]
 foundry campaign resume <name> [--add-cycles N]
@@ -344,20 +344,25 @@ When a campaign escalates because its cycle budget is exhausted, resuming
 requires an explicit owner-authorized extension, for example
 `foundry campaign resume <name> --add-cycles 1`. To record a decision at the
 same time, use `foundry campaign decide <name> --decision "<text>"
---add-cycles 1`. On a spent budget, `decide` without `--add-cycles` is refused
-and records nothing, and a retried `decide` after a success is refused, so
-cycles are never added twice.
+--add-cycles 1`. On a spent escalated budget, `decide` without `--add-cycles`
+is refused and records nothing. A retried `decide` that repeats the latest
+decision is refused, so cycles are never added twice.
 
 Formation runs read-only and does not build or test. It takes test and gate
 evidence from the done-gate results the daemon ran against trunk, and from the
 last run result: a run with `landed: true` reached trunk only after every
 required gate in the project's gate file passed in its worktree.
 
-When a campaign escalates on a human judgment question, record the owner's
-policy with `foundry campaign decide <name> --decision "<text>"`. This appends
-an owner decision record to the durable campaign and returns the campaign to
-`active`; future formation prompts treat every recorded owner decision as
-binding context instead of re-escalating on the same question. By default,
+Record an owner's policy with `foundry campaign decide <name> --decision
+"<text>"` as soon as the owner rules, on an `active`, `paused` or `escalated`
+campaign. It appends an owner decision record, and every later formation prompt
+treats every recorded owner decision as binding. On an active or paused campaign
+nothing else changes: the status, budget and pending run result stay as they
+are, and `--add-cycles` is refused (use `resume --add-cycles N` for a paused
+campaign). A decision recorded while the campaign forms makes it form again
+from the decision. On an escalated campaign, `decide` also returns it to
+`active` instead of re-escalating on the same question. Completed, cancelled
+and staged campaigns refuse it. By default,
 campaign control commands require a reachable `foundryd` daemon; pass
 `--offline` only when you intentionally want direct-file recovery while the
 daemon is stopped.

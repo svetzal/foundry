@@ -1,6 +1,6 @@
 {
   "contract": "foundry.initiative-control",
-  "version": 2,
+  "version": 3,
   "description": "Executable owner-control scenarios. Each group starts a fresh daemon on an empty Foundry home, applies its named seed fragments in order, then runs its scenarios in order, so a scenario sees the effects of the ones before it. Seed fragments use the campaign store's own JSON: campaigns; an initiative over the registered project 'sample'; findings; brief (a recorded hash whose file on disk now differs); completion_proposal (done proposed against the live trunk snapshot of the 'sample' checkout); tracker_projection (committed as .et/projection.json in a Git repository). Requests and responses are Protobuf JSON for proto/foundry.proto: lowerCamelCase names, uint64 as decimal strings, defaults omitted from requests, and ActOnInitiative's action oneof written as exactly one of hold, relay, dispatch, ask or milestone (an empty object still selects that variant). A response is the consumer-required projection; the provider compares every declared field and the exact cardinality of every array. Repeated fields are listed even when empty. Proto3 optional fields and message fields appear only when the daemon sets them, so an absent eventId means the call started no new event. Daemon-stamped times (decidedAt, openedAt, proposedAt, confirmedAt), reservation operation ids, outcome snapshots and brief paths are left out; the provider asserts the times parse as RFC 3339, the ids are non-empty, and each brief path is initiatives/<name>/BRIEF.md under the Foundry home. Daemon-minted ids the consumer acts on are written as placeholders at the JSON pointers listed in 'volatile'; the provider asserts each is a non-empty string, and within one group placeholders and daemon values correspond one to one. The Tracker repository is written as /sandbox/tracker; the provider substitutes its temporary repository in requests and restores the placeholder in responses. Finding times come from the definition and return in RFC 3339 with an offset. An error gives the numeric gRPC status and the daemon's exact message. 'unchanged: true' means the provider asserts the campaign store bytes did not change: every refusal carries it, as do reads, idempotent retries and a steer that joins one already in flight.",
   "seeds": {
     "campaigns": {
@@ -215,6 +215,54 @@
         ],
         "journeys": []
       }
+    },
+    "stopped": {
+      "campaigns": [
+        {
+          "name": "parked",
+          "project": "sample",
+          "mission": "Move clients to contract v2",
+          "status": "paused",
+          "authorized_by": "Stacey",
+          "cycles_completed": 2,
+          "cycles_landed": 2,
+          "budget": {
+            "max_cycles": 2
+          },
+          "done_evidence": [
+            {
+              "kind": "review",
+              "statement": "Every client uses contract v2"
+            }
+          ]
+        },
+        {
+          "name": "shipped",
+          "project": "sample",
+          "mission": "Publish the v2 schema",
+          "status": "completed",
+          "authorized_by": "Stacey",
+          "done_evidence": [
+            {
+              "kind": "review",
+              "statement": "The v2 schema is published"
+            }
+          ]
+        },
+        {
+          "name": "dropped",
+          "project": "sample",
+          "mission": "Keep a v1 compatibility shim",
+          "status": "cancelled",
+          "authorized_by": "Stacey",
+          "done_evidence": [
+            {
+              "kind": "review",
+              "statement": "v1 clients keep working"
+            }
+          ]
+        }
+      ]
     }
   },
   "groups": [
@@ -3266,14 +3314,143 @@
           }
         },
         {
-          "id": "decide-campaign-not-escalated",
+          "id": "decide-campaign-retry",
+          "method": "DecideCampaign",
+          "request": {
+            "name": "solo",
+            "decision": "One more pass",
+            "addCycles": "2"
+          },
+          "error": {
+            "message": "campaign 'solo' already records this owner decision as its latest; nothing to apply",
+            "status": 9
+          },
+          "unchanged": true
+        },
+        {
+          "id": "decide-active-campaign-with-cycles",
+          "method": "DecideCampaign",
+          "request": {
+            "name": "solo",
+            "decision": "Again",
+            "addCycles": "1"
+          },
+          "error": {
+            "message": "campaign 'solo' is 'active'; decide adds cycles only to an escalated campaign; record the decision without add_cycles",
+            "status": 9
+          },
+          "unchanged": true
+        },
+        {
+          "id": "decide-active-campaign",
           "method": "DecideCampaign",
           "request": {
             "name": "solo",
             "decision": "Again"
           },
+          "response": {
+            "campaign": {
+              "authorizedBy": "Stacey",
+              "cyclesCompleted": "1",
+              "maxCycles": "3",
+              "name": "solo",
+              "ownerDecisions": [
+                {
+                  "authorizedBy": "Stacey",
+                  "decision": "One more pass"
+                },
+                {
+                  "authorizedBy": "Stacey",
+                  "decision": "Again"
+                }
+              ],
+              "project": "sample",
+              "status": "active"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "steer-by-decision",
+      "seed": [
+        "campaigns",
+        "stopped"
+      ],
+      "scenarios": [
+        {
+          "id": "decide-paused-campaign-with-cycles",
+          "method": "DecideCampaign",
+          "request": {
+            "name": "parked",
+            "decision": "Two more passes",
+            "addCycles": "2"
+          },
           "error": {
-            "message": "campaign 'solo' is 'active'; decide requires Escalated status",
+            "message": "campaign 'parked' is 'paused'; decide adds cycles only to an escalated campaign; run `foundry campaign resume parked --add-cycles 2` to extend a paused campaign's budget",
+            "status": 9
+          },
+          "unchanged": true
+        },
+        {
+          "id": "decide-paused-campaign",
+          "method": "DecideCampaign",
+          "request": {
+            "name": "parked",
+            "decision": "Move the mobile client first"
+          },
+          "response": {
+            "campaign": {
+              "authorizedBy": "Stacey",
+              "cyclesCompleted": "2",
+              "maxCycles": "2",
+              "name": "parked",
+              "ownerDecisions": [
+                {
+                  "authorizedBy": "Stacey",
+                  "decision": "Move the mobile client first"
+                }
+              ],
+              "project": "sample",
+              "status": "paused"
+            }
+          }
+        },
+        {
+          "id": "decide-paused-campaign-retry",
+          "method": "DecideCampaign",
+          "request": {
+            "name": "parked",
+            "decision": "Move the mobile client first"
+          },
+          "error": {
+            "message": "campaign 'parked' already records this owner decision as its latest; nothing to apply",
+            "status": 9
+          },
+          "unchanged": true
+        },
+        {
+          "id": "decide-completed-campaign",
+          "method": "DecideCampaign",
+          "request": {
+            "name": "shipped",
+            "decision": "Add a v3 field"
+          },
+          "error": {
+            "message": "campaign 'shipped' is 'completed'; decide requires Active, Paused or Escalated status",
+            "status": 9
+          },
+          "unchanged": true
+        },
+        {
+          "id": "decide-cancelled-campaign",
+          "method": "DecideCampaign",
+          "request": {
+            "name": "dropped",
+            "decision": "Revive the shim"
+          },
+          "error": {
+            "message": "campaign 'dropped' is 'cancelled'; decide requires Active, Paused or Escalated status",
             "status": 9
           },
           "unchanged": true

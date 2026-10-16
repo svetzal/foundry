@@ -416,13 +416,19 @@ enum CampaignCommands {
     },
     /// Pause automatic advancement
     Pause { name: String },
-    /// Record an owner decision and reactivate an escalated campaign
+    /// Record a binding owner decision for the next formation
+    ///
+    /// On an active or paused campaign the decision is recorded and nothing
+    /// else changes. On an escalated campaign it also returns the campaign to
+    /// active.
     Decide {
         name: String,
+        /// The decision; every later formation treats it as binding
         #[arg(long)]
         decision: String,
-        /// Add owner-authorized cycles to the campaign budget with the decision
-        /// (required when the campaign has spent its cycle budget)
+        /// Add owner-authorized cycles with the decision (escalated campaigns
+        /// only; required when an escalated campaign has spent its budget).
+        /// For a paused campaign, use `resume --add-cycles` instead
         #[arg(long, default_value_t = 0)]
         add_cycles: u64,
     },
