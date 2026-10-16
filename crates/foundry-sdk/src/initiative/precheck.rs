@@ -235,6 +235,7 @@ mod tests {
                 provider: Some(AgentProvider::Codex),
                 recorded_at: Utc::now() - Duration::hours(1),
                 follow_up_of: None,
+                integration_skipped: None,
             });
         store
     }

@@ -7,6 +7,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- An initiative steer no longer reserves every initiative repository while
+  member work is queued or running on one of them, so the next member starts
+  beside a running cycle instead of waiting "repository busy" behind it. Such a
+  steer skips integration (no trunk sync, gate, result or regression finding)
+  and records why as `integration_skipped` on its steering record.
+
 ## [0.52.0] - 2026-10-16
 
 ### Added

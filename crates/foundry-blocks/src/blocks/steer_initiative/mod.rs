@@ -84,7 +84,7 @@ impl SteerInitiative {
         let (evidence_store, mut events) =
             self.refresh_intent(&initiative, projection.as_ref()).await?;
         let registry = self.registry()?;
-        let evidence = integration::run(
+        let integration = integration::run(
             self.shell.as_ref(),
             &registry,
             &evidence_store,
@@ -98,7 +98,7 @@ impl SteerInitiative {
             packet::repositories(&registry, &initiative.projects, self.shell.as_ref()).await?;
         let mut guard = lock_store(&self.store_path).await?;
         let previous_findings = guard.store.list_findings(&initiative.name)?;
-        for result in evidence {
+        for result in integration.results {
             guard.store.record_integration_result(&initiative.name, result)?;
         }
         for finding in guard.store.list_findings(&initiative.name)? {
@@ -129,6 +129,7 @@ impl SteerInitiative {
         }
         let mut snapshot = guard.store.begin_steering(&initiative.name, &trigger.id)?;
         snapshot.follow_up_of.clone_from(&request.follow_up_of);
+        snapshot.integration_skipped = integration.skipped;
         guard.save()?;
         let store = guard.store.clone();
         drop(guard);

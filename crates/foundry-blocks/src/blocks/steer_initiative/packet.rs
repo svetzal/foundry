@@ -103,11 +103,12 @@ pub(super) fn prompt(
         "findings":findings,"requested_member":requested_member,"work_ledger":ledger_view,
         "eligibility":eligibility,
         "done_evidence":initiative.done_evidence,"integration_results":integration_results,
+        "integration_skipped":snapshot.integration_skipped,
         "completion_proposal":initiative.completion_proposal});
     let (packet, artifact) = bounded_packet(packet, evidence_root)?;
     let contract_guidance = super::super::agent_helpers::INITIATIVE_CONTRACT_GUIDANCE;
     let text = format!(
-        r#"Choose exactly one next initiative action from current intent and live repository evidence. Take one step, then reassess. You are read-only; do not modify repositories, Foundry state, or Tracker. Foundry has executed integration gates and retained bounded capture evidence in this packet. Inspect the registered repository paths and Foundry-owned brief yourself. All owner decisions are binding. An explicit requested_member restricts advance to that member, but never overrides audit, budget, dependencies, questions, repository ownership, or terminal state.
+        r#"Choose exactly one next initiative action from current intent and live repository evidence. Take one step, then reassess. You are read-only; do not modify repositories, Foundry state, or Tracker. Foundry has executed integration gates and retained bounded capture evidence in this packet. When integration_skipped is set, Foundry did not integrate this pass, for the reason given, and integration_results predate the current trunks. Inspect the registered repository paths and Foundry-owned brief yourself. All owner decisions are binding. An explicit requested_member restricts advance to that member, but never overrides audit, budget, dependencies, questions, repository ownership, or terminal state.
 
 Before any derived work advances, audit EVERY current intent candidate: create looks for partial implementation, update compares revised intent with code, delete finds removals and references. Classify realised, partial, absent, or misplaced. Cite project-relative existing paths (a checked directory may support absence). Realised intent is proposed for owner Tracker closure and must not become redundant work. Do not infer named milestones from unrelated landings. Approved new intent becomes a candidate; discarded intent has been cancelled. Relay useful findings explicitly, and ask one question covering every applicable member when owner judgement is needed. Respect max_open_questions: when the surface is full, advance an eligible member that has no unanswered question, or escalate waiting on owner if nothing can move. Deferred questions still block their applicable members.
 

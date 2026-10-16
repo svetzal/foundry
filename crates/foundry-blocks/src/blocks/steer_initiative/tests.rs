@@ -42,6 +42,39 @@ impl Fixture {
             serde_json::json!({"initiative":"shared","member":member}),
         )
     }
+    /// A trigger whose running ledger item reserves `reserved`, as admission
+    /// records a started steer. One assessment runs at a time, so an earlier
+    /// steer of this fixture has finished.
+    pub(super) fn trigger_reserving(&self, reserved: &[&str]) -> Event {
+        let trigger = Self::trigger(None);
+        let mut item = WorkItem::dispatched(
+            WorkItemSpec {
+                project: "system".into(),
+                objective: "steer".into(),
+                kind: WorkItemKind::Workflow,
+                lane: WorkLane::Campaign,
+                origin: EventType::InitiativeAdvanceRequested.to_string(),
+                trace_id: None,
+            },
+            chrono::Utc::now(),
+        );
+        item.started_root = Some(trigger.clone());
+        item.reserved_projects = reserved.iter().map(ToString::to_string).collect();
+        let mut ledger = WorkItemStore::load(&self.ledger).unwrap();
+        for earlier in &mut ledger.items {
+            if earlier.occupies_slot() && earlier.kind == WorkItemKind::Workflow {
+                earlier.execution_completed = true;
+                earlier.settle_landed("steered", chrono::Utc::now());
+            }
+        }
+        ledger.upsert(item);
+        ledger.save(&self.ledger).unwrap();
+        trigger
+    }
+    /// A trigger admitted while the ledger was quiet: it holds every trunk.
+    pub(super) fn trigger_holding_trunks(&self) -> Event {
+        self.trigger_reserving(&["sample"])
+    }
     pub(super) fn steer(
         &self,
         agent: Arc<dyn AgentGateway>,
