@@ -540,6 +540,8 @@ foundry campaign show parite-phase-2d
 foundry campaign advance parite-phase-2d
 foundry campaign pause parite-phase-2d
 foundry campaign decide parite-phase-2d --decision "Use the generated tonic client path."
+# On an active or paused campaign, decide records the policy and changes nothing else:
+foundry campaign decide parite-phase-2d --decision "Do not remove the v1 endpoint."
 foundry campaign resume parite-phase-2d
 # When the cycle budget was exhausted, explicitly authorize more work:
 foundry campaign resume parite-phase-2d --add-cycles 1
@@ -584,7 +586,9 @@ agent's `Question:` and each `Choice:` as the agent wrote them. The options
 follow the status table below. `resume`, `decide` and `complete` need an
 `authorized_by` owner, so an unauthorized campaign is offered only `cancel`.
 When the cycle budget is spent, `decide` and `resume` are offered with
-`--add-cycles`, the only form the engine accepts. Every other status prints its own options too,
+`--add-cycles`, the only form the engine accepts. An active or paused campaign
+is offered `decide` without `--add-cycles`, the only form it accepts, to record
+a decision for the next formation. Every other status prints its own options too,
 and a completed or cancelled campaign prints none. `foundry campaign report`
 prints the same `Escalation:` block and options, and its `--json` carries
 `open_escalation` and `owner_options`.
@@ -592,8 +596,8 @@ prints the same `Escalation:` block and options, and its `--json` carries
 The reason lives on the campaign record as `open_escalation`. Formation writes
 it in the same store save that moves the campaign to `escalated`, from the same
 reason the `campaign_escalated` event carries. It is present only while the
-campaign is `escalated`: `decide`, `resume`, `complete`, `cancel` and `pause`
-each clear it, because a reason for a question already answered is stale. The
+campaign is `escalated`: an escalated `decide`, `resume`, `complete`, `cancel`
+and `pause` each clear it, because a reason for a question already answered is stale. The
 event log keeps every escalation. While the campaign stays escalated the first
 reason stands; a later result that reaches it only restates the status
 (`campaign is escalated and requires owner resumption`) and does not replace
@@ -630,8 +634,8 @@ reviews the repository and context artifacts, then makes exactly one decision:
 | Status      | Meaning                                                | Valid next control                       |
 | ----------- | ------------------------------------------------------ | ---------------------------------------- |
 | `staged`    | Definition exists; no cycle has started                | `advance`, `pause`, `cancel`             |
-| `active`    | Formation or a task may advance the mission            | `advance`, `pause`, `cancel`             |
-| `paused`    | Advancement is intentionally stopped                   | `resume`, `complete`, `cancel`           |
+| `active`    | Formation or a task may advance the mission            | `advance`, `pause`, `decide`, `cancel`   |
+| `paused`    | Advancement is intentionally stopped                   | `resume`, `decide`, `complete`, `cancel` |
 | `escalated` | Budget, policy, or human judgement stopped the mission | `decide`, `resume`, `complete`, `cancel` |
 | `completed` | Evidence or owner authorization closed the mission     | None                                     |
 | `cancelled` | An owner abandoned the mission before its evidence     | None                                     |
@@ -651,13 +655,13 @@ authoritative specification:
 | Status      | `pause`   | `resume`               | `decide`               | `complete`                   | `cancel`                   | `advance`              |
 | ----------- | --------- | ---------------------- | ---------------------- | ---------------------------- | -------------------------- | ---------------------- |
 | `staged`    | allowed † | rejected: wrong status | rejected: wrong status | allowed                      | allowed                    | allowed                |
-| `active`    | allowed † | rejected: wrong status | rejected: wrong status | allowed                      | allowed                    | allowed                |
-| `paused`    | allowed † | allowed                | rejected: wrong status | allowed                      | allowed                    | rejected: wrong status |
+| `active`    | allowed † | rejected: wrong status | allowed ‡              | allowed                      | allowed                    | allowed                |
+| `paused`    | allowed † | allowed                | allowed ‡              | allowed                      | allowed                    | rejected: wrong status |
 | `escalated` | allowed † | allowed                | allowed                | allowed                      | allowed                    | rejected: wrong status |
 | `completed` | allowed † | rejected: wrong status | rejected: wrong status | no-op (already settled)      | rejected: already complete | rejected: wrong status |
 | `cancelled` | allowed † | rejected: wrong status | rejected: wrong status | rejected: cancelled campaign | no-op (already settled)    | rejected: wrong status |
 
-`resume` and `complete` additionally require `authorized_by` to be set,
+`resume`, `decide` and `complete` additionally require `authorized_by` to be set,
 regardless of status; `cancel` deliberately does not, so an unauthorized
 campaign is never stranded with no reachable terminal state.
 
@@ -665,6 +669,10 @@ campaign is never stranded with no reachable terminal state.
 campaign — see the `TODO(campaign-status)` on `Campaign::pause` in
 `foundry-sdk`. That this can resurrect a terminal status into `paused` is a
 known open question, not a decision this table is asserting is correct.
+
+‡ On an `active` or `paused` campaign, `decide` records the decision and keeps
+the status. It refuses `--add-cycles` there, and refuses a decision whose text
+and owner repeat the campaign's latest decision.
 
 A `done` decision made while a required done-evidence gate is red is rewritten
 into an `advance`. The synthesized objective carries the campaign mission and
@@ -840,7 +848,8 @@ the change stands:
   and settles `landed`, because the stop is what the operator asked for. A
   paused campaign keeps its pending run result for the advance after `resume`.
 - The campaign can still advance but its record changed (a budget edit, a
-  mission edit, an `--offline` edit). The advance forms again from the current
+  mission edit, an owner decision recorded on the active campaign, an
+  `--offline` edit). The advance forms again from the current
   record, still holding the campaign's formation lock, and re-runs every check
   against it, so a budget cut is enforced. The arriving run result is recorded
   once, whatever the number of formations. An advance whose campaign changes
@@ -858,22 +867,46 @@ If a daemon-side save fails during `pause`, `resume`, `decide`, or `complete`,
 the RPC returns `INTERNAL`, leaves the persisted daemon-owned store
 byte-identical, and `complete` does not emit `CampaignCompleted`.
 
-When a task escalates with a human judgment question, record the owner's policy
-before the next advance:
+### What decide changes in each status
+
+`decide` records a binding owner policy. It appends an owner decision record
+with the decision text, the campaign's `authorized_by` value, and a timestamp.
+Every later formation prompt includes every recorded owner decision as binding
+context, so the next objective follows the policy instead of re-deriving the
+choice you ruled out.
+
+You do not have to wait for an escalation. When you rule on a question while the
+campaign is `active` or `paused`, record it at once:
+
+```bash
+foundry campaign decide parite-phase-2d \
+  --decision "Do not remove the v1 endpoint; clients still depend on it."
+```
+
+On an active or paused campaign, `decide` changes nothing else. The status stays
+as it was, the budget is unchanged, and a stored run result stays pending. A
+paused campaign stays paused until you `resume` it. A spent budget does not
+block the decision, because no status changes. If the campaign is forming when
+you decide, the formation sees the changed record and forms again from it (see
+above), so the next objective already follows the decision.
+
+`--add-cycles` is refused on an active or paused campaign, and nothing is
+recorded. Extending the budget through `decide` answers an escalation. For a
+paused campaign, use `foundry campaign resume <name> --add-cycles N`.
+
+When a task escalates with a human judgment question, `decide` answers it:
 
 ```bash
 foundry campaign decide parite-phase-2d \
   --decision "Keep the generated tonic client boundary; do not add raw JSON shims."
 ```
 
-`decide` is valid only for an `escalated` campaign. It appends an owner decision
-record with the decision text, the campaign's `authorized_by` value, and a
-timestamp, then returns the campaign to `active`. Subsequent formation prompts
-include every recorded owner decision as binding context, so the next advance
-can continue under explicit policy instead of re-escalating on the same
-question.
+On an `escalated` campaign, `decide` records the decision, then returns the
+campaign to `active`, so the next advance can continue under explicit policy
+instead of re-escalating on the same question.
 
-When the campaign has spent its cycle budget, `decide` needs `--add-cycles N`:
+When an escalated campaign has spent its cycle budget, `decide` needs
+`--add-cycles N`:
 
 ```bash
 foundry campaign decide parite-phase-2d \
@@ -883,10 +916,15 @@ foundry campaign decide parite-phase-2d \
 The decision, the budget extension and the return to `active` happen in one
 transition. Without `--add-cycles` the command is refused and records nothing.
 A decision alone would leave an active campaign whose next advance escalates on
-budget again, and `resume` does not accept an active campaign. Because `decide`
-accepts only an `escalated` campaign, running the same command again after it
-succeeded is refused: the decision is not recorded twice and the cycles are not
-added twice.
+budget again, and `resume` does not accept an active campaign.
+
+Running the same command again after it succeeded is refused with "campaign
+'<name>' already records this owner decision as its latest; nothing to apply":
+the decision is not recorded twice and the cycles are not added twice. Foundry
+refuses a decision on an active or paused campaign when its text and owner equal
+the campaign's latest decision. An escalated campaign accepts the same words,
+because it stopped on a new question after that decision. `decide` is refused
+on a staged, completed or cancelled campaign.
 
 By default, `foundry campaign decide` is an online mutation: it requires a
 reachable `foundryd` daemon and sends the decision through the `DecideCampaign`

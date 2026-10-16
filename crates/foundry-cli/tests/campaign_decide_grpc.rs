@@ -287,8 +287,9 @@ fn pending_run_result_json(tmp: &NamedTempFile) -> String {
 /// A budget-exhausted escalation answered with `decide --add-cycles 1` through
 /// the generated client: the campaign is active with one more cycle, the
 /// decision is recorded, and `pending_run_result` is untouched. A retry of the
-/// same command is refused and adds nothing, so owner-authorized cycles are
-/// never spent twice.
+/// same command lands on the now-active campaign and is refused as a repeat of
+/// its latest decision, adding nothing, so owner-authorized cycles are never
+/// spent twice.
 #[tokio::test]
 async fn online_decide_with_add_cycles_reactivates_a_budget_exhausted_campaign() {
     let (service, tmp_campaigns, _tmp_traces) = make_service();
@@ -318,7 +319,12 @@ async fn online_decide_with_add_cycles_reactivates_a_budget_exhausted_campaign()
         decide_and_render(tmp_campaigns.path(), &addr, false, "c", "Keep the current design.", 1)
             .await
             .expect_err("a retried decide must be refused");
-    assert!(retry.to_string().contains("requires Escalated"), "{retry}");
+    assert!(
+        retry.to_string().contains(
+            "campaign 'c' already records this owner decision as its latest; nothing to apply"
+        ),
+        "{retry}"
+    );
     let after_retry = CampaignStore::load(tmp_campaigns.path()).expect("load store");
     let campaign = after_retry.find("c").expect("campaign");
     assert_eq!(campaign.budget.max_cycles, 11, "a retry adds no cycles");

@@ -239,7 +239,7 @@ foundry campaign resume <name> --add-cycles 2
 | `show`     | Yes unless `--offline` | Show the complete stored campaign record; for an escalated campaign, why it waits on its owner; the owner's options as command lines; then its ledger cycles. `--json` emits one object |
 | `advance`  | Yes                    | Re-evaluate done evidence and dispatch one next task, complete, or escalate. `--origin <text>` records a free-text note, beside this machine's hostname, on the work item of the cycle it dispatches |
 | `pause`    | Yes unless `--offline` | Halt future automatic and manual advancement                                |
-| `decide`   | Yes unless `--offline` | Record an owner decision on an escalated campaign and return it to active; `--add-cycles <n>` also extends the budget |
+| `decide`   | Yes unless `--offline` | Record a binding owner decision on an active, paused or escalated campaign. An escalated campaign also returns to active, and `--add-cycles <n>` extends its budget |
 | `complete` | Yes unless `--offline` | Mark an authorized campaign complete with an auditable owner reason         |
 | `cancel`   | Yes unless `--offline` | Stop a campaign permanently, optionally killing the in-flight cycle         |
 | `resume`   | Yes unless `--offline` | Return an authorized paused or escalated campaign to active state           |
@@ -247,12 +247,18 @@ foundry campaign resume <name> --add-cycles 2
 The store defaults to `~/.foundry/campaigns.json` and can be overridden with
 `FOUNDRY_CAMPAIGNS_PATH`. A definition requires non-empty `name`, `project`, and
 `mission` fields plus at least one `done_evidence` item. `authorized_by` is
-required before `decide`, `complete`, or `resume`. `decide` is valid only when
-the campaign is currently `escalated`; it appends an owner decision record and
-makes that policy available to the next formation run. On a spent budget,
-`decide` requires `--add-cycles N`, which it applies in the same transition;
-without it the command is refused and records nothing. `resume --add-cycles N`
-is required when an exhausted budget needs an explicit positive extension.
+required before `decide`, `complete`, or `resume`. `decide` appends an owner
+decision record, and every later formation run treats it as binding. On an
+`active` or `paused` campaign it changes nothing else: the status, budget and
+any stored run result stay as they are. `--add-cycles` is refused there; use
+`resume --add-cycles N` for a paused campaign. On an `escalated` campaign,
+`decide` also returns it to `active`. On a spent budget, an escalated `decide`
+requires `--add-cycles N`, which it applies in the same transition; without it
+the command is refused and records nothing. `decide` is refused on a staged,
+completed or cancelled campaign, and when its text and owner repeat the
+campaign's latest decision, so a retry records nothing twice.
+`resume --add-cycles N` is required when an exhausted budget needs an explicit
+positive extension.
 Without `--offline`, all nine campaign subcommands are daemon-authoritative:
 they require a reachable `foundryd` daemon, fail without touching the
 client-side `FOUNDRY_CAMPAIGNS_PATH` if the daemon is unreachable, and render

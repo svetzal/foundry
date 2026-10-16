@@ -693,16 +693,21 @@ message ResumeCampaignResponse {
     CampaignDetail campaign = 1;
 }
 
-// Record an owner decision on an escalated campaign and return it to active
-// state so the next advance can proceed with the explicit policy in context.
-// Only valid when the campaign is in `escalated` status, so a retry after a
-// success is refused rather than applied twice.
+// Record a binding owner decision on an active, paused or escalated campaign.
+// Every later formation prompt carries it. An active or paused campaign keeps
+// its status, budget and open escalation record. An escalated campaign returns
+// to active. A staged, completed or cancelled campaign is refused. A decision
+// whose text and owner repeat the latest one on an active or paused campaign
+// is refused, so a retry after a success records nothing twice.
 message DecideCampaignRequest {
     string name = 1;
     string decision = 2;
     // Additional cycles to add to `max_cycles` in the same transition that
     // records the decision (checked addition; overflow → FAILED_PRECONDITION).
-    // Required (> 0) when the campaign has spent its budget; 0 = no extension.
+    // Escalated campaigns only: > 0 on an active or paused campaign is
+    // FAILED_PRECONDITION (a paused campaign takes cycles through
+    // ResumeCampaign). Required (> 0) when an escalated campaign has spent its
+    // budget; 0 = no extension.
     uint64 add_cycles = 3;
 }
 
@@ -1233,7 +1238,7 @@ service Foundry {
     // Resume a paused or escalated campaign, optionally extending its cycle budget.
     rpc ResumeCampaign(ResumeCampaignRequest) returns (ResumeCampaignResponse);
 
-    // Record an owner decision on an escalated campaign and return it to active state.
+    // Record a binding owner decision; an escalated campaign also returns to active.
     rpc DecideCampaign(DecideCampaignRequest) returns (DecideCampaignResponse);
 
     // Mark an authorized campaign complete with an auditable owner reason.

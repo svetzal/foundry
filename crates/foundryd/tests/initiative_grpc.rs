@@ -883,11 +883,11 @@ fn assert_rfc3339(timestamp: &str) {
 /// starts a fresh daemon on a Foundry home seeded from named fragments, then
 /// runs its scenarios in order against the real typed client.
 #[tokio::test]
-async fn initiative_control_v2_provider_verifies_shared_contract() {
-    let bytes = include_bytes!("../../../contracts/initiative-control-v2.json");
+async fn initiative_control_v3_provider_verifies_shared_contract() {
+    let bytes = include_bytes!("../../../contracts/initiative-control-v3.json");
     let contract: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(contract["contract"], "foundry.initiative-control");
-    assert_eq!(contract["version"], 2);
+    assert_eq!(contract["version"], 3);
     for group in contract["groups"].as_array().unwrap() {
         let fragments = group["seed"].as_array().unwrap().iter().map(|name| {
             let name = name.as_str().unwrap();

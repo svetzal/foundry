@@ -166,8 +166,9 @@ record under the store lock, releases the lock while the gates and agent run,
 and applies its outcome only if the record is unchanged when it locks again.
 A campaign paused, cancelled, completed or escalated meanwhile keeps that
 status and the advance stands down (`decision: "stood_down"`, item settles
-`landed`). A campaign edited in any other way keeps the edit and forms again
-from it, up to three formations; past that the advance fails. One campaign
+`landed`). A campaign edited in any other way, including an owner decision
+recorded on the active campaign, keeps the edit and forms again from it, up to
+three formations; past that the advance fails. One campaign
 forms at a time; different campaigns form concurrently.
 
 ```text

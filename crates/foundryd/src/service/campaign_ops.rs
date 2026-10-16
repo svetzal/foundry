@@ -392,10 +392,13 @@ pub(super) fn resume(
     }))
 }
 
-/// Record an owner decision on an escalated campaign and return it to active
-/// state, adding `add_cycles` to its budget in the same transition. A spent
-/// budget requires `add_cycles > 0`; the rules live in
-/// [`foundry_sdk::campaign::Campaign::record_owner_decision`].
+/// Record a binding owner decision on a campaign.
+///
+/// An active or paused campaign records it and keeps its status; an escalated
+/// one records it and returns to active, adding `add_cycles` to its budget in
+/// the same transition. A refusal (`FAILED_PRECONDITION`) saves nothing; the
+/// rules live in [`foundry_sdk::campaign::Campaign::record_owner_decision`].
+/// No event is emitted: the response and the store carry the resulting status.
 pub(super) fn decide(
     campaigns_path: &Path,
     request: Request<DecideCampaignRequest>,

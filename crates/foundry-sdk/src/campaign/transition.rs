@@ -72,6 +72,18 @@ pub enum TransitionError {
     MemberBudgetSpent { name: String, initiative: String },
     /// Applying `add_cycles` to `budget.max_cycles` would overflow.
     BudgetOverflow { name: String, add_cycles: u64 },
+    /// `decide` with `add_cycles > 0` on an `Active` or `Paused` campaign.
+    /// Budget extension through `decide` answers an escalation; a paused
+    /// campaign takes more cycles through `resume`.
+    AddCyclesNeedEscalation {
+        name: String,
+        status: CampaignStatus,
+        add_cycles: u64,
+    },
+    /// `decide` repeats the campaign's latest owner decision, with the same
+    /// text and owner, on a campaign that is not waiting on a new escalation.
+    /// This is how a retried decide is refused once the first one succeeded.
+    DuplicateDecision { name: String },
 }
 
 impl std::fmt::Display for TransitionError {
@@ -112,6 +124,28 @@ impl std::fmt::Display for TransitionError {
                     "add_cycles ({add_cycles}) would overflow max_cycles for campaign '{name}'"
                 )
             }
+            Self::AddCyclesNeedEscalation {
+                name,
+                status,
+                add_cycles,
+            } => {
+                write!(
+                    f,
+                    "campaign '{name}' is '{status}'; decide adds cycles only to an escalated campaign; "
+                )?;
+                if *status == CampaignStatus::Paused {
+                    write!(
+                        f,
+                        "run `foundry campaign resume {name} --add-cycles {add_cycles}` to extend a paused campaign's budget"
+                    )
+                } else {
+                    write!(f, "record the decision without add_cycles")
+                }
+            }
+            Self::DuplicateDecision { name } => write!(
+                f,
+                "campaign '{name}' already records this owner decision as its latest; nothing to apply"
+            ),
         }
     }
 }
@@ -181,32 +215,50 @@ impl Campaign {
         Ok(())
     }
 
-    /// Record an owner decision on an escalated campaign and return it to
-    /// active state, optionally extending its cycle budget in the same
-    /// transition.
+    /// Record a binding owner decision on a campaign.
     ///
-    /// Valid only from `Escalated`, so a retried decide after a success is
-    /// refused rather than recording the decision or adding the cycles twice.
-    /// When `cycles_completed >= budget.max_cycles` the budget is spent, and
-    /// `add_cycles` must be positive: an active campaign with no cycle left
-    /// would escalate on budget at its next advance, and `resume` refuses an
-    /// active campaign, so a decision without cycles would strand the owner.
-    /// `add_cycles` is applied to `budget.max_cycles` via checked addition;
-    /// overflow is rejected. Every check runs before anything is written, so
-    /// a refusal records nothing.
+    /// The decision is appended to `owner_decisions`, which every later
+    /// formation prompt treats as binding. What else happens depends on the
+    /// status:
+    ///
+    /// - `Active` or `Paused`: nothing else changes. The status, budget,
+    ///   `open_escalation` and `pending_run_result` stay as they are, so an
+    ///   owner can steer the next formation without stopping the campaign.
+    ///   The spent-budget rule does not apply, because no status changes and
+    ///   nothing is stranded. `add_cycles > 0` is refused: extending the
+    ///   budget through `decide` answers an escalation, and a paused campaign
+    ///   takes more cycles through `resume`.
+    /// - `Escalated`: the decision answers the escalation. The campaign
+    ///   returns to `Active`, `open_escalation` is cleared, and `add_cycles`
+    ///   extends the budget in the same transition. When `cycles_completed >=
+    ///   budget.max_cycles` the budget is spent and `add_cycles` must be
+    ///   positive: an active campaign with no cycle left would escalate on
+    ///   budget at its next advance. `add_cycles` is applied through checked
+    ///   addition; overflow is rejected.
+    /// - `Staged`, `Completed` or `Cancelled`: refused.
+    ///
+    /// A retried decide is refused rather than recording the decision or
+    /// adding the cycles twice. On an `Active` or `Paused` campaign, a decision
+    /// whose text and owner equal the latest recorded decision is refused as
+    /// [`TransitionError::DuplicateDecision`]. A successful escalated decide
+    /// leaves the campaign `Active`, so its retry meets this check before the
+    /// `add_cycles` refusal. An `Escalated` campaign is exempt: it has stopped
+    /// on a new question since its latest decision, and the same words may
+    /// answer it.
     ///
     /// Initiative members reject positive `add_cycles` because their budget
-    /// belongs to the initiative. A spent member refuses a decision without
-    /// cycles too, and the refusal names the initiative: deciding there with
-    /// `add_cycles > 0` is the only control that authorizes more work.
-    ///
-    /// `pending_run_result` is intentionally left untouched.
+    /// belongs to the initiative. A spent escalated member refuses a decision
+    /// without cycles too, and the refusal names the initiative: deciding
+    /// there with `add_cycles > 0` is the only control that authorizes more
+    /// work. Every check runs before anything is written, so a refusal records
+    /// nothing. `pending_run_result` is never touched.
     ///
     /// # Errors
     ///
     /// Returns [`TransitionError`] when the campaign is unauthorized, not
-    /// `Escalated`, has spent its budget with no `add_cycles` requested, or
-    /// `add_cycles` would overflow.
+    /// `Active`, `Paused` or `Escalated`, repeats its latest decision, asks for
+    /// cycles while not escalated, has spent its budget while escalated with
+    /// no `add_cycles` requested, or `add_cycles` would overflow.
     pub fn record_owner_decision(
         &mut self,
         decision: String,
@@ -218,31 +270,67 @@ impl Campaign {
                 name: self.name.clone(),
                 detail: "decide requires authorized_by",
             })?;
-        if self.status != CampaignStatus::Escalated {
-            return Err(TransitionError::WrongStatus {
-                name: self.name.clone(),
-                status: self.status,
-                op: "decide",
-                requires: "Escalated",
-            });
-        }
-        let max_cycles = self.extended_budget(add_cycles)?;
-        self.owner_decisions.push(OwnerDecision {
+        let record = |decision| OwnerDecision {
             decision,
-            authorized_by,
+            authorized_by: authorized_by.clone(),
             decided_at: at,
-        });
-        self.budget.max_cycles = max_cycles;
-        self.status = CampaignStatus::Active;
-        self.open_escalation = None;
+        };
+        match self.status {
+            CampaignStatus::Active | CampaignStatus::Paused => {
+                if self.latest_decision_is(&decision, &authorized_by) {
+                    return Err(TransitionError::DuplicateDecision {
+                        name: self.name.clone(),
+                    });
+                }
+                if add_cycles > 0 {
+                    return Err(match &self.initiative {
+                        Some(initiative) => TransitionError::MemberBudgetOwned {
+                            name: self.name.clone(),
+                            initiative: initiative.clone(),
+                        },
+                        None => TransitionError::AddCyclesNeedEscalation {
+                            name: self.name.clone(),
+                            status: self.status,
+                            add_cycles,
+                        },
+                    });
+                }
+                self.owner_decisions.push(record(decision));
+            }
+            CampaignStatus::Escalated => {
+                let max_cycles = self.extended_budget(add_cycles)?;
+                self.owner_decisions.push(record(decision));
+                self.budget.max_cycles = max_cycles;
+                self.status = CampaignStatus::Active;
+                self.open_escalation = None;
+            }
+            status @ (CampaignStatus::Staged
+            | CampaignStatus::Completed
+            | CampaignStatus::Cancelled) => {
+                return Err(TransitionError::WrongStatus {
+                    name: self.name.clone(),
+                    status,
+                    op: "decide",
+                    requires: "Active, Paused or Escalated",
+                });
+            }
+        }
         Ok(())
+    }
+
+    /// Whether the latest recorded owner decision has this text, ignoring
+    /// surrounding whitespace as the callers do, and this owner.
+    fn latest_decision_is(&self, decision: &str, authorized_by: &str) -> bool {
+        self.owner_decisions.last().is_some_and(|latest| {
+            latest.decision.trim() == decision.trim() && latest.authorized_by == authorized_by
+        })
     }
 
     /// The cycle budget after an owner authorizes `add_cycles` more, without
     /// applying it.
     ///
-    /// Shared by `resume` and `decide`, the two controls that return a
-    /// stopped campaign to active: a spent budget needs a positive
+    /// Shared by `resume` and an escalated `decide`, the two controls that
+    /// return a stopped campaign to active: a spent budget needs a positive
     /// `add_cycles`, and the addition is checked.
     fn extended_budget(&self, add_cycles: u64) -> Result<u64, TransitionError> {
         if add_cycles > 0
@@ -432,8 +520,10 @@ pub struct OwnerOption {
 /// [`Campaign`] transition methods (a test holds the two together). `resume`,
 /// `decide` and `complete` need an `authorized_by` owner, so they are left out
 /// for an unauthorized campaign rather than offered and refused. When the cycle
-/// budget is spent, `resume` and `decide` are offered with `--add-cycles`, the
-/// only form the engine accepts.
+/// budget is spent, `resume` and an escalated `decide` are offered with
+/// `--add-cycles`, the only form the engine accepts. An active or paused
+/// `decide` is always offered without `--add-cycles`, the only form the engine
+/// accepts there: it records the decision and changes nothing else.
 #[must_use]
 pub fn owner_options(
     name: &str,
@@ -466,6 +556,12 @@ pub fn owner_options(
             )
         }
     };
+    let steer = || {
+        option(
+            format!("foundry campaign decide {name} --decision \"<text>\""),
+            "record a binding owner decision for the next formation; the status does not change",
+        )
+    };
     let decide = || {
         if budget_exhausted {
             option(
@@ -493,12 +589,18 @@ pub fn owner_options(
     };
     let mut options = Vec::new();
     match status {
-        CampaignStatus::Staged | CampaignStatus::Active => {
+        CampaignStatus::Staged => {
             options.extend([advance(), pause()]);
+        }
+        CampaignStatus::Active => {
+            options.extend([advance(), pause()]);
+            if authorized {
+                options.push(steer());
+            }
         }
         CampaignStatus::Paused => {
             if authorized {
-                options.extend([resume(), complete()]);
+                options.extend([resume(), steer(), complete()]);
             }
         }
         CampaignStatus::Escalated => {
@@ -667,27 +769,168 @@ mod tests {
         );
     }
 
+    /// The state machine specification for `decide`. Active and paused
+    /// campaigns record the decision and keep their status; an escalated one
+    /// records it and returns to active; staged and terminal campaigns refuse
+    /// and record nothing.
     #[test]
     fn decide_table() {
         for status in ALL_STATUSES {
             let mut c = campaign(status, true);
+            let before = serde_json::to_value(&c).unwrap();
             let result = c.record_owner_decision("proceed".to_string(), at(), 0);
-            if status == CampaignStatus::Escalated {
-                assert!(result.is_ok());
-                assert_eq!(c.status, CampaignStatus::Active);
-                assert_eq!(c.owner_decisions.len(), 1);
-            } else {
-                assert_eq!(
-                    result,
-                    Err(TransitionError::WrongStatus {
-                        name: "c".to_string(),
-                        status,
-                        op: "decide",
-                        requires: "Escalated",
-                    })
-                );
+            match status {
+                CampaignStatus::Active | CampaignStatus::Paused => {
+                    assert_eq!(result, Ok(()), "{status:?}");
+                    assert_eq!(c.status, status, "decide keeps an {status:?} campaign {status:?}");
+                    assert_eq!(c.owner_decisions.len(), 1);
+                }
+                CampaignStatus::Escalated => {
+                    assert_eq!(result, Ok(()));
+                    assert_eq!(c.status, CampaignStatus::Active);
+                    assert_eq!(c.owner_decisions.len(), 1);
+                }
+                CampaignStatus::Staged | CampaignStatus::Completed | CampaignStatus::Cancelled => {
+                    assert_eq!(
+                        result,
+                        Err(TransitionError::WrongStatus {
+                            name: "c".to_string(),
+                            status,
+                            op: "decide",
+                            requires: "Active, Paused or Escalated",
+                        })
+                    );
+                    assert_eq!(
+                        serde_json::to_value(&c).unwrap(),
+                        before,
+                        "a refusal records nothing"
+                    );
+                }
             }
         }
+    }
+
+    /// An active or paused campaign with a spent budget, an open escalation
+    /// record and a pending run result: everything the escalated decide would
+    /// touch.
+    fn running_with_everything_decide_could_touch(status: CampaignStatus) -> Campaign {
+        let mut c = escalated_with_record();
+        c.status = status;
+        c.cycles_completed = c.budget.max_cycles;
+        c.pending_run_result = Some(landed_run_result());
+        c
+    }
+
+    /// Recording a decision on an active or paused campaign appends exactly one
+    /// owner decision and changes nothing else on the record, even with a
+    /// spent budget: no status changes, so nothing is stranded.
+    #[test]
+    fn decide_on_an_active_or_paused_campaign_records_and_changes_nothing_else() {
+        for status in [CampaignStatus::Active, CampaignStatus::Paused] {
+            let mut c = running_with_everything_decide_could_touch(status);
+            let mut expected = serde_json::to_value(&c).unwrap();
+
+            c.record_owner_decision("keep the v1 endpoint".to_string(), at(), 0).unwrap();
+
+            expected["owner_decisions"] = serde_json::json!([{
+                "decision": "keep the v1 endpoint",
+                "authorized_by": "owner",
+                "decided_at": at(),
+            }]);
+            assert_eq!(serde_json::to_value(&c).unwrap(), expected, "{status:?}");
+        }
+    }
+
+    /// Budget extension stays bound to the escalated decide and to `resume`.
+    /// The refusal tells the owner of a paused campaign which command adds the
+    /// cycles, and records nothing.
+    #[test]
+    fn decide_with_add_cycles_on_an_active_or_paused_campaign_is_refused_and_records_nothing() {
+        for status in [CampaignStatus::Active, CampaignStatus::Paused] {
+            let mut c = running_with_everything_decide_could_touch(status);
+            let before = serde_json::to_value(&c).unwrap();
+
+            assert_eq!(
+                c.record_owner_decision("keep going".to_string(), at(), 2),
+                Err(TransitionError::AddCyclesNeedEscalation {
+                    name: "c".to_string(),
+                    status,
+                    add_cycles: 2,
+                })
+            );
+            assert_eq!(
+                serde_json::to_value(&c).unwrap(),
+                before,
+                "{status:?}: a refusal records nothing"
+            );
+        }
+    }
+
+    /// A member's budget belongs to its initiative, so the member refusal is
+    /// the one that applies whatever the member's status.
+    #[test]
+    fn a_member_decision_with_add_cycles_names_the_initiative_in_every_decidable_status() {
+        for status in [
+            CampaignStatus::Active,
+            CampaignStatus::Paused,
+            CampaignStatus::Escalated,
+        ] {
+            let mut c = campaign(status, true);
+            c.initiative = Some("shared".to_string());
+            let before = serde_json::to_value(&c).unwrap();
+            assert_eq!(
+                c.record_owner_decision("keep going".to_string(), at(), 1),
+                Err(TransitionError::MemberBudgetOwned {
+                    name: "c".to_string(),
+                    initiative: "shared".to_string(),
+                }),
+                "{status:?}"
+            );
+            assert_eq!(serde_json::to_value(&c).unwrap(), before);
+            c.record_owner_decision("keep going".to_string(), at(), 0).unwrap();
+            assert_eq!(c.owner_decisions.len(), 1, "{status:?}: a member records its decision");
+        }
+    }
+
+    /// Repeating the latest decision on an active or paused campaign is a
+    /// retry, and is refused. A different decision, or the same words from an
+    /// earlier decision that is no longer the latest, is recorded.
+    #[test]
+    fn only_a_repeat_of_the_latest_decision_is_refused_as_a_retry() {
+        for status in [CampaignStatus::Active, CampaignStatus::Paused] {
+            let mut c = campaign(status, true);
+            c.record_owner_decision("prefer gRPC".to_string(), at(), 0).unwrap();
+            let after_first = serde_json::to_value(&c).unwrap();
+
+            assert_eq!(
+                c.record_owner_decision("  prefer gRPC ".to_string(), at(), 0),
+                Err(TransitionError::DuplicateDecision {
+                    name: "c".to_string()
+                }),
+                "{status:?}"
+            );
+            assert_eq!(serde_json::to_value(&c).unwrap(), after_first);
+
+            c.record_owner_decision("drop the JSON shim".to_string(), at(), 0).unwrap();
+            c.record_owner_decision("prefer gRPC".to_string(), at(), 0).unwrap();
+            assert_eq!(c.owner_decisions.len(), 3, "{status:?}");
+            assert_eq!(c.status, status);
+        }
+    }
+
+    /// An escalated campaign stopped on a new question after its latest
+    /// decision, so the same words answer it and are recorded.
+    #[test]
+    fn an_escalated_campaign_accepts_the_same_words_as_its_latest_decision() {
+        let mut c = escalated_with_record();
+        c.owner_decisions.push(OwnerDecision {
+            decision: "keep going".to_string(),
+            authorized_by: "owner".to_string(),
+            decided_at: at(),
+        });
+        c.record_owner_decision("keep going".to_string(), at(), 0).unwrap();
+        assert_eq!(c.status, CampaignStatus::Active);
+        assert_eq!(c.owner_decisions.len(), 2);
     }
 
     /// A budget-exhausted escalation answered with a decision and more cycles:
@@ -770,9 +1013,10 @@ mod tests {
         assert_eq!(serde_json::to_value(&c).unwrap(), before, "a refusal changes nothing");
     }
 
-    /// Decide is valid only from `escalated`, so a retried decide after a
-    /// success is refused: the decision is not recorded twice and the cycles
-    /// are not added twice.
+    /// A successful escalated decide leaves the campaign active, so a retry
+    /// of the same command lands on an active campaign and is refused as a
+    /// repeat of its latest decision, before the `add_cycles` refusal: the
+    /// decision is not recorded twice and the cycles are not added twice.
     #[test]
     fn a_retried_decide_after_success_is_refused_and_applies_nothing() {
         let mut c = escalated_with_record();
@@ -782,11 +1026,8 @@ mod tests {
 
         assert_eq!(
             c.record_owner_decision("keep going".to_string(), at(), 1),
-            Err(TransitionError::WrongStatus {
-                name: "c".to_string(),
-                status: CampaignStatus::Active,
-                op: "decide",
-                requires: "Escalated",
+            Err(TransitionError::DuplicateDecision {
+                name: "c".to_string()
             })
         );
         assert_eq!(serde_json::to_value(&c).unwrap(), after_first);
@@ -980,6 +1221,41 @@ mod tests {
             .to_string(),
             "add_cycles (5) would overflow max_cycles for campaign 'c'"
         );
+        assert_eq!(
+            TransitionError::WrongStatus {
+                name: "c".to_string(),
+                status: CampaignStatus::Completed,
+                op: "decide",
+                requires: "Active, Paused or Escalated"
+            }
+            .to_string(),
+            "campaign 'c' is 'completed'; decide requires Active, Paused or Escalated status"
+        );
+        assert_eq!(
+            TransitionError::AddCyclesNeedEscalation {
+                name: "c".to_string(),
+                status: CampaignStatus::Paused,
+                add_cycles: 2
+            }
+            .to_string(),
+            "campaign 'c' is 'paused'; decide adds cycles only to an escalated campaign; run `foundry campaign resume c --add-cycles 2` to extend a paused campaign's budget"
+        );
+        assert_eq!(
+            TransitionError::AddCyclesNeedEscalation {
+                name: "c".to_string(),
+                status: CampaignStatus::Active,
+                add_cycles: 2
+            }
+            .to_string(),
+            "campaign 'c' is 'active'; decide adds cycles only to an escalated campaign; record the decision without add_cycles"
+        );
+        assert_eq!(
+            TransitionError::DuplicateDecision {
+                name: "c".to_string()
+            }
+            .to_string(),
+            "campaign 'c' already records this owner decision as its latest; nothing to apply"
+        );
     }
 
     fn escalated_with_record() -> Campaign {
@@ -1091,6 +1367,41 @@ mod tests {
         );
         assert_eq!(exhausted[0].control, "decide");
         assert_eq!(exhausted[1].command, "foundry campaign resume mojentic-x --add-cycles <n>");
+        for (status, expected) in [
+            (
+                CampaignStatus::Active,
+                vec![
+                    "foundry campaign advance mojentic-x",
+                    "foundry campaign pause mojentic-x",
+                    "foundry campaign decide mojentic-x --decision \"<text>\"",
+                    "foundry campaign cancel mojentic-x --reason \"<text>\"",
+                ],
+            ),
+            (
+                CampaignStatus::Paused,
+                vec![
+                    "foundry campaign resume mojentic-x --add-cycles <n>",
+                    "foundry campaign decide mojentic-x --decision \"<text>\"",
+                    "foundry campaign complete mojentic-x --reason \"<text>\"",
+                    "foundry campaign cancel mojentic-x --reason \"<text>\"",
+                ],
+            ),
+        ] {
+            let commands: Vec<String> = owner_options("mojentic-x", status, true, true)
+                .into_iter()
+                .map(|o| o.command)
+                .collect();
+            assert_eq!(
+                commands, expected,
+                "{status}: decide records without --add-cycles even on a spent budget"
+            );
+        }
+        assert!(
+            owner_options("c", CampaignStatus::Active, false, false)
+                .iter()
+                .all(|option| option.control != "decide"),
+            "decide needs an owner"
+        );
         let unauthorized = owner_options("mojentic-x", CampaignStatus::Escalated, false, false);
         assert_eq!(unauthorized.len(), 1, "only cancel needs no owner");
         assert!(

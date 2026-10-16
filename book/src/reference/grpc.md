@@ -501,25 +501,39 @@ on the online path.
 
 ### `DecideCampaign(DecideCampaignRequest) → DecideCampaignResponse`
 
-Record an owner decision on an escalated campaign. The daemon holds the
-exclusive campaign-store lock for the full mutation, appends one durable owner
-decision record, and returns the campaign to `active` so the next advance can
-proceed with that policy in context.
+Record a binding owner decision on an `active`, `paused` or `escalated`
+campaign. The daemon holds the exclusive campaign-store lock for the full
+mutation and appends one durable owner decision record. Every later formation
+prompt carries it as binding policy.
 
 The persisted owner decision carries the decision text, the campaign's current
 `authorized_by` identity, and the daemon timestamp. Existing counters and any
-stored `pending_run_result` are preserved.
+stored `pending_run_result` are preserved. No event is emitted; the response
+carries the resulting status.
 
-**Spent budget:** when `cycles_completed >= max_cycles`, the request must carry
-a positive `add_cycles`. The daemon adds it to `max_cycles` (checked addition)
-in the same transition that records the decision and sets `active`. With
-`add_cycles == 0` the RPC returns `FAILED_PRECONDITION` and records nothing,
-because an active campaign with no cycle left would escalate on budget at its
-next advance, and `ResumeCampaign` does not accept an `active` campaign.
+**Active or paused:** the decision is recorded and nothing else changes. The
+status, `max_cycles` and `open_escalation` stay as they were. A spent budget does
+not block it. A positive `add_cycles` returns `FAILED_PRECONDITION` and records
+nothing: budget extension through this RPC answers an escalation, and a paused
+campaign takes more cycles through `ResumeCampaign`. A decision recorded while
+the campaign forms makes that formation form again from the changed record.
 
-**Retries:** `DecideCampaign` accepts only an `escalated` campaign, so a retry
-after a success returns `FAILED_PRECONDITION`. The decision is not recorded
-twice and `add_cycles` is not applied twice.
+**Escalated:** the decision answers the escalation. The daemon adds `add_cycles`
+to `max_cycles` (checked addition), clears `open_escalation` and sets `active`,
+all in one transition. When `cycles_completed >= max_cycles`, the request must
+carry a positive `add_cycles`; with `add_cycles == 0` the RPC returns
+`FAILED_PRECONDITION` and records nothing, because an active campaign with no
+cycle left would escalate on budget at its next advance, and `ResumeCampaign`
+does not accept an `active` campaign.
+
+**Retries:** on an `active` or `paused` campaign, a decision whose trimmed text
+and owner equal the latest recorded decision returns `FAILED_PRECONDITION`
+("campaign '<name>' already records this owner decision as its latest; nothing
+to apply") and records nothing. A successful escalated decide leaves the
+campaign `active`, so its retry meets this check before the `add_cycles` check:
+the decision is not recorded twice and `add_cycles` is not applied twice. An
+`escalated` campaign accepts the same words, because it stopped on a new
+question after that decision.
 
 **Request:**
 
@@ -527,7 +541,7 @@ twice and `add_cycles` is not applied twice.
 | ------------ | ------ | ------------------------------------------------------------------------------------ |
 | `name`       | string | Exact campaign name to update                                                        |
 | `decision`   | string | Non-empty owner decision text to record                                              |
-| `add_cycles` | uint64 | Cycles to add to `max_cycles` with the decision (0 = none; required on a spent budget) |
+| `add_cycles` | uint64 | Cycles to add to `max_cycles` with the decision (0 = none; escalated campaigns only; required on a spent escalated budget) |
 
 **Response:**
 
@@ -537,9 +551,11 @@ twice and `add_cycles` is not applied twice.
 
 **Errors:** `NOT_FOUND` when no campaign with the given name exists;
 `INVALID_ARGUMENT` when `decision` is empty after trimming;
-`FAILED_PRECONDITION` when the campaign is not `escalated`, lacks
-`authorized_by`, has spent its budget and `add_cycles == 0`, `add_cycles` would
-overflow `max_cycles`, or the campaign store is malformed; `INTERNAL` when the
+`FAILED_PRECONDITION` when the campaign is `staged`, `completed` or
+`cancelled`, lacks `authorized_by`, repeats its latest decision, is `active` or
+`paused` and `add_cycles > 0`, is `escalated` with a spent budget and
+`add_cycles == 0`, `add_cycles` would overflow `max_cycles`, or the campaign
+store is malformed; `INTERNAL` when the
 campaign store is unreadable or persistence fails. On save failure, the daemon
 leaves the persisted campaign store unchanged.
 

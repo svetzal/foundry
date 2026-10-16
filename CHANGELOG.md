@@ -7,6 +7,37 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- `foundry campaign decide` now records an owner decision on an `active` or
+  `paused` campaign, not only an `escalated` one. An owner who rules on policy
+  while a campaign runs can record it at once, and the next formation treats it
+  as binding. On an active or paused campaign the decision is appended and
+  nothing else changes: the status, budget, open escalation record and pending
+  run result stay as they are, and a spent budget does not block it. A decision
+  recorded while the campaign forms makes that formation form again from it.
+  `--add-cycles` there is refused with "campaign '<name>' is '<status>'; decide
+  adds cycles only to an escalated campaign; ..." (`FAILED_PRECONDITION`),
+  pointing a paused campaign at `foundry campaign resume <name> --add-cycles N`.
+  An escalated decide is unchanged. `campaign show` offers `decide` for
+  authorized active and paused campaigns.
+- A retried `decide` is now refused because it repeats the campaign's latest
+  decision: "campaign '<name>' already records this owner decision as its
+  latest; nothing to apply" (`FAILED_PRECONDITION`). The check compares the
+  trimmed text and the owner, applies to active and paused campaigns, and runs
+  before the `--add-cycles` check, so a retried escalated
+  `decide --add-cycles N` still adds no cycles. A staged, completed or
+  cancelled campaign refuses `decide` with "decide requires Active, Paused or
+  Escalated status".
+- The initiative control contract is now version 3
+  (`contracts/initiative-control-v3.json`). In the `budget` group,
+  `decide-campaign-not-escalated` is replaced by `decide-campaign-retry` (the
+  duplicate refusal), `decide-active-campaign-with-cycles` (refused) and
+  `decide-active-campaign` (records a second decision and stays active). A new
+  `steer-by-decision` group covers a paused campaign and the completed and
+  cancelled refusals. Version 2 is removed: the daemon no longer honours its
+  `decide-campaign-not-escalated` refusal.
+
 ## [0.50.2] - 2026-10-13
 
 ### Fixed

@@ -245,29 +245,169 @@ async fn generated_client_decide_campaign_appends_record_and_preserves_pending_r
     );
 }
 
-#[tokio::test]
-async fn generated_client_decide_campaign_invalid_state_returns_failed_precondition() {
-    let (service, tmp_campaigns, _tmp_traces) = make_service();
+/// The seeded campaign in `status`, with everything an escalated decide would
+/// touch: a spent budget, an open escalation record and a pending run result.
+fn campaign_in(status: CampaignStatus) -> Campaign {
     let mut campaign = escalated_campaign("c");
-    campaign.status = CampaignStatus::Active;
-    seed_campaign(&tmp_campaigns, campaign);
-    let addr = start_server(service).await;
+    campaign.status = status;
+    campaign.cycles_completed = campaign.budget.max_cycles;
+    campaign.open_escalation = Some(foundry_sdk::campaign::CampaignEscalation {
+        reason: "an earlier question".to_string(),
+        escalated_at: chrono::DateTime::parse_from_rfc3339("2026-10-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc),
+        cycles_completed: 10,
+        cycles_landed: 2,
+        question: None,
+        choices: vec![],
+        from_event_log: false,
+    });
+    campaign
+}
 
-    let mut client = FoundryClient::connect(addr).await.expect("connect");
-    let err = client
+async fn decide(
+    client: &mut FoundryClient<tonic::transport::Channel>,
+    decision: &str,
+    add_cycles: u64,
+) -> Result<foundryd::proto::CampaignDetail, tonic::Status> {
+    client
         .decide_campaign(DecideCampaignRequest {
             name: "c".to_string(),
-            decision: "Use the generated tonic client path.".to_string(),
-            add_cycles: 0,
+            decision: decision.to_string(),
+            add_cycles,
         })
         .await
-        .expect_err("decide campaign must reject non-escalated campaigns");
+        .map(|response| response.into_inner().campaign.expect("campaign detail"))
+}
 
-    assert_eq!(err.code(), Code::FailedPrecondition);
-    assert!(err.message().contains("decide requires Escalated status"));
-    assert!(
-        !err.message().contains(&tmp_campaigns.path().display().to_string()),
-        "error message must not expose the campaign store path"
+/// An owner can record a binding decision on an active or paused campaign
+/// through the daemon. The decision is stored and nothing else changes: the
+/// status stays as it was, the budget is not touched, and the open escalation
+/// record and pending run result survive. A spent budget does not block it.
+/// A retry of the same decision is refused, and so is a decision that asks
+/// for cycles; neither writes anything.
+#[tokio::test]
+async fn generated_client_decide_records_on_active_and_paused_campaigns_without_changing_status() {
+    for status in [CampaignStatus::Active, CampaignStatus::Paused] {
+        let (service, tmp_campaigns, _tmp_traces) = make_service();
+        seed_campaign(&tmp_campaigns, campaign_in(status));
+        let mut expected =
+            serde_json::to_value(CampaignStore::load(tmp_campaigns.path()).unwrap()).unwrap();
+        let addr = start_server(service).await;
+        let mut client = FoundryClient::connect(addr).await.expect("connect");
+
+        let detail = decide(&mut client, "  Keep the v1 endpoint until clients move.  ", 0)
+            .await
+            .unwrap_or_else(|status| panic!("{status:?}: decide must record: {status:?}"));
+
+        assert_eq!(detail.status, status.to_string(), "the status does not change");
+        assert_eq!(detail.max_cycles, 10, "the budget does not change");
+        assert_eq!(detail.owner_decisions.len(), 1);
+        assert_eq!(detail.owner_decisions[0].decision, "Keep the v1 endpoint until clients move.");
+        assert_eq!(detail.owner_decisions[0].authorized_by, "owner");
+        let stored = CampaignStore::load(tmp_campaigns.path()).expect("load store");
+        let decided_at = stored.find("c").unwrap().owner_decisions[0].decided_at;
+        expected["campaigns"][0]["owner_decisions"] = serde_json::json!([{
+            "decision": "Keep the v1 endpoint until clients move.",
+            "authorized_by": "owner",
+            "decided_at": decided_at,
+        }]);
+        assert_eq!(
+            serde_json::to_value(&stored).unwrap(),
+            expected,
+            "{status}: only the owner decision was added"
+        );
+
+        let after_first = std::fs::read(tmp_campaigns.path()).unwrap();
+        let retry = decide(&mut client, "Keep the v1 endpoint until clients move.", 0)
+            .await
+            .expect_err("a retried decide must be refused");
+        assert_eq!(retry.code(), Code::FailedPrecondition);
+        assert_eq!(
+            retry.message(),
+            "campaign 'c' already records this owner decision as its latest; nothing to apply"
+        );
+        assert_eq!(std::fs::read(tmp_campaigns.path()).unwrap(), after_first, "{status}");
+
+        let with_cycles = decide(&mut client, "Spend two more cycles.", 2)
+            .await
+            .expect_err("decide with add_cycles must be refused unless escalated");
+        assert_eq!(with_cycles.code(), Code::FailedPrecondition);
+        let message = if status == CampaignStatus::Paused {
+            "campaign 'c' is 'paused'; decide adds cycles only to an escalated campaign; run `foundry campaign resume c --add-cycles 2` to extend a paused campaign's budget"
+        } else {
+            "campaign 'c' is 'active'; decide adds cycles only to an escalated campaign; record the decision without add_cycles"
+        };
+        assert_eq!(with_cycles.message(), message);
+        assert_eq!(
+            std::fs::read(tmp_campaigns.path()).unwrap(),
+            after_first,
+            "{status}: a refused decide with cycles records nothing"
+        );
+    }
+}
+
+/// A completed or cancelled campaign has nothing left to steer: decide is
+/// refused and the store is left byte for byte as it was.
+#[tokio::test]
+async fn generated_client_decide_refuses_terminal_campaigns_and_leaves_the_store_unchanged() {
+    for status in [CampaignStatus::Completed, CampaignStatus::Cancelled] {
+        let (service, tmp_campaigns, _tmp_traces) = make_service();
+        seed_campaign(&tmp_campaigns, campaign_in(status));
+        let before = std::fs::read(tmp_campaigns.path()).unwrap();
+        let addr = start_server(service).await;
+        let mut client = FoundryClient::connect(addr).await.expect("connect");
+
+        let err = decide(&mut client, "Use the generated tonic client path.", 0)
+            .await
+            .expect_err("decide must refuse a terminal campaign");
+
+        assert_eq!(err.code(), Code::FailedPrecondition);
+        assert_eq!(
+            err.message(),
+            format!(
+                "campaign 'c' is '{status}'; decide requires Active, Paused or Escalated status"
+            )
+        );
+        assert!(
+            !err.message().contains(&tmp_campaigns.path().display().to_string()),
+            "error message must not expose the campaign store path"
+        );
+        assert_eq!(std::fs::read(tmp_campaigns.path()).unwrap(), before, "{status}");
+    }
+}
+
+/// A successful escalated decide with cycles returns the campaign to active.
+/// Its retry lands on the active campaign and is refused as a repeat of the
+/// latest decision: the cycles are not added twice.
+#[tokio::test]
+async fn generated_client_retried_escalated_decide_is_refused_and_adds_no_cycles() {
+    let (service, tmp_campaigns, _tmp_traces) = make_service();
+    seed_campaign(&tmp_campaigns, campaign_in(CampaignStatus::Escalated));
+    let addr = start_server(service).await;
+    let mut client = FoundryClient::connect(addr).await.expect("connect");
+
+    let detail = decide(&mut client, "One more pass.", 1).await.expect("escalated decide");
+    assert_eq!(detail.status, "active");
+    assert_eq!(detail.max_cycles, 11);
+    assert!(detail.open_escalation.is_none());
+    let after_first = std::fs::read(tmp_campaigns.path()).unwrap();
+
+    let retry = decide(&mut client, "One more pass.", 1).await.expect_err("retry");
+    assert_eq!(retry.code(), Code::FailedPrecondition);
+    assert_eq!(
+        retry.message(),
+        "campaign 'c' already records this owner decision as its latest; nothing to apply"
+    );
+    assert_eq!(std::fs::read(tmp_campaigns.path()).unwrap(), after_first);
+    assert_eq!(
+        CampaignStore::load(tmp_campaigns.path())
+            .unwrap()
+            .find("c")
+            .unwrap()
+            .budget
+            .max_cycles,
+        11
     );
 }
 

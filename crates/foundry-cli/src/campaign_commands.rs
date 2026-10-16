@@ -1487,41 +1487,45 @@ mod tests {
         assert_eq!(campaign.context_paths, vec!["CHARTER.md", "docs/context.md"]);
     }
 
+    /// An authorized escalated campaign with budget left, as `--offline`
+    /// decide tests seed it.
+    fn escalated_campaign_for_offline_decide() -> Campaign {
+        Campaign {
+            initiative: None,
+            providers: foundry_sdk::gateway::StageProviders::default(),
+            name: "c".to_string(),
+            project: "p".to_string(),
+            mission: "ship".to_string(),
+            intent_refs: vec![],
+            context_paths: vec![],
+            done_evidence: vec![foundry_sdk::campaign::DoneEvidence::Review {
+                statement: "shipped".to_string(),
+            }],
+            budget: foundry_sdk::campaign::CampaignBudget {
+                max_cycles: 2,
+                ..Default::default()
+            },
+            escalation: vec![],
+            status: CampaignStatus::Escalated,
+            cycles_completed: 1,
+            cycles_landed: 1,
+            authorized_by: Some("tester".to_string()),
+            agent_provider: None,
+            last_run_event_id: Some("run-2".to_string()),
+            owner_decisions: vec![],
+            pending_run_result: None,
+            objective_history: vec![],
+            open_escalation: None,
+            writable_repositories: vec![],
+        }
+    }
+
     #[tokio::test]
     async fn offline_decide_appends_owner_decision_and_reactivates_campaign() {
         let dir = tempfile::tempdir().unwrap();
         let store_path = dir.path().join("campaigns.json");
         let mut store = CampaignStore::default();
-        store
-            .add(Campaign {
-                initiative: None,
-                providers: foundry_sdk::gateway::StageProviders::default(),
-                name: "c".to_string(),
-                project: "p".to_string(),
-                mission: "ship".to_string(),
-                intent_refs: vec![],
-                context_paths: vec![],
-                done_evidence: vec![foundry_sdk::campaign::DoneEvidence::Review {
-                    statement: "shipped".to_string(),
-                }],
-                budget: foundry_sdk::campaign::CampaignBudget {
-                    max_cycles: 2,
-                    ..Default::default()
-                },
-                escalation: vec![],
-                status: CampaignStatus::Escalated,
-                cycles_completed: 1,
-                cycles_landed: 1,
-                authorized_by: Some("tester".to_string()),
-                agent_provider: None,
-                last_run_event_id: Some("run-2".to_string()),
-                owner_decisions: vec![],
-                pending_run_result: None,
-                objective_history: vec![],
-                open_escalation: None,
-                writable_repositories: vec![],
-            })
-            .unwrap();
+        store.add(escalated_campaign_for_offline_decide()).unwrap();
         store.save(&store_path).unwrap();
 
         let rendered = decide_and_render(
@@ -1543,6 +1547,50 @@ mod tests {
         assert_eq!(campaign.owner_decisions[0].authorized_by, "tester");
         assert!(rendered.contains("Owner decisions:"));
         assert!(rendered.contains("Use the typed daemon mutation path."));
+    }
+
+    /// `--offline` shares the transition with the daemon: a paused campaign
+    /// records the decision and stays paused, a retry is refused, and a
+    /// decision with cycles is refused with the `resume` command to run.
+    #[tokio::test]
+    async fn offline_decide_on_a_paused_campaign_records_and_stays_paused() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("campaigns.json");
+        let mut campaign = escalated_campaign_for_offline_decide();
+        campaign.status = CampaignStatus::Paused;
+        let mut store = CampaignStore::default();
+        store.add(campaign).unwrap();
+        store.save(&store_path).unwrap();
+        let offline = |decision: &'static str, add_cycles| {
+            let store_path = store_path.clone();
+            async move {
+                decide_and_render(
+                    &store_path,
+                    "http://127.0.0.1:0",
+                    true,
+                    "c",
+                    decision,
+                    add_cycles,
+                )
+                .await
+            }
+        };
+
+        offline("Keep the v1 endpoint.", 0).await.unwrap();
+        let stored = CampaignStore::load(&store_path).unwrap();
+        let campaign = stored.find("c").unwrap();
+        assert_eq!(campaign.status, CampaignStatus::Paused);
+        assert_eq!(campaign.owner_decisions.len(), 1);
+        let after_first = std::fs::read(&store_path).unwrap();
+
+        let retry = offline("Keep the v1 endpoint.", 0).await.unwrap_err();
+        assert!(retry.to_string().contains("already records this owner decision"), "{retry}");
+        let with_cycles = offline("Spend more.", 1).await.unwrap_err();
+        assert!(
+            with_cycles.to_string().contains("foundry campaign resume c --add-cycles 1"),
+            "{with_cycles}"
+        );
+        assert_eq!(std::fs::read(&store_path).unwrap(), after_first, "refusals record nothing");
     }
 
     // -- operator origin on `foundry campaign advance` --
