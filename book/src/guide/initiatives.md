@@ -494,6 +494,18 @@ Foundry evidence.
 The result records the host and exact trunk commits.
 Gate failures create findings for the next assessment.
 
+Foundry integrates only when the assessment holds every initiative trunk.
+An assessment reserves every initiative repository through pacing when no
+waiting or running work holds one of them.
+Held work does not stop this reservation.
+
+If member work waits in the queue or runs, the assessment reserves no repository.
+It starts next to that work, so another eligible member can start too.
+That assessment does not fetch trunks or run gates, and it records no gate
+result or finding.
+Its steering record gives the reason in `integration_skipped`.
+Older gate results stay, but they do not show the current trunks.
+
 Steering receives the gate results and reviews each outcome statement against
 the trunks.
 Passing contract gates on both sides proves compatibility for the tested contract.

@@ -22,6 +22,14 @@ struct Execution {
     artifacts: Vec<String>,
 }
 
+/// What integration preparation produced for one steering pass.
+#[derive(Debug, Default)]
+pub(super) struct Integration {
+    pub results: Vec<IntegrationGateResult>,
+    /// Why integration did not run, when this steer did not hold every trunk.
+    pub skipped: Option<String>,
+}
+
 pub(super) async fn run(
     shell: &dyn ShellGateway,
     registry: &Registry,
@@ -30,11 +38,22 @@ pub(super) async fn run(
     ledger_path: &Path,
     store_path: &Path,
     trigger_id: &str,
-) -> anyhow::Result<Vec<IntegrationGateResult>> {
+) -> anyhow::Result<Integration> {
     let initiative = store.initiative_view(name)?;
     let has_gates = initiative.done_evidence.iter().any(|e| matches!(e, DoneEvidence::Gate { .. }));
     if !has_gates && initiative.completion_proposal.is_none() {
-        return Ok(vec![]);
+        return Ok(Integration::default());
+    }
+    // Admission reserves every trunk only while no member work holds one. A
+    // steer admitted beside member work never touches a trunk, even when that
+    // work settled before it started: evidence against a partly current
+    // snapshot would be stale on arrival, and a failed result would become a
+    // regression finding.
+    if let Some(skipped) = trunks_not_held(ledger_path, &initiative.projects, trigger_id)? {
+        return Ok(Integration {
+            results: vec![],
+            skipped: Some(skipped),
+        });
     }
     let root = store_path.parent().ok_or_else(|| anyhow::anyhow!("missing evidence root"))?;
     let host = shell.run(root, "hostname", &[], None, Some(Duration::from_secs(10))).await?;
@@ -52,7 +71,7 @@ pub(super) async fn run(
     };
     if !has_gates {
         sync_result?;
-        return Ok(vec![]);
+        return Ok(Integration::default());
     }
     let repositories = super::packet::repositories(registry, &initiative.projects, shell).await?;
     let identities = super::repository_identities(&repositories);
@@ -115,17 +134,56 @@ pub(super) async fn run(
             recorded_at: chrono::Utc::now(),
         });
     }
-    Ok(results)
+    Ok(Integration {
+        results,
+        skipped: None,
+    })
+}
+
+/// Whether `root` is this steer's own started root.
+fn own_steer(root: &foundry_sdk::event::Event, trigger_id: &str) -> bool {
+    root.id == trigger_id
+        && root.event_type == foundry_sdk::event::EventType::InitiativeAdvanceRequested
+}
+
+/// Why this steer may not integrate, or `None` when its own ledger item
+/// reserves every initiative project.
+fn trunks_not_held(
+    ledger_path: &Path,
+    projects: &[String],
+    trigger_id: &str,
+) -> anyhow::Result<Option<String>> {
+    let items = WorkItemStore::load(ledger_path)?;
+    let held = items.items.iter().any(|item| {
+        item.started_root.as_ref().is_some_and(|root| own_steer(root, trigger_id))
+            && projects.iter().all(|project| item.reserved_projects.contains(project))
+    });
+    if held {
+        return Ok(None);
+    }
+    let busy: Vec<&str> = projects
+        .iter()
+        .filter(|project| {
+            items.items.iter().any(|item| {
+                (item.is_queued() || item.occupies_slot())
+                    && !item.started_root.as_ref().is_some_and(|root| own_steer(root, trigger_id))
+                    && (item.project == **project || item.reserved_projects.contains(project))
+            })
+        })
+        .map(String::as_str)
+        .collect();
+    Ok(Some(if busy.is_empty() {
+        "integration skipped: this steer was admitted without the initiative trunks".to_owned()
+    } else {
+        format!("integration skipped: member work holds initiative trunks: {}", busy.join(", "))
+    }))
 }
 
 fn active_owner(ledger_path: &Path, projects: &[String], trigger_id: &str) -> anyhow::Result<bool> {
     let items = WorkItemStore::load(ledger_path)?;
     Ok(items.items.iter().any(|item| {
         item.occupies_slot()
-            && !item.started_root.as_ref().is_some_and(|root| {
-                root.id == trigger_id
-                    && root.event_type == foundry_sdk::event::EventType::InitiativeAdvanceRequested
-            })
+            && !item.started_root.as_ref().is_some_and(|root| own_steer(root, trigger_id))
             && (projects.contains(&item.project)
                 || item.reserved_projects.iter().any(|p| projects.contains(p)))
     }))
@@ -270,6 +328,18 @@ mod tests {
                 "shared contract"
             );
         }
+    }
+
+    #[test]
+    fn a_steer_with_no_ledger_item_holds_no_trunk() {
+        let temp = tempfile::tempdir().unwrap();
+        let reason =
+            trunks_not_held(&temp.path().join("ledger.json"), &["sample".into()], "evt_steer")
+                .unwrap();
+        assert_eq!(
+            reason.as_deref(),
+            Some("integration skipped: this steer was admitted without the initiative trunks")
+        );
     }
 
     #[test]

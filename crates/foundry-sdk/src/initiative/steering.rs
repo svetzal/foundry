@@ -106,6 +106,26 @@ pub struct SteeringSnapshot {
     /// commit records it on the steering record.
     #[serde(default)]
     pub follow_up_of: Option<SteeringFollowUp>,
+    /// Why integration did not run this pass, when it was skipped. The commit
+    /// records it on the steering record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration_skipped: Option<String>,
+}
+
+/// What a steering record carries about its pass beside the decision.
+#[derive(Debug, Clone, Default)]
+struct PassNotes {
+    follow_up_of: Option<SteeringFollowUp>,
+    integration_skipped: Option<String>,
+}
+
+impl PassNotes {
+    fn of(snapshot: &SteeringSnapshot) -> Self {
+        Self {
+            follow_up_of: snapshot.follow_up_of.clone(),
+            integration_skipped: snapshot.integration_skipped.clone(),
+        }
+    }
 }
 
 /// Why a steering pass was requested as a follow-up: an earlier steer applied
@@ -199,6 +219,10 @@ pub struct SteeringRecord {
     /// The earlier steer and step this pass followed up, when it was one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub follow_up_of: Option<SteeringFollowUp>,
+    /// Why this pass ran without integration: member work held the
+    /// initiative trunks, so integration results predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration_skipped: Option<String>,
 }
 
 impl SteeringDecision {
@@ -315,6 +339,7 @@ impl CampaignStore {
             id: id.into(),
             fingerprint: fingerprint.clone(),
             follow_up_of: None,
+            integration_skipped: None,
         };
         self.find_initiative_mut(name)
             .ok_or_else(|| InitiativeError::NotFound(name.into()))?
@@ -336,7 +361,14 @@ impl CampaignStore {
         let mut candidate = self.clone();
         let snapshot = candidate.claim_steering(name, id, false)?;
         candidate.validate_steering(&snapshot)?;
-        let mut action = candidate.bind_steering_action(name, id, decision, prompt, None, None)?;
+        let mut action = candidate.bind_steering_action(
+            name,
+            id,
+            decision,
+            prompt,
+            None,
+            PassNotes::default(),
+        )?;
         if let SteeringDecision::Hold { member, .. } = &action.decision {
             if let Some(hold) = candidate.find_initiative_mut(name).and_then(|initiative| {
                 initiative.holds.iter_mut().find(|hold| hold.member == *member)
@@ -477,7 +509,7 @@ impl CampaignStore {
                 decision,
                 prompt,
                 provider,
-                snapshot.follow_up_of.clone(),
+                PassNotes::of(snapshot),
             )?;
             SteeringCommit::Wait { reason }
         } else if let Some(reason) = candidate.steering_no_op(name, &decision)? {
@@ -487,7 +519,7 @@ impl CampaignStore {
                 decision,
                 prompt,
                 provider,
-                snapshot.follow_up_of.clone(),
+                PassNotes::of(snapshot),
             )?;
             SteeringCommit::NoOp { reason }
         } else {
@@ -497,7 +529,7 @@ impl CampaignStore {
                 decision,
                 prompt,
                 provider,
-                snapshot.follow_up_of.clone(),
+                PassNotes::of(snapshot),
             )?))
         };
         *self = candidate;
@@ -566,7 +598,7 @@ impl CampaignStore {
         decision: SteeringDecision,
         prompt: String,
         provider: Option<AgentProvider>,
-        follow_up_of: Option<SteeringFollowUp>,
+        notes: PassNotes,
     ) -> Result<()> {
         let initiative = self
             .find_initiative_mut(name)
@@ -577,7 +609,8 @@ impl CampaignStore {
             decision,
             provider,
             recorded_at: Utc::now(),
-            follow_up_of,
+            follow_up_of: notes.follow_up_of,
+            integration_skipped: notes.integration_skipped,
         });
         initiative.steering = None;
         Ok(())
@@ -590,7 +623,7 @@ impl CampaignStore {
         decision: SteeringDecision,
         prompt: String,
         provider: Option<AgentProvider>,
-        follow_up_of: Option<SteeringFollowUp>,
+        notes: PassNotes,
     ) -> Result<DurableSteeringAction> {
         if matches!(
             decision,
@@ -659,7 +692,8 @@ impl CampaignStore {
             decision,
             provider,
             recorded_at: Utc::now(),
-            follow_up_of,
+            follow_up_of: notes.follow_up_of,
+            integration_skipped: notes.integration_skipped,
         });
         initiative.pending_actions.push(action.clone());
         initiative.steering = None;

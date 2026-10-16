@@ -352,6 +352,10 @@ Commands and artifact paths start at the shared parent directory.
 `foundry capture` retains stdout and stderr. Results retain host, trunk commits
 and log references. Missing artifacts or failed updates cannot pass a gate.
 Failures become initiative findings.
+A steer reserves every initiative repository only when no queued or running
+work holds one (held work does not count). Otherwise it reserves none, starts
+beside member work, skips integration entirely (no sync, gate, result or
+finding) and records the reason as `integration_skipped` on its steering record.
 
 Steering can `stage` a validated campaign within the initiative's projects.
 It becomes a member under the existing shared authorization and budget.

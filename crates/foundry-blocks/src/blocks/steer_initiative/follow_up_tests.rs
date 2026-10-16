@@ -204,6 +204,7 @@ async fn skipped_and_stale_passes_request_no_follow_up() {
             provider: Some(AgentProvider::Claude),
             recorded_at: chrono::Utc::now() - chrono::Duration::hours(1),
             follow_up_of: None,
+            integration_skipped: None,
         },
     );
     store.save(&fixture.store).unwrap();
