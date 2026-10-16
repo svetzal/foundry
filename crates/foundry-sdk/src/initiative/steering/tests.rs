@@ -1122,7 +1122,10 @@ fn a_relay_to_members_a_finding_already_reaches_is_a_no_op() {
         }
     );
     assert_eq!(store.find_finding(&finding.id).unwrap(), &finding);
-    assert!(store.find_initiative("shared").unwrap().pending_actions.is_empty());
+    assert_eq!(
+        store.find_initiative("shared").unwrap().pending_actions,
+        Vec::<DurableSteeringAction>::new()
+    );
 }
 
 #[test]

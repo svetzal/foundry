@@ -240,7 +240,7 @@ async fn a_hold_on_an_owner_held_member_changes_nothing_and_lands() {
         CampaignStore::load(&fixture.store).unwrap().initiative_view("shared").unwrap();
     assert_eq!(initiative.holds.len(), 1);
     assert!(initiative.holds[0].owner);
-    assert!(initiative.holds[0].until.is_empty());
+    assert_eq!(initiative.holds[0].until, Vec::<String>::new());
 }
 
 #[tokio::test]
