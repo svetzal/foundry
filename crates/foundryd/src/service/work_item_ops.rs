@@ -296,7 +296,9 @@ pub(super) async fn cancel_item(
 ///
 /// A cancelled waiting item never runs, so its completion never releases the
 /// initiative admission reservation it holds. Cancel releases it here, beside
-/// the ledger change: the campaign store is locked first (the daemon's
+/// the ledger change. Only a steering child (a root carrying
+/// `steering_action_id`) can hold a reservation, so only its cancel touches
+/// the campaign store: the store is locked first (the daemon's
 /// campaign-store-before-ledger order), the ledger is saved, then the store.
 /// When the store save fails the reservation stays and the error names it.
 /// That leaves the member over-counted, never under-counted, until the next
@@ -309,12 +311,21 @@ fn settle_owner_stop(
     operator_origin: String,
     close: bool,
 ) -> Result<WorkItem, Status> {
-    let mut campaigns = if close {
-        None
-    } else {
+    // A root's identity never changes after admission, so this unguarded read
+    // decides the lock before the guarded read below.
+    let steering_child = !close
+        && load_store(path)?.find(id).is_some_and(|item| {
+            item.pending_root
+                .iter()
+                .chain(item.started_root.iter())
+                .any(|root| root.payload_str("steering_action_id").is_some())
+        });
+    let mut campaigns = if steering_child {
         Some(foundry_sdk::campaign::CampaignStore::lock_exclusive(campaigns_path).map_err(
             |error| Status::internal(format!("cannot lock the campaign store: {error}")),
         )?)
+    } else {
+        None
     };
     let _guard = foundry_sdk::work_item::ledger_write_gate()
         .lock()
@@ -1493,7 +1504,7 @@ mod owner_stop_tests {
     fn seeded(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf, String) {
         let ledger = dir.join("work-items.json");
         let campaigns = dir.join("campaigns.json");
-        let mut item = WorkItem::submitted(
+        let item = WorkItem::queued(
             WorkItemSpec {
                 project: "sample".into(),
                 objective: "Form the next cycle".into(),
@@ -1502,9 +1513,15 @@ mod owner_stop_tests {
                 origin: "initiative".into(),
                 trace_id: None,
             },
+            foundry_sdk::event::Event::new(
+                foundry_sdk::event::EventType::CampaignAdvanceRequested,
+                "sample".into(),
+                foundry_sdk::throttle::Throttle::Full,
+                serde_json::json!({"campaign":"one","initiative":"shared",
+                    "steering_action_id":"evt_steer"}),
+            ),
             Utc::now(),
         );
-        item.queue();
         let id = item.id.clone();
         WorkItemStore {
             items: vec![item],
@@ -1588,6 +1605,43 @@ mod owner_stop_tests {
         assert_eq!(std::fs::read(&campaigns).unwrap(), before, "the store is unchanged");
         let ledger = WorkItemStore::load(&ledger).unwrap();
         assert_eq!(ledger.items[0].state, WorkItemState::Cancelled);
+    }
+
+    #[test]
+    fn cancelling_work_that_no_steer_admitted_needs_no_campaign_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = dir.path().join("work-items.json");
+        let mut item = WorkItem::submitted(
+            WorkItemSpec {
+                project: "sample".into(),
+                objective: "Owner task".into(),
+                kind: WorkItemKind::Task,
+                lane: WorkLane::Interactive,
+                origin: "cli".into(),
+                trace_id: None,
+            },
+            Utc::now(),
+        );
+        item.queue();
+        let id = item.id.clone();
+        WorkItemStore {
+            items: vec![item],
+            ..WorkItemStore::default()
+        }
+        .save(&ledger)
+        .unwrap();
+
+        let item = settle_owner_stop(
+            &ledger,
+            std::path::Path::new(""),
+            &id,
+            "cancelled by operator",
+            "cli".into(),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(item.state, WorkItemState::Cancelled);
     }
 
     #[test]
