@@ -12,6 +12,7 @@ use crate::gateway::StageProviders;
 
 pub mod attention;
 pub mod derive;
+mod occupancy;
 pub mod outcome;
 pub use outcome::*;
 pub mod steering;

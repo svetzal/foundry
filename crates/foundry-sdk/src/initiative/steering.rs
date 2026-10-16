@@ -1075,9 +1075,7 @@ impl CampaignStore {
         kind: ReservationKind,
     ) -> Result<()> {
         self.enforce_member_eligibility(name, member, &[])?;
-        if self.find(member).is_some_and(|campaign| {
-            campaign.objective_history.last().is_some_and(|cycle| cycle.outcome.is_none())
-        }) {
+        if self.find(member).is_some_and(Campaign::has_cycle_in_flight) {
             return Err(InitiativeError::Precondition(
                 "member already has a cycle in flight".into(),
             ));
@@ -1172,31 +1170,7 @@ impl CampaignStore {
                 )));
             }
         }
-        let mut active: std::collections::BTreeSet<&str> = initiative
-            .reservations
-            .iter()
-            .map(|reservation| reservation.member.as_str())
-            .collect();
-        active.extend(
-            active_members
-                .iter()
-                .filter(|member| {
-                    initiative.members.iter().any(|definition| definition.name == **member)
-                })
-                .map(String::as_str),
-        );
-        active.extend(
-            self.campaigns
-                .iter()
-                .filter(|campaign| {
-                    campaign.initiative.as_deref() == Some(name)
-                        && campaign
-                            .objective_history
-                            .last()
-                            .is_some_and(|cycle| cycle.outcome.is_none())
-                })
-                .map(|campaign| campaign.name.as_str()),
-        );
+        let active = self.occupied_member_slots(name, active_members)?;
         if !active.contains(member) && active.len() >= initiative.budget.max_active_members {
             return Err(InitiativeError::Precondition(format!(
                 "initiative '{name}' has reached its active member limit"

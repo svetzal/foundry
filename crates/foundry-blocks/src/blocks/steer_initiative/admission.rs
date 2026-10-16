@@ -22,23 +22,6 @@ pub(super) fn validate_member_pin(
     Ok(())
 }
 
-pub(super) fn active_members(initiative: &Initiative, ledger: &WorkItemStore) -> Vec<String> {
-    initiative
-        .members
-        .iter()
-        .filter(|member| {
-            ledger.items.iter().any(|item| {
-                (item.state.is_waiting() || item.occupies_slot())
-                    && (item.campaign_name() == Some(member.name.as_str())
-                        || initiative.task_dispatches.iter().any(|receipt| {
-                            receipt.member == member.name && receipt.work_item == item.id
-                        }))
-            })
-        })
-        .map(|member| member.name.clone())
-        .collect()
-}
-
 pub(super) fn action_project<'a>(
     decision: &'a SteeringDecision,
     store: &'a CampaignStore,
@@ -89,7 +72,7 @@ pub(super) fn ensure_action_repository_free(
     }) {
         anyhow::bail!("action repository still has an execution or cleanup owner");
     }
-    let active = active_members(initiative, ledger);
+    let active = store.ledger_active_members(ledger);
     match decision {
         SteeringDecision::Advance { member, .. }
         | SteeringDecision::Dispatch {
@@ -99,7 +82,8 @@ pub(super) fn ensure_action_repository_free(
             store.enforce_member_eligibility(&initiative.name, member, &active)?;
         }
         SteeringDecision::Dispatch { member: None, .. }
-            if active.len() >= initiative.budget.max_active_members =>
+            if store.occupied_member_slots(&initiative.name, &active)?.len()
+                >= initiative.budget.max_active_members =>
         {
             anyhow::bail!("initiative has reached its active member limit");
         }
