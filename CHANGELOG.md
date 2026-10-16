@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-10-16
+
 ### Added
 
 - A steering step that changes state but dispatches nothing (a hold, a relay
