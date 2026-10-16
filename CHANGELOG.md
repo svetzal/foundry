@@ -97,9 +97,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   cycles that `foundry campaign cancel` withdraws used to leave it in place,
   because only a completed traversal released it, so a live member counted
   against `max_active_members` until the next steer or a daemon restart.
-  `queue cancel` locks the campaign store before the ledger, saves the ledger,
-  then the store; if the store save fails the reservation stays and the error
-  says so. `campaign cancel` releases it in the same store save as the
+  For an item a steer admitted, `queue cancel` locks the campaign store before
+  the ledger, saves the ledger, then the store; if the store save fails the
+  reservation stays and the error says so. Other cancels do not touch the
+  campaign store. `campaign cancel` releases it in the same store save as the
   cancellation.
 - `foundry initiative decide` no longer writes owner decisions to completed or
   cancelled members. The decision fans out only to members that can still act
