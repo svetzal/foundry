@@ -419,6 +419,20 @@ impl Campaign {
         }
     }
 
+    /// Whether the last dispatched objective may still be running.
+    ///
+    /// The outcome is stamped on the advance after a cycle settles. A campaign
+    /// that stopped first (cancelled with `--now`, or with a queued cycle the
+    /// cancellation withdrew) never takes that advance, so its last objective
+    /// keeps no outcome forever. A completed or cancelled campaign therefore has
+    /// no cycle in flight, whatever its history says. The work ledger, not this
+    /// history, is the record of work that still runs.
+    #[must_use]
+    pub fn has_cycle_in_flight(&self) -> bool {
+        !self.status.is_terminal()
+            && self.objective_history.last().is_some_and(|cycle| cycle.outcome.is_none())
+    }
+
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.name.trim().is_empty()
             || self.project.trim().is_empty()
@@ -962,6 +976,24 @@ mod tests {
             },
             context: crate::payload::LoopContext::default(),
         }
+    }
+
+    #[test]
+    fn only_a_live_campaign_with_an_unrecorded_last_outcome_has_a_cycle_in_flight() {
+        let mut campaign = campaign_with_gate("cargo test", true);
+        assert!(!campaign.has_cycle_in_flight(), "no objective was ever dispatched");
+        campaign.cycles_completed = 1;
+        campaign.record_dispatched_objective("Cut the next slice.".to_string());
+        assert!(campaign.has_cycle_in_flight());
+
+        for status in [CampaignStatus::Cancelled, CampaignStatus::Completed] {
+            campaign.status = status;
+            assert!(!campaign.has_cycle_in_flight(), "{status:?} keeps no cycle in flight");
+        }
+
+        campaign.status = CampaignStatus::Active;
+        campaign.record_cycle_outcome(&remainder_result("one gap remains", true));
+        assert!(!campaign.has_cycle_in_flight());
     }
 
     #[test]

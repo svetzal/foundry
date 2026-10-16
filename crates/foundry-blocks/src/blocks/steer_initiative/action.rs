@@ -13,7 +13,7 @@ use foundry_sdk::work_item::{WorkItemStore, ledger_write_gate};
 use foundry_sdk::work_source::WorkSource;
 
 use super::super::{SimulatedSuccess, advance_campaign::lock_store};
-use super::admission::{action_project, active_members, ensure_action_repository_free};
+use super::admission::{action_project, ensure_action_repository_free};
 
 /// Converts a recorded action into one durable, paced child admission.
 pub struct ApplyInitiativeAction {
@@ -180,11 +180,8 @@ impl ApplyInitiativeAction {
             &action.id,
         );
         let registry = super::super::read_registry(&self.registry)?.clone();
-        guard.store.enforce_steering_action(
-            &initiative.name,
-            &action.id,
-            &active_members(&initiative, &items),
-        )?;
+        let active = guard.store.ledger_active_members(&items);
+        guard.store.enforce_steering_action(&initiative.name, &action.id, &active)?;
         ensure_action_repository_free(
             &action.decision,
             &guard.store,

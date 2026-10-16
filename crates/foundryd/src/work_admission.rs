@@ -645,22 +645,7 @@ fn validate_action_admission(
     if let (Some(guard), Some(action), Some(initiative)) =
         (guard, event.payload_str("steering_action_id"), event.payload_str("initiative"))
     {
-        let active = store
-            .items
-            .iter()
-            .filter(|item| item.state.is_waiting() || item.occupies_slot())
-            .filter_map(|item| {
-                item.campaign_name().map(str::to_owned).or_else(|| {
-                    guard.store.find_initiative(initiative).and_then(|initiative| {
-                        initiative
-                            .task_dispatches
-                            .iter()
-                            .find(|receipt| receipt.work_item == item.id)
-                            .map(|receipt| receipt.member.clone())
-                    })
-                })
-            })
-            .collect::<Vec<_>>();
+        let active = guard.store.ledger_active_members(store);
         let pending = guard
             .store
             .find_initiative(initiative)

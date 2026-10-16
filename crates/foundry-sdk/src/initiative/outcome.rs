@@ -251,10 +251,7 @@ impl CampaignStore {
             || self.campaigns.iter().any(|campaign| {
                 campaign.initiative.as_deref() == Some(name)
                     && (campaign.status == CampaignStatus::Escalated
-                        || campaign
-                            .objective_history
-                            .last()
-                            .is_some_and(|cycle| cycle.outcome.is_none()))
+                        || campaign.has_cycle_in_flight())
             })
         {
             return Err(InitiativeError::Precondition(

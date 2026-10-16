@@ -1788,21 +1788,7 @@ async fn active_member_names(
 ) -> anyhow::Result<Vec<String>> {
     let path = work_items_path.to_path_buf();
     let ledger = tokio::task::spawn_blocking(move || WorkItemStore::load(&path)).await??;
-    Ok(ledger
-        .items
-        .iter()
-        .filter(|item| item.state.is_waiting() || item.occupies_slot())
-        .filter_map(|item| {
-            item.campaign_name().map(str::to_string).or_else(|| {
-                store
-                    .initiatives
-                    .iter()
-                    .flat_map(|initiative| &initiative.task_dispatches)
-                    .find(|receipt| receipt.work_item == item.id)
-                    .map(|receipt| receipt.member.clone())
-            })
-        })
-        .collect())
+    Ok(store.ledger_active_members(&ledger))
 }
 
 async fn lock_formation_store(
