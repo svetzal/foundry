@@ -158,7 +158,7 @@ async fn a_follow_up_pass_records_its_cause_and_requests_no_further_pass() {
 }
 
 #[tokio::test]
-async fn wait_no_op_rejected_and_failed_passes_request_no_follow_up() {
+async fn wait_rejected_and_failed_passes_request_no_follow_up() {
     let responses = [
         r#"{"action":{"decision":"wait","reason":"Workers run"},"audits":[]}"#.to_string(),
         r#"{"action":{"decision":"advance","member":"missing"},"audits":[]}"#.to_string(),
@@ -170,16 +170,85 @@ async fn wait_no_op_rejected_and_failed_passes_request_no_follow_up() {
         assert!(applied.is_none(), "{response}: no action is requested");
         assert!(follow_ups(&steered).is_empty(), "{response}");
     }
+}
 
-    // A relay to members the finding already reaches is a no-op.
-    let fixture = Fixture::new();
-    let finding = targeted_finding(&fixture);
-    let already = serde_json::json!({
+/// A relay to the member the finding already reaches: a no-op.
+fn relay_to_one(finding: &Finding) -> String {
+    serde_json::json!({
         "action": {"decision": "relay", "finding": finding, "to": ["one"]},
         "audits": []
-    });
-    let (steered, applied) = steer_and_apply(&fixture, &already.to_string(), &trigger(None)).await;
-    assert!(applied.is_none());
+    })
+    .to_string()
+}
+
+fn outcome(result: &TaskBlockResult) -> SteeringOutcome {
+    result
+        .events
+        .iter()
+        .find(|event| event.event_type == EventType::InitiativeSteered)
+        .unwrap()
+        .parse_payload::<InitiativeSteeredPayload>()
+        .unwrap()
+        .outcome
+}
+
+#[tokio::test]
+async fn a_no_op_pass_requests_one_follow_up_while_a_member_is_eligible() {
+    let fixture = Fixture::new();
+    let finding = targeted_finding(&fixture);
+    let trigger = trigger(None);
+
+    let (steered, applied) = steer_and_apply(&fixture, &relay_to_one(&finding), &trigger).await;
+
+    assert_eq!(outcome(&steered), SteeringOutcome::NoOp);
+    assert!(applied.is_none(), "a decision already in force needs no action");
+    let requests: Vec<_> = steered
+        .events
+        .iter()
+        .filter(|event| event.event_type == EventType::InitiativeAdvanceRequested)
+        .collect();
+    assert_eq!(requests.len(), 1, "exactly one follow-up");
+    assert_eq!(requests[0].id, format!("evt_{}_follow_up", trigger.id));
+    assert_eq!(requests[0].project, "system");
+    let request = requests[0].parse_payload::<InitiativeAdvanceRequestedPayload>().unwrap();
+    assert_eq!(
+        request.follow_up_of,
+        Some(SteeringFollowUp {
+            steer_id: trigger.id.clone(),
+            step: "relay".into()
+        })
+    );
+    assert_eq!(request.trigger_id.as_deref(), Some(trigger.id.as_str()));
+}
+
+#[tokio::test]
+async fn a_no_op_follow_up_requests_no_further_pass() {
+    let fixture = Fixture::new();
+    let finding = targeted_finding(&fixture);
+    let cause = SteeringFollowUp {
+        steer_id: "evt_first_steer".into(),
+        step: "relay".into(),
+    };
+
+    let (steered, _) =
+        steer_and_apply(&fixture, &relay_to_one(&finding), &trigger(Some(&cause))).await;
+
+    assert_eq!(outcome(&steered), SteeringOutcome::NoOp);
+    assert!(follow_ups(&steered).is_empty(), "a follow-up never requests another");
+}
+
+#[tokio::test]
+async fn a_no_op_with_no_member_eligible_requests_no_follow_up() {
+    let fixture = Fixture::new();
+    let finding = targeted_finding(&fixture);
+    let mut store = CampaignStore::load(&fixture.store).unwrap();
+    store.hold_member("shared", "one", "Owner reviews").unwrap();
+    store.hold_member("shared", "two", "Owner reviews").unwrap();
+    store.save(&fixture.store).unwrap();
+
+    let (steered, _) = steer_and_apply(&fixture, &relay_to_one(&finding), &trigger(None)).await;
+
+    assert_eq!(outcome(&steered), SteeringOutcome::NoOp);
     assert!(follow_ups(&steered).is_empty());
 }
 

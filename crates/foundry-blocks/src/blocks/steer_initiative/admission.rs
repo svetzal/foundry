@@ -111,6 +111,31 @@ pub(super) fn busy_projects(
         .collect()
 }
 
+/// The members a steering pass of initiative `name` could advance now.
+///
+/// This is the precheck the pass itself runs, so whoever decides to request a
+/// pass and the pass agree on eligibility. Assessments of the initiative in
+/// `ledger` are left out: a requested pass runs after them, and each pass
+/// leaves itself out of its own precheck.
+pub fn steering_eligible_members(
+    store: &CampaignStore,
+    name: &str,
+    ledger: &WorkItemStore,
+    registry: &Registry,
+) -> anyhow::Result<Vec<String>> {
+    let initiative = store.initiative_view(name)?;
+    let mut others = ledger.clone();
+    others.items.retain(|item| {
+        !item.started_root.as_ref().is_some_and(|root| {
+            root.event_type == foundry_sdk::event::EventType::InitiativeAdvanceRequested
+                && root.payload_str("initiative") == Some(name)
+        })
+    });
+    let active = store.ledger_active_members(&others);
+    let busy = busy_projects(&initiative, &others, registry);
+    Ok(store.steering_precheck(name, &active, &busy)?.eligible)
+}
+
 pub(super) fn live_operations(items: &WorkItemStore) -> Vec<String> {
     let mut live = Vec::new();
     for item in &items.items {
