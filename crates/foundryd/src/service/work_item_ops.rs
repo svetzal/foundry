@@ -259,6 +259,7 @@ pub(super) fn get(
 #[tracing::instrument(skip_all, fields(item_id = %id, close))]
 pub(super) async fn cancel_item(
     path: &Path,
+    campaigns_path: &Path,
     ctx: &super::RuntimeContext,
     id: String,
     reason: String,
@@ -269,46 +270,9 @@ pub(super) async fn cancel_item(
         return Err(Status::invalid_argument("id, reason and operator origin must be nonblank"));
     }
     let path = path.to_path_buf();
+    let campaigns_path = campaigns_path.to_path_buf();
     let item = tokio::task::spawn_blocking(move || {
-        let _guard = foundry_sdk::work_item::ledger_write_gate()
-            .lock()
-            .map_err(|_| Status::internal("work-item ledger write gate poisoned"))?;
-        let mut store = load_store(&path)?;
-        let item = store
-            .items
-            .iter_mut()
-            .find(|item| item.id == id)
-            .ok_or_else(|| Status::not_found(format!("work item '{id}' not found")))?;
-        if close && item.occupies_slot() {
-            return Err(Status::failed_precondition(format!(
-                "work item '{id}' cannot be closed while its workflow still owns execution capacity"
-            )));
-        }
-        let allowed = if close {
-            item.state.is_open()
-        } else {
-            item.state.is_waiting()
-        };
-        if !allowed {
-            return Err(Status::failed_precondition(format!(
-                "work item '{id}' cannot be {} from {}",
-                if close { "closed" } else { "cancelled" },
-                item.state.tag()
-            )));
-        }
-        item.operator_action = Some(foundry_sdk::work_item::WorkItemOperatorAction {
-            command: if close { "close" } else { "cancel" }.to_string(),
-            origin: operator_origin,
-            previous_state: item.state,
-            previous_reason: item.reason.clone(),
-            previous_settled_at: item.settled_at,
-        });
-        item.settle_cancelled(&reason, item.disposition.clone(), chrono::Utc::now());
-        let item = item.clone();
-        store.save(&path).map_err(|error| {
-            Status::internal(format!("failed to persist work-item state: {error}"))
-        })?;
-        Ok(item)
+        settle_owner_stop(&path, &campaigns_path, &id, &reason, operator_origin, close)
     })
     .await
     .map_err(|error| Status::internal(format!("work-item mutation did not finish: {error}")))??;
@@ -325,6 +289,81 @@ pub(super) async fn cancel_item(
     .with_trace_id(item.trace_id.clone());
     ctx.engine.process(event).await;
     Ok(item_to_proto(&item))
+}
+
+/// Settle one item `cancelled` for an owner `cancel` (a waiting item) or
+/// `close` (an open item), and return it.
+///
+/// A cancelled waiting item never runs, so its completion never releases the
+/// initiative admission reservation it holds. Cancel releases it here, beside
+/// the ledger change: the campaign store is locked first (the daemon's
+/// campaign-store-before-ledger order), the ledger is saved, then the store.
+/// When the store save fails the reservation stays and the error names it.
+/// That leaves the member over-counted, never under-counted, until the next
+/// steer or a restart recovers it from the ledger.
+fn settle_owner_stop(
+    path: &Path,
+    campaigns_path: &Path,
+    id: &str,
+    reason: &str,
+    operator_origin: String,
+    close: bool,
+) -> Result<WorkItem, Status> {
+    let mut campaigns = if close {
+        None
+    } else {
+        Some(foundry_sdk::campaign::CampaignStore::lock_exclusive(campaigns_path).map_err(
+            |error| Status::internal(format!("cannot lock the campaign store: {error}")),
+        )?)
+    };
+    let _guard = foundry_sdk::work_item::ledger_write_gate()
+        .lock()
+        .map_err(|_| Status::internal("work-item ledger write gate poisoned"))?;
+    let mut store = load_store(path)?;
+    let item = store
+        .items
+        .iter_mut()
+        .find(|item| item.id == id)
+        .ok_or_else(|| Status::not_found(format!("work item '{id}' not found")))?;
+    if close && item.occupies_slot() {
+        return Err(Status::failed_precondition(format!(
+            "work item '{id}' cannot be closed while its workflow still owns execution capacity"
+        )));
+    }
+    let allowed = if close {
+        item.state.is_open()
+    } else {
+        item.state.is_waiting()
+    };
+    if !allowed {
+        return Err(Status::failed_precondition(format!(
+            "work item '{id}' cannot be {} from {}",
+            if close { "closed" } else { "cancelled" },
+            item.state.tag()
+        )));
+    }
+    item.operator_action = Some(foundry_sdk::work_item::WorkItemOperatorAction {
+        command: if close { "close" } else { "cancel" }.to_string(),
+        origin: operator_origin,
+        previous_state: item.state,
+        previous_reason: item.reason.clone(),
+        previous_settled_at: item.settled_at,
+    });
+    item.settle_cancelled(reason, item.disposition.clone(), chrono::Utc::now());
+    let item = item.clone();
+    store
+        .save(path)
+        .map_err(|error| Status::internal(format!("failed to persist work-item state: {error}")))?;
+    if let Some(guard) = campaigns.as_mut()
+        && guard.store.release_reservations_held_by(std::slice::from_ref(&item.id))
+    {
+        guard.save().map_err(|error| {
+            Status::internal(format!(
+                "work item '{id}' was cancelled, but its initiative admission reservation could not be released: {error}"
+            ))
+        })?;
+    }
+    Ok(item)
 }
 
 /// The `work_item_*` event that records one owner transition of `item`, on
@@ -1435,5 +1474,133 @@ mod tests {
 
         let everything = selected(&store, "", None, None);
         assert_eq!(everything.len(), 5, "without a filter an unsourced item is listed too");
+    }
+}
+
+#[cfg(test)]
+mod owner_stop_tests {
+    use chrono::Utc;
+    use foundry_sdk::campaign::CampaignStore;
+    use foundry_sdk::initiative::{MemberReservation, ReservationKind};
+    use foundry_sdk::work_item::{
+        WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkItemStore, WorkLane,
+    };
+
+    use super::settle_owner_stop;
+
+    /// A ledger with one queued formation item, and an initiative whose
+    /// member reserved its slot under that item's id.
+    fn seeded(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf, String) {
+        let ledger = dir.join("work-items.json");
+        let campaigns = dir.join("campaigns.json");
+        let mut item = WorkItem::submitted(
+            WorkItemSpec {
+                project: "sample".into(),
+                objective: "Form the next cycle".into(),
+                kind: WorkItemKind::Workflow,
+                lane: WorkLane::Campaign,
+                origin: "initiative".into(),
+                trace_id: None,
+            },
+            Utc::now(),
+        );
+        item.queue();
+        let id = item.id.clone();
+        WorkItemStore {
+            items: vec![item],
+            ..WorkItemStore::default()
+        }
+        .save(&ledger)
+        .unwrap();
+        let mut store = CampaignStore::default();
+        store
+            .add(
+                serde_json::from_value(serde_json::json!({"name":"one","project":"sample",
+                "mission":"Ship","authorized_by":"Stacey",
+                "done_evidence":[{"kind":"review","statement":"works"}]}))
+                .unwrap(),
+            )
+            .unwrap();
+        store
+            .add_initiative(
+                serde_json::from_value(serde_json::json!({"name":"shared","outcome":"Works",
+                "projects":["sample"],"authorized_by":"Stacey",
+                "members":[{"kind":"campaign","name":"one"}],
+                "done_evidence":[{"kind":"review","statement":"works"}]}))
+                .unwrap(),
+                &["sample".into()],
+            )
+            .unwrap();
+        store
+            .find_initiative_mut("shared")
+            .unwrap()
+            .reservations
+            .push(MemberReservation {
+                member: "one".into(),
+                operation_id: id.clone(),
+                kind: ReservationKind::Formation,
+            });
+        store.save(&campaigns).unwrap();
+        (ledger, campaigns, id)
+    }
+
+    #[test]
+    fn cancelling_a_queued_formation_releases_its_member_reservation() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ledger, campaigns, id) = seeded(dir.path());
+
+        let item = settle_owner_stop(
+            &ledger,
+            &campaigns,
+            &id,
+            "cancelled by operator",
+            "cli".into(),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(item.state, WorkItemState::Cancelled);
+        let store = CampaignStore::load(&campaigns).unwrap();
+        let reservations = &store.find_initiative("shared").unwrap().reservations;
+        assert!(reservations.is_empty(), "{reservations:?}");
+        assert!(store.occupied_member_slots("shared", &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_failed_store_save_keeps_the_reservation_and_reports_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ledger, campaigns, id) = seeded(dir.path());
+        let before = std::fs::read(&campaigns).unwrap();
+        std::fs::create_dir(campaigns.with_extension("json.tmp")).unwrap();
+
+        let error = settle_owner_stop(
+            &ledger,
+            &campaigns,
+            &id,
+            "cancelled by operator",
+            "cli".into(),
+            false,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), tonic::Code::Internal);
+        assert!(error.message().contains("reservation could not be released"), "{error:?}");
+        assert_eq!(std::fs::read(&campaigns).unwrap(), before, "the store is unchanged");
+        let ledger = WorkItemStore::load(&ledger).unwrap();
+        assert_eq!(ledger.items[0].state, WorkItemState::Cancelled);
+    }
+
+    #[test]
+    fn closing_an_open_item_leaves_the_campaign_store_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ledger, campaigns, id) = seeded(dir.path());
+        let mut store = WorkItemStore::load(&ledger).unwrap();
+        store.items[0].settle_failed("workflow failed", Utc::now());
+        store.save(&ledger).unwrap();
+        let before = std::fs::read(&campaigns).unwrap();
+
+        settle_owner_stop(&ledger, &campaigns, &id, "discharged", "cli".into(), true).unwrap();
+
+        assert_eq!(std::fs::read(&campaigns).unwrap(), before);
     }
 }

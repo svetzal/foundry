@@ -934,6 +934,23 @@ impl CampaignStore {
         Ok(())
     }
 
+    /// Release every admission reservation held by one of `work_items`, in any
+    /// initiative, and report whether one was released.
+    ///
+    /// A queued formation item that is cancelled never runs, so its completion
+    /// never releases the slot it reserved. The cancel path calls this instead.
+    pub fn release_reservations_held_by(&mut self, work_items: &[String]) -> bool {
+        let mut released = false;
+        for initiative in &mut self.initiatives {
+            let before = initiative.reservations.len();
+            initiative
+                .reservations
+                .retain(|reservation| !work_items.contains(&reservation.operation_id));
+            released |= initiative.reservations.len() != before;
+        }
+        released
+    }
+
     pub fn enforce_steering_action(
         &self,
         name: &str,

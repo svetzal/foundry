@@ -1154,3 +1154,30 @@ fn a_relay_that_adds_a_recipient_is_still_an_action() {
     assert!(matches!(committed, SteeringCommit::Action(_)), "{committed:?}");
     assert_eq!(store.find_finding(&finding.id).unwrap().to, ["one", "two"]);
 }
+
+#[test]
+fn a_cancelled_work_item_releases_only_the_reservation_it_held() {
+    let mut store = store();
+    store.find_initiative_mut("shared").unwrap().reservations = vec![
+        MemberReservation {
+            member: "one".into(),
+            operation_id: "wi_withdrawn".into(),
+            kind: ReservationKind::Formation,
+        },
+        MemberReservation {
+            member: "two".into(),
+            operation_id: "wi_running".into(),
+            kind: ReservationKind::Formation,
+        },
+    ];
+
+    assert!(store.release_reservations_held_by(&["wi_withdrawn".into()]));
+    let reservations = &store.find_initiative("shared").unwrap().reservations;
+    assert_eq!(reservations.len(), 1);
+    assert_eq!(reservations[0].operation_id, "wi_running");
+    assert!(
+        !store.release_reservations_held_by(&["wi_withdrawn".into()]),
+        "nothing left to release"
+    );
+    store.enforce_member_eligibility("shared", "one", &[]).unwrap();
+}

@@ -670,3 +670,49 @@ async fn an_unwritable_ledger_never_fails_the_cancellation() {
         "nothing settled, nothing recorded"
     );
 }
+
+/// A queued cycle the cancellation withdraws never runs, so its completion
+/// never releases the initiative admission reservation it held. The
+/// cancellation releases it in the same campaign store save.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_withdrawn_cycle_releases_its_initiative_reservation() {
+    let harness = make_harness(None);
+    seed_campaign(&harness.campaigns_path, CampaignStatus::Active);
+    let queued_id = seed_queued_cycle(&harness.work_items_path);
+    let mut store = CampaignStore::load(&harness.campaigns_path).unwrap();
+    store
+        .add_initiative(
+            serde_json::from_value(serde_json::json!({"name":"shared","outcome":"Works",
+            "projects":[PROJECT],"authorized_by":"owner",
+            "members":[{"kind":"campaign","name":CAMPAIGN}],
+            "done_evidence":[{"kind":"review","statement":"works"}]}))
+            .unwrap(),
+            &[PROJECT.to_string()],
+        )
+        .unwrap();
+    let reservations = &mut store.find_initiative_mut("shared").unwrap().reservations;
+    for operation_id in [queued_id.clone(), "wi_unrelated".to_string()] {
+        reservations.push(foundry_sdk::initiative::MemberReservation {
+            member: CAMPAIGN.to_string(),
+            operation_id,
+            kind: foundry_sdk::initiative::ReservationKind::Formation,
+        });
+    }
+    store.save(&harness.campaigns_path).unwrap();
+    let campaigns = harness.campaigns_path.clone();
+
+    let addr = start_server(harness.service).await;
+    let mut client = FoundryClient::connect(addr).await.expect("connect");
+    client.cancel_campaign(cancel(false, false)).await.expect("cancel must succeed");
+
+    let store = CampaignStore::load(&campaigns).unwrap();
+    let left: Vec<_> = store
+        .find_initiative("shared")
+        .unwrap()
+        .reservations
+        .iter()
+        .map(|reservation| reservation.operation_id.as_str())
+        .collect();
+    assert_eq!(left, ["wi_unrelated"]);
+    assert_eq!(store.find(CAMPAIGN).unwrap().status, CampaignStatus::Cancelled);
+}

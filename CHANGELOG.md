@@ -92,6 +92,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
   formation, owner advance and action admission) now counts occupancy through
   one store function, and the ledger side through one more, where four copies
   existed before.
+- Cancelling a queued formation or cycle of an initiative member now releases
+  the admission reservation it held. `foundry queue cancel` and the queued
+  cycles that `foundry campaign cancel` withdraws used to leave it in place,
+  because only a completed traversal released it, so a live member counted
+  against `max_active_members` until the next steer or a daemon restart.
+  `queue cancel` locks the campaign store before the ledger, saves the ledger,
+  then the store; if the store save fails the reservation stays and the error
+  says so. `campaign cancel` releases it in the same store save as the
+  cancellation.
 
 ## [0.50.2] - 2026-10-13
 
