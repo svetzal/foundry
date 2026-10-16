@@ -143,6 +143,35 @@ pub enum SteeringDecision {
     Done {
         reviews: Vec<OutcomeReview>,
     },
+    /// Nothing should move until running work settles. Recorded with its
+    /// reason; it opens no question and changes no initiative state.
+    Wait {
+        reason: String,
+    },
+}
+
+/// What committing a steering decision produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SteeringCommit {
+    /// The decision changes initiative state; its durable action awaits application.
+    Action(Box<DurableSteeringAction>),
+    /// The agent chose `wait`. Only the steering record changed.
+    Wait { reason: String },
+    /// The decision is already in force: a hold on a member the owner already
+    /// holds, or a relay to members the finding already reaches. Only the
+    /// steering record changed.
+    NoOp { reason: String },
+}
+
+impl SteeringCommit {
+    /// The durable action, when the decision needs one.
+    #[must_use]
+    pub fn into_action(self) -> Option<DurableSteeringAction> {
+        match self {
+            Self::Action(action) => Some(*action),
+            Self::Wait { .. } | Self::NoOp { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -334,6 +363,10 @@ impl CampaignStore {
     }
 
     /// Commit into a copy first, so a rejected action cannot leave audit or budget changes.
+    ///
+    /// A `wait`, and a decision already in force (see
+    /// [`Self::steering_no_op`]), is recorded in the steering history and
+    /// nothing else: no pending action, no reservation, no budget.
     pub fn commit_steering(
         &mut self,
         snapshot: &SteeringSnapshot,
@@ -342,7 +375,7 @@ impl CampaignStore {
         audits: Vec<AuditEvidence>,
         prompt: String,
         provider: Option<AgentProvider>,
-    ) -> Result<DurableSteeringAction> {
+    ) -> Result<SteeringCommit> {
         if snapshot.id != steer_id {
             return Err(InitiativeError::Invalid("steering operation identity changed".into()));
         }
@@ -380,9 +413,100 @@ impl CampaignStore {
             }
         }
         candidate.record_audits(name, steer_id, audits)?;
-        let action = candidate.bind_steering_action(name, steer_id, decision, prompt, provider)?;
+        let committed = if let SteeringDecision::Wait { reason } = &decision {
+            if reason.trim().is_empty() {
+                return Err(InitiativeError::Invalid("wait requires a reason".into()));
+            }
+            let reason = reason.trim().to_owned();
+            candidate.record_steering_decision(name, steer_id, decision, prompt, provider)?;
+            SteeringCommit::Wait { reason }
+        } else if let Some(reason) = candidate.steering_no_op(name, &decision)? {
+            candidate.record_steering_decision(name, steer_id, decision, prompt, provider)?;
+            SteeringCommit::NoOp { reason }
+        } else {
+            SteeringCommit::Action(Box::new(
+                candidate.bind_steering_action(name, steer_id, decision, prompt, provider)?,
+            ))
+        };
         *self = candidate;
-        Ok(action)
+        Ok(committed)
+    }
+
+    /// Why a steering `hold` or `relay` would change nothing, or `None` when it
+    /// would change initiative state (or be refused).
+    ///
+    /// A hold on a member the owner already holds keeps the owner hold: steering
+    /// cannot replace it, and the member is already held. A hold identical to
+    /// the member's current steering hold changes nothing either. A relay of a
+    /// recorded finding to members it already reaches adds no recipient. A
+    /// relay that would alter the finding's evidence is not a no-op; the commit
+    /// refuses it.
+    pub fn steering_no_op(
+        &self,
+        name: &str,
+        decision: &SteeringDecision,
+    ) -> Result<Option<String>> {
+        let initiative = self.require_initiative(name)?;
+        Ok(match decision {
+            SteeringDecision::Hold { member, until, .. } => {
+                initiative.holds.iter().find(|hold| hold.member == *member).and_then(|hold| {
+                    if hold.owner {
+                        Some(format!(
+                            "member '{member}' already has an owner hold, which steering keeps: {}",
+                            hold.reason
+                        ))
+                    } else {
+                        (hold.until == *until)
+                            .then(|| format!("member '{member}' is already held: {}", hold.reason))
+                    }
+                })
+            }
+            SteeringDecision::Relay { finding, to } => self
+                .find_finding(&finding.id)
+                .filter(|existing| {
+                    existing.initiative == name
+                        && existing.from == finding.from
+                        && existing.kind == finding.kind
+                        && existing.text == finding.text
+                        && existing.refs == finding.refs
+                        && existing.audit == finding.audit
+                        && (existing.to.is_empty()
+                            || to.is_empty()
+                            || to.iter().all(|member| existing.to.contains(member)))
+                })
+                .map(|existing| {
+                    let reach = if existing.to.is_empty() {
+                        "every member".to_owned()
+                    } else {
+                        existing.to.join(", ")
+                    };
+                    format!("finding '{}' already reaches {reach}", existing.id)
+                }),
+            _ => None,
+        })
+    }
+
+    /// Record a decision that needs no action, and release the steering lease.
+    fn record_steering_decision(
+        &mut self,
+        name: &str,
+        steer_id: &str,
+        decision: SteeringDecision,
+        prompt: String,
+        provider: Option<AgentProvider>,
+    ) -> Result<()> {
+        let initiative = self
+            .find_initiative_mut(name)
+            .ok_or_else(|| InitiativeError::NotFound(name.into()))?;
+        initiative.steering_history.push(SteeringRecord {
+            id: steer_id.into(),
+            prompt,
+            decision,
+            provider,
+            recorded_at: Utc::now(),
+        });
+        initiative.steering = None;
+        Ok(())
     }
 
     fn bind_steering_action(
@@ -623,6 +747,13 @@ impl CampaignStore {
                 self.stage_initiative_campaign(name, campaign, member.as_deref())?;
             }
             SteeringDecision::Done { reviews } => self.validate_outcome_reviews(name, reviews)?,
+            SteeringDecision::Wait { .. } => {
+                // Defensive: commit_steering records a wait without binding an action,
+                // and no owner operation produces one.
+                return Err(InitiativeError::Invalid(
+                    "wait is a steering record, not an action".into(),
+                ));
+            }
         }
         Ok(())
     }

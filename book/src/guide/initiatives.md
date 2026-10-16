@@ -114,6 +114,17 @@ The read-only agent chooses exactly one typed action:
 | `stage` | Add a campaign for work the existing members do not cover |
 | `done` | Propose completion after the outcome checks pass |
 | `escalate` | Stop for owner attention with a reason |
+| `wait` | Record why nothing should move until running work settles |
+
+A `wait` requires a reason. Foundry records it and changes nothing else:
+it opens no question and does not change the initiative status. Use `ask`
+only for a question the owner must answer. Waiting for workers to finish is a
+`wait`, not a question.
+
+Some decisions are already in force. A `hold` on a member that has an owner
+hold keeps the owner hold. A `relay` to members that a finding already reaches
+adds no recipient. Foundry records these decisions as no-ops and changes
+nothing else.
 
 The assessment receives the outcome, brief identity, member results, findings,
 questions, owner decisions, integration results and recent trunk evidence. Its
@@ -121,11 +132,57 @@ provider is the
 initiative's formation provider, at balanced tier and medium effort.
 `initiative_steered` retains the exact prompt, provider and typed decision.
 
+### Check eligibility before the agent runs
+
+Foundry computes the steering options in code before it asks the agent.
+The packet's `eligibility` section lists the members that can advance now.
+It lists every other member with its reason: owner hold, unmet milestone or
+prerequisite, open question, no free slot, spent budget or busy repository.
+It also lists the members that use the active-member slots, and it says
+whether a new task can start.
+
+An automatic assessment does not start an agent when no action can apply:
+
+- No member can advance.
+- No task can start.
+- At least one member uses a slot, so its settlement requests the next assessment.
+- No finding that can reach more members, and no owner decision, arrived after
+  the previous steering decision.
+
+Foundry records `initiative_steered` with outcome `skipped` and the reason.
+An owner's `initiative advance` request always starts an assessment.
+
+The agent can choose `wait` while members are eligible, when the mission
+requires it. Foundry records its reason beside the eligible list.
+
+### How each assessment settles
+
+Each assessment is a work item. Its settled state shows whether a person must act:
+
+| Outcome | Work item | Meaning |
+| --- | --- | --- |
+| `applied` | `landed` | Foundry recorded the decision and requested its action |
+| `waited` | `landed` | The agent chose `wait`; the reason is on the fact |
+| `no_op` | `landed` | The decision was already in force |
+| `skipped` | `landed` | No action could apply, so no agent started |
+| `rejected` | `cancelled` | A guard refused the decision |
+| `stale` | `landed` | Evidence changed; a fresh assessment was requested |
+| `failed` | `failed` | The agent failed, its output was unusable, or Foundry state could not be read or written |
+
+A guard refusal is not work for a person. Foundry refuses a held member, a full
+active-member limit, a busy repository or a project outside the initiative.
+It also refuses a member other than the one the owner pinned, and invalid audit
+evidence. The refused decision has no effect.
+
+The work item settles `cancelled` with the reason
+`steering rejected: <guard message>`. The fact keeps the guard's message in
+`error`. `foundry queue open` lists only `failed` assessments.
+
 Only one assessment can run per initiative. Store changes or a changed trunk
 invalidate stale output. Foundry releases the store guard during repository
 reads and agent execution. Durable action receipts prevent replay from starting
 work or spending cycles twice. Pending actions recover after daemon restart.
-Hold, relay, ask and escalate do not repeatedly wake an idle initiative.
+Hold, relay, ask, escalate and wait do not repeatedly wake an idle initiative.
 
 An indefinite owner hold remains until an owner releases it. Pinning an
 `initiative advance --member` releases that member's owner hold. A steering

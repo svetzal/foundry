@@ -61,15 +61,7 @@ pub(super) fn ensure_action_repository_free(
     if let Some(reason) = &entry.skip {
         anyhow::bail!("action project is blocked: {reason}");
     }
-    let key = foundry_sdk::pacing::repository_key(registry, project);
-    if ledger.items.iter().any(|item| {
-        item.occupies_slot()
-            && (foundry_sdk::pacing::repository_key(registry, &item.project) == key
-                || item
-                    .reserved_projects
-                    .iter()
-                    .any(|project| foundry_sdk::pacing::repository_key(registry, project) == key))
-    }) {
+    if repository_busy(registry, ledger, project) {
         anyhow::bail!("action repository still has an execution or cleanup owner");
     }
     let active = store.ledger_active_members(ledger);
@@ -90,6 +82,33 @@ pub(super) fn ensure_action_repository_free(
         _ => {}
     }
     Ok(())
+}
+
+/// Whether `project`'s repository has an execution or cleanup owner in `ledger`.
+fn repository_busy(registry: &Registry, ledger: &WorkItemStore, project: &str) -> bool {
+    let key = foundry_sdk::pacing::repository_key(registry, project);
+    ledger.items.iter().any(|item| {
+        item.occupies_slot()
+            && (foundry_sdk::pacing::repository_key(registry, &item.project) == key
+                || item
+                    .reserved_projects
+                    .iter()
+                    .any(|project| foundry_sdk::pacing::repository_key(registry, project) == key))
+    })
+}
+
+/// The initiative projects whose repository has an execution or cleanup owner.
+pub(super) fn busy_projects(
+    initiative: &Initiative,
+    ledger: &WorkItemStore,
+    registry: &Registry,
+) -> Vec<String> {
+    initiative
+        .projects
+        .iter()
+        .filter(|project| repository_busy(registry, ledger, project))
+        .cloned()
+        .collect()
 }
 
 pub(super) fn live_operations(items: &WorkItemStore) -> Vec<String> {

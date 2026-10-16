@@ -22,10 +22,12 @@ use foundry_sdk::campaign::CampaignStore;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::gateway::AgentStage;
 use foundry_sdk::initiative::derive::{IntentProjection, read_projection};
-use foundry_sdk::initiative::{Initiative, SteeringSnapshot};
+use foundry_sdk::initiative::{
+    Initiative, InitiativeError, SteeringCommit, SteeringDecision, SteeringSnapshot,
+};
 use foundry_sdk::payload::{
     InitiativeActionRequestedPayload, InitiativeAdvanceRequestedPayload, InitiativeSteeredPayload,
-    WorkItemEventPayload,
+    SteeringOutcome, WorkItemEventPayload,
 };
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -75,7 +77,7 @@ impl SteerInitiative {
         &self,
         request: &InitiativeAdvanceRequestedPayload,
         trigger: &Event,
-    ) -> anyhow::Result<Prepared> {
+    ) -> anyhow::Result<Preparation> {
         let initial = CampaignStore::load(&self.store_path)?;
         let initiative = initial.initiative_view(&request.initiative)?;
         let projection = intent(&initiative).await?;
@@ -109,11 +111,22 @@ impl SteerInitiative {
                 guard.store.outcome_snapshot(&initiative.name, repository_identities(&repos))?;
             guard.store.invalidate_completion(&initiative.name, &snapshot)?;
         }
-        let ledger = ledger_snapshot(
-            &WorkItemStore::load(&self.work_items_path)?,
-            &guard.store.initiative_view(&initiative.name)?,
-        )?;
+        let items = WorkItemStore::load(&self.work_items_path)?;
+        let ledger = ledger_snapshot(&items, &guard.store.initiative_view(&initiative.name)?)?;
+        let precheck = {
+            let others = admission::without_steering_owner(&items, &trigger.id);
+            let active = guard.store.ledger_active_members(&others);
+            let busy = admission::busy_projects(&initiative, &others, &registry);
+            guard.store.steering_precheck(&initiative.name, &active, &busy)?
+        };
         guard.save()?;
+        // An owner's explicit request, pinned or not, is always assessed.
+        if request.trigger_id.is_some()
+            && request.member.is_none()
+            && let Some(reason) = precheck.skip_reason()
+        {
+            return Ok(Preparation::Skip { reason, events });
+        }
         let snapshot = guard.store.begin_steering(&initiative.name, &trigger.id)?;
         guard.save()?;
         let store = guard.store.clone();
@@ -139,11 +152,12 @@ impl SteerInitiative {
             &repos,
             request.member.as_deref(),
             &ledger,
+            &precheck,
             self.store_path
                 .parent()
                 .ok_or_else(|| anyhow::anyhow!("store path has no evidence parent"))?,
         )?;
-        Ok(Prepared {
+        Ok(Preparation::Assess(Box::new(Prepared {
             snapshot,
             repos,
             projection: projection
@@ -156,7 +170,8 @@ impl SteerInitiative {
             prompt: prompt.text,
             events,
             requested_member: request.member.clone(),
-        })
+            eligible: precheck.eligible,
+        })))
     }
 
     async fn refresh_intent(
@@ -254,18 +269,22 @@ impl SteerInitiative {
     async fn run(&self, trigger: &Event) -> anyhow::Result<TaskBlockResult> {
         let request = trigger.parse_payload::<InitiativeAdvanceRequestedPayload>()?;
         let mut prepared = match self.prepare(&request, trigger).await {
-            Ok(prepared) => prepared,
+            Ok(Preparation::Assess(prepared)) => prepared,
+            Ok(Preparation::Skip { reason, events }) => {
+                return skipped(trigger, &request.initiative, reason, events);
+            }
             Err(error) => {
                 self.release(&request.initiative, &trigger.id).await?;
                 return steering_result(
                     trigger,
                     &request.initiative,
-                    "failed",
+                    SteeringOutcome::Failed,
                     error.to_string(),
                     String::new(),
                     None,
                     None,
                     None,
+                    &[],
                 );
             }
         };
@@ -307,12 +326,13 @@ impl SteerInitiative {
             Err(error) => steering_result(
                 trigger,
                 &request.initiative,
-                "failed",
+                SteeringOutcome::Failed,
                 error.to_string(),
                 prepared.prompt.clone(),
                 Some(prepared.provider),
                 None,
                 None,
+                &prepared.eligible,
             ),
         };
         self.release(&request.initiative, &trigger.id).await?;
@@ -321,12 +341,13 @@ impl SteerInitiative {
             Err(error) => steering_result(
                 trigger,
                 &request.initiative,
-                "failed",
+                outcome_of(&error),
                 error.to_string(),
                 prepared.prompt.clone(),
                 Some(prepared.provider),
                 None,
                 None,
+                &prepared.eligible,
             )?,
         };
         prepared.events.append(&mut result.events);
@@ -340,21 +361,16 @@ impl SteerInitiative {
         prepared: &Prepared,
         mut response: SteeringResponse,
     ) -> anyhow::Result<TaskBlockResult> {
-        let initiative = &prepared.snapshot.initiative.name;
         let checked = validate_member_pin(prepared.requested_member.as_deref(), &response.action)
             .and_then(|()| {
                 packet::validate_audits(&response.audits, &prepared.snapshot, &prepared.repos)
             });
         if let Err(error) = checked {
-            return steering_result(
+            return prepared.fact(
                 trigger,
-                initiative,
-                "failed",
+                SteeringOutcome::Rejected,
                 error.to_string(),
-                prepared.prompt.clone(),
-                Some(prepared.provider),
-                Some(response.action),
-                None,
+                response.action,
             );
         }
         let mut rejected = None;
@@ -366,15 +382,11 @@ impl SteerInitiative {
             response.action = self.repair_action(prepared, &response, &error.to_string())?;
         }
         if !self.unchanged(prepared).await? {
-            return steering_result(
+            return prepared.fact(
                 trigger,
-                initiative,
-                "stale",
+                SteeringOutcome::Stale,
                 "repository, brief or intent changed during assessment".into(),
-                prepared.prompt.clone(),
-                Some(prepared.provider),
-                Some(response.action),
-                None,
+                response.action,
             );
         }
         let mut result = self.commit_response(trigger, prepared, response).await?;
@@ -572,76 +584,87 @@ impl SteerInitiative {
         if guard.store.validate_steering(&prepared.snapshot).is_err()
             || ledger_snapshot(&ledger, &prepared.snapshot.initiative)? != prepared.ledger
         {
-            return steering_result(
+            return prepared.fact(
                 trigger,
-                initiative,
-                "stale",
+                SteeringOutcome::Stale,
                 "owner, member or ledger state changed during assessment".into(),
-                prepared.prompt.clone(),
-                Some(prepared.provider),
-                Some(response.action),
-                None,
+                response.action,
             );
         }
-        ensure_action_repository_free(
+        if let Err(error) = ensure_action_repository_free(
             &response.action,
             &guard.store,
             &prepared.snapshot.initiative,
             &admission::without_steering_owner(&ledger, &trigger.id),
             &self.registry()?,
-        )?;
+        ) {
+            return prepared.fact(
+                trigger,
+                SteeringOutcome::Rejected,
+                error.to_string(),
+                response.action,
+            );
+        }
         let previous_findings = guard.store.list_findings(initiative)?;
-        let mut action = match guard.store.commit_steering(
+        let committed = guard.store.commit_steering(
             &prepared.snapshot,
             &trigger.id,
             response.action.clone(),
             response.audits,
             prepared.prompt.clone(),
             Some(prepared.provider),
-        ) {
-            Ok(action) => action,
+        );
+        let (outcome, detail, action) = match committed {
+            Ok(committed) => committed_outcome(committed),
             Err(error) => {
-                return steering_result(
-                    trigger,
-                    initiative,
-                    "failed",
-                    error.to_string(),
-                    prepared.prompt.clone(),
-                    Some(prepared.provider),
-                    Some(response.action),
-                    None,
-                );
+                let outcome = if matches!(error, InitiativeError::Persistence(_)) {
+                    SteeringOutcome::Failed
+                } else {
+                    SteeringOutcome::Rejected
+                };
+                return prepared.fact(trigger, outcome, error.to_string(), response.action);
             }
         };
-        if matches!(
-            action.decision,
-            foundry_sdk::initiative::SteeringDecision::Advance { .. }
-                | foundry_sdk::initiative::SteeringDecision::Dispatch { .. }
-                | foundry_sdk::initiative::SteeringDecision::Done { .. }
-                | foundry_sdk::initiative::SteeringDecision::Stage { .. }
-        ) {
-            action = guard.store.bind_external_context(
-                initiative,
-                &action.id,
-                prepared.external_context(),
-            )?;
-        }
+        let action = match action {
+            Some(action) if needs_external_evidence(&action.decision) => {
+                Some(guard.store.bind_external_context(
+                    initiative,
+                    &action.id,
+                    prepared.external_context(),
+                )?)
+            }
+            other => other,
+        };
         guard.save()?;
+        if outcome == SteeringOutcome::Waited && !prepared.eligible.is_empty() {
+            tracing::info!(
+                initiative = %initiative,
+                eligible = ?prepared.eligible,
+                reason = %detail,
+                "steering chose to wait while members were eligible to advance"
+            );
+        }
+        let decision = action.as_ref().map_or(response.action, |action| action.decision.clone());
         let mut result = steering_result(
             trigger,
             initiative,
-            "applied",
-            "one steering action recorded".into(),
+            outcome,
+            detail,
             prepared.prompt.clone(),
             Some(prepared.provider),
-            Some(action.decision.clone()),
-            Some(action.clone()),
+            Some(decision),
+            action.clone(),
+            &prepared.eligible,
         )?;
         for finding in guard.store.list_findings(initiative)? {
             if !previous_findings.iter().any(|previous| previous == &finding) {
                 result.events.push(finding_event(trigger, &finding)?);
             }
         }
+        // A wait or a decision already in force needs no action, so it requests none.
+        let Some(action) = action else {
+            return Ok(result);
+        };
         let mut requested = trigger.with_payload(
             EventType::InitiativeActionRequested,
             &InitiativeActionRequestedPayload { action },
@@ -664,9 +687,73 @@ struct Prepared {
     events: Vec<Event>,
     requested_member: Option<String>,
     artifact: Option<(PathBuf, String)>,
+    /// Members the precheck found eligible to advance, recorded on the fact.
+    eligible: Vec<String>,
+}
+
+/// What preparation decided: ask the agent, or record that no action could apply.
+enum Preparation {
+    Assess(Box<Prepared>),
+    Skip { reason: String, events: Vec<Event> },
+}
+
+/// Foundry refused a steering decision with a guard: the member is held, the
+/// active-member limit is reached, the repository is busy, the owner pinned
+/// another member, and so on. The decision took no effect and nothing is owed,
+/// so the steer settles `cancelled`, not `failed`.
+#[derive(Debug)]
+struct SteeringRejected(String);
+impl std::fmt::Display for SteeringRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for SteeringRejected {}
+
+/// Mark a guard's refusal of a steering decision.
+fn rejected(error: impl std::fmt::Display) -> anyhow::Error {
+    SteeringRejected(error.to_string()).into()
+}
+
+/// A store refusal is a guard rejection; a persistence fault is a failure.
+fn store_refusal(error: InitiativeError) -> anyhow::Error {
+    match error {
+        InitiativeError::Persistence(_) => error.into(),
+        refusal => rejected(refusal),
+    }
+}
+
+/// `rejected` for a guard's refusal, `failed` for every other error.
+fn outcome_of(error: &anyhow::Error) -> SteeringOutcome {
+    if error.is::<SteeringRejected>() {
+        SteeringOutcome::Rejected
+    } else {
+        SteeringOutcome::Failed
+    }
 }
 
 impl Prepared {
+    /// The steering fact for an assessment the agent answered without an action.
+    fn fact(
+        &self,
+        trigger: &Event,
+        outcome: SteeringOutcome,
+        detail: String,
+        decision: SteeringDecision,
+    ) -> anyhow::Result<TaskBlockResult> {
+        steering_result(
+            trigger,
+            &self.snapshot.initiative.name,
+            outcome,
+            detail,
+            self.prompt.clone(),
+            Some(self.provider),
+            Some(decision),
+            None,
+            &self.eligible,
+        )
+    }
+
     fn external_context(&self) -> foundry_sdk::initiative::SteeringExternalContext {
         foundry_sdk::initiative::SteeringExternalContext {
             repositories: repository_identities(&self.repos),
@@ -730,6 +817,57 @@ fn ledger_snapshot(ledger: &WorkItemStore, initiative: &Initiative) -> anyhow::R
     Ok(serde_json::to_string(&items)?)
 }
 
+/// The outcome, its detail and the durable action, when the decision needs one.
+fn committed_outcome(
+    committed: SteeringCommit,
+) -> (SteeringOutcome, String, Option<foundry_sdk::initiative::DurableSteeringAction>) {
+    match committed {
+        SteeringCommit::Action(action) => (
+            SteeringOutcome::Applied,
+            "one steering action recorded".to_owned(),
+            Some(*action),
+        ),
+        SteeringCommit::Wait { reason } => (SteeringOutcome::Waited, reason, None),
+        SteeringCommit::NoOp { reason } => (SteeringOutcome::NoOp, reason, None),
+    }
+}
+
+/// Work, staging and completion actions are admitted against the repository,
+/// intent and brief evidence the assessment saw.
+fn needs_external_evidence(decision: &SteeringDecision) -> bool {
+    matches!(
+        decision,
+        SteeringDecision::Advance { .. }
+            | SteeringDecision::Dispatch { .. }
+            | SteeringDecision::Done { .. }
+            | SteeringDecision::Stage { .. }
+    )
+}
+
+/// No steering action could apply, so no agent ran. Findings recorded while
+/// preparing still precede the fact.
+fn skipped(
+    trigger: &Event,
+    initiative: &str,
+    reason: String,
+    mut events: Vec<Event>,
+) -> anyhow::Result<TaskBlockResult> {
+    let mut result = steering_result(
+        trigger,
+        initiative,
+        SteeringOutcome::Skipped,
+        reason,
+        String::new(),
+        None,
+        None,
+        None,
+        &[],
+    )?;
+    events.append(&mut result.events);
+    result.events = events;
+    Ok(result)
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "the small event builder mirrors the typed steering fact fields"
@@ -737,29 +875,41 @@ fn ledger_snapshot(ledger: &WorkItemStore, initiative: &Initiative) -> anyhow::R
 fn steering_result(
     trigger: &Event,
     initiative: &str,
-    outcome: &str,
+    outcome: SteeringOutcome,
     detail: String,
     prompt: String,
     provider: Option<AgentProvider>,
-    decision: Option<foundry_sdk::initiative::SteeringDecision>,
+    decision: Option<SteeringDecision>,
     action: Option<foundry_sdk::initiative::DurableSteeringAction>,
+    eligible: &[String],
 ) -> anyhow::Result<TaskBlockResult> {
-    let success = outcome != "failed";
+    let success = outcome != SteeringOutcome::Failed;
+    let (error, reason) = match outcome {
+        SteeringOutcome::Applied => (None, None),
+        SteeringOutcome::Waited | SteeringOutcome::NoOp | SteeringOutcome::Skipped => {
+            (None, Some(detail.clone()))
+        }
+        SteeringOutcome::Rejected | SteeringOutcome::Stale | SteeringOutcome::Failed => {
+            (Some(detail.clone()), None)
+        }
+    };
     let payload = InitiativeSteeredPayload {
         success,
-        outcome: outcome.into(),
-        error: (outcome != "applied").then_some(detail.clone()),
+        outcome,
+        error,
         initiative: initiative.into(),
         steer_id: trigger.id.clone(),
         prompt,
         decision,
         provider,
         action,
+        reason,
+        eligible_members: eligible.to_vec(),
     };
     let mut event = trigger.with_payload(EventType::InitiativeSteered, &payload)?;
     event.source = Some(WorkSource::initiative(initiative, 0));
     let mut events = vec![event];
-    if outcome == "stale" {
+    if outcome == SteeringOutcome::Stale {
         let mut fresh = trigger.with_payload(
             EventType::InitiativeAdvanceRequested,
             &InitiativeAdvanceRequestedPayload {
@@ -805,6 +955,8 @@ impl TaskBlock for SteerInitiative {
 
 #[cfg(test)]
 mod outcome_tests;
+#[cfg(test)]
+mod precheck_tests;
 #[cfg(test)]
 mod tests;
 

@@ -15,6 +15,8 @@ pub mod derive;
 mod occupancy;
 pub mod outcome;
 pub use outcome::*;
+pub mod precheck;
+pub use precheck::{BlockedMember, SteeringPrecheck};
 pub mod steering;
 pub use steering::*;
 

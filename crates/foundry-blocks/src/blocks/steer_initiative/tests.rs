@@ -122,7 +122,14 @@ async fn an_agent_cannot_replace_the_owners_requested_member() {
         .execute(&Fixture::trigger(Some("one")))
         .await
         .unwrap();
-    assert!(!result.success);
+    // A refused choice is a guard rejection, not a failure that needs a person.
+    assert!(result.success);
+    let fact = result.events[0].parse_payload::<InitiativeSteeredPayload>().unwrap();
+    assert_eq!(fact.outcome, SteeringOutcome::Rejected);
+    assert_eq!(
+        fact.error.as_deref(),
+        Some("owner requested member 'one'; steering cannot choose another work member")
+    );
     assert!(
         result
             .events
@@ -181,7 +188,7 @@ async fn owner_change_during_agent_discards_output_and_requests_one_fresh_assess
         .unwrap()
         .parse_payload::<InitiativeSteeredPayload>()
         .unwrap();
-    assert_eq!(fact.outcome, "stale");
+    assert_eq!(fact.outcome, SteeringOutcome::Stale);
     assert_eq!(
         result
             .events
@@ -447,8 +454,12 @@ async fn cleanup_owner_that_arrives_after_steer_refuses_child_and_releases_reser
         fixture.ledger.clone(),
     );
     let rejected = apply.execute(action).await.unwrap();
-    assert!(!rejected.success);
-    assert_eq!(rejected.events[0].payload["outcome"], "failed");
+    assert!(rejected.success, "a busy repository is a guard rejection");
+    assert_eq!(rejected.events[0].payload["outcome"], "rejected");
+    assert_eq!(
+        rejected.events[0].payload["error"],
+        "action repository still has an execution or cleanup owner"
+    );
     assert!(
         !rejected
             .events
