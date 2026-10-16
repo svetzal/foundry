@@ -213,7 +213,9 @@ pub fn queued_reason(
         .find(|verdict| verdict.id == id);
     match verdict.map(|verdict| verdict.decision) {
         Some(Decision::Wait(reason) | Decision::NeedsDecision(reason)) => reason,
-        Some(Decision::Start) | None => pacing::READY_REASON.to_string(),
+        Some(Decision::Start | Decision::StartWithoutReservation) | None => {
+            pacing::READY_REASON.to_string()
+        }
     }
 }
 

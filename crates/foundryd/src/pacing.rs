@@ -11,7 +11,9 @@
 //! 1. Under the shared ledger write gate, load the ledger, the limits and the
 //!    pause state, and [`foundry_sdk::pacing::evaluate`] every queued item.
 //! 2. Apply the verdicts to the loaded ledger: a start moves the item to
-//!    `running` and takes its held root; a wait rewrites the reason when it
+//!    `running` and takes its held root; a start without its optional
+//!    reservation also clears `reserved_projects`, so the running record
+//!    names only what the item holds; a wait rewrites the reason when it
 //!    changed; a dependency decision settles the item `needs_decision`.
 //! 3. Save the ledger once. A save that fails dispatches nothing: the ledger
 //!    is the record of what started, and a start it does not record would be
@@ -281,7 +283,13 @@ fn apply_tick(
             continue;
         };
         match verdict.decision {
-            Decision::Start => {
+            decision @ (Decision::Start | Decision::StartWithoutReservation) => {
+                // The record names exactly what the running item holds: the
+                // integration guard reads it, and so does every later tick.
+                if decision == Decision::StartWithoutReservation {
+                    item.reserved_projects.clear();
+                }
+                item.reservation_if_free = false;
                 if let Some(root) = item.pending_root.clone() {
                     item.start(now);
                     let started = build_started_root(&root, &item.id);

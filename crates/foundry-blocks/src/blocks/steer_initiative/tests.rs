@@ -42,7 +42,7 @@ impl Fixture {
             serde_json::json!({"initiative":"shared","member":member}),
         )
     }
-    /// A trigger whose running ledger item reserves `reserved`, as admission
+    /// A trigger whose running ledger item reserves `reserved`, as pacing
     /// records a started steer. One assessment runs at a time, so an earlier
     /// steer of this fixture has finished.
     pub(super) fn trigger_reserving(&self, reserved: &[&str]) -> Event {

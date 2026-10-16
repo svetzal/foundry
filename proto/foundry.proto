@@ -572,7 +572,7 @@ message TaskDispatch { string member = 1; string work_item = 2; string project =
 message MemberReservation { string member = 1; string operation_id = 2; string kind = 3; }
 message SteeringLease { string id = 1; string fingerprint = 2; }
 message EtCloseProposal { string intent_ref = 1; repeated string evidence = 2; }
-message SteeringRecord { string id = 1; string prompt = 2; string decision_json = 3; optional string provider = 4; string recorded_at = 5; optional string follow_up_of_json = 6; }
+message SteeringRecord { string id = 1; string prompt = 2; string decision_json = 3; optional string provider = 4; string recorded_at = 5; optional string follow_up_of_json = 6; optional string integration_skipped = 7; }
 message DurableSteeringAction { string id = 1; string initiative = 2; string decision_json = 3; StageProviders providers = 4; string fingerprint = 5; optional string external_context_json = 6; }
 message InitiativeWorkAdmission { string action_id = 1; string member = 2; StageProviders providers = 3; optional string work_item = 4; }
 message AdvanceInitiativeRequest {

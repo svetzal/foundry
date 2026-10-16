@@ -318,12 +318,12 @@ async fn named_host_uses_ssh_with_remote_registry_and_changed_trunks_fail() {
 }
 
 #[tokio::test]
-async fn a_steer_admitted_beside_member_work_skips_integration_and_records_why() {
+async fn a_steer_started_beside_member_work_skips_integration_and_records_why() {
     use foundry_sdk::work_item::{WorkItem, WorkItemKind, WorkItemSpec, WorkLane};
     let fixture = Fixture::new();
     repository(&fixture);
     gate(&fixture, None);
-    // Admission let the steer start beside a member cycle, so it holds no trunk.
+    // Pacing started the steer beside a member cycle, so it holds no trunk.
     let trigger = fixture.trigger_reserving(&[]);
     let mut ledger = WorkItemStore::load(&fixture.ledger).unwrap();
     ledger.upsert(WorkItem::dispatched(
@@ -356,7 +356,7 @@ async fn a_steer_admitted_beside_member_work_skips_integration_and_records_why()
     assert!(store.list_findings("shared").unwrap().is_empty());
     let initiative = store.initiative_view("shared").unwrap();
     assert!(initiative.integration_results.is_empty());
-    let reason = "integration skipped: member work holds initiative trunks: sample";
+    let reason = "integration skipped: other work holds initiative trunks: sample";
     assert_eq!(initiative.steering_history[0].integration_skipped.as_deref(), Some(reason));
     assert!(agent.invocations()[0].prompt.contains(reason));
 }

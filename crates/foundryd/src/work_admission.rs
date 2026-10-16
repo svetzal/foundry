@@ -177,7 +177,7 @@ impl DurableWorkAdmission {
                 existing.coalesced_root = Some(root);
             }
         } else if !recorded_root(store, &root.id)
-            && let Some(mut next) = self.planned(&root, store)?
+            && let Some(mut next) = self.planned(&root)?
         {
             store.upsert(next.clone());
             next.reason = queued_reason(store, &next.id, &self.registry, &self.pacing);
@@ -207,8 +207,7 @@ impl DurableWorkAdmission {
     }
 
     /// The durable item `event` becomes, or `None` for a control fact.
-    /// `ledger` is the caller's current ledger, read under the ledger gate.
-    fn planned(&self, event: &Event, ledger: &WorkItemStore) -> anyhow::Result<Option<WorkItem>> {
+    fn planned(&self, event: &Event) -> anyhow::Result<Option<WorkItem>> {
         if control_event(&event.event_type) {
             return Ok(None);
         }
@@ -275,22 +274,22 @@ impl DurableWorkAdmission {
             && let Some(name) = event.payload_str("initiative")
         {
             // Integration preparation fast-forwards every registered trunk and
-            // gates one snapshot of them all. A steer reserves their
-            // repositories through normal pacing before any Git work, but only
-            // while no member work is queued for or running on any of them:
-            // reserving a busy trunk would hold the steer behind that member's
+            // gates one snapshot of them all, so a steer reserves their
+            // repositories through normal pacing before any Git work. The
+            // reservation is optional: pacing settles it when the steer
+            // starts, taking every trunk if all are free and none otherwise.
+            // A required reservation would hold the steer behind a member's
             // whole cycle, so the initiative could never run a second member.
-            // A steer admitted without the reservation skips integration when
-            // it runs. Held work does not count; an owner hold can last days.
+            // A steer that starts without the trunks skips integration.
             let campaigns = foundry_sdk::campaign::CampaignStore::load(&self.campaigns_path)?;
             if let Some(initiative) = campaigns.find_initiative(name)
                 && (initiative.completion_proposal.is_some()
                     || initiative.done_evidence.iter().any(|evidence| {
                         matches!(evidence, foundry_sdk::initiative::DoneEvidence::Gate { .. })
                     }))
-                && !member_work_holds(ledger, &initiative.projects)
             {
                 item.reserved_projects.clone_from(&initiative.projects);
+                item.reservation_if_free = true;
             }
         }
         Ok(Some(item))
@@ -311,22 +310,6 @@ fn acknowledge_action(
         guard.save()?;
     }
     Ok(())
-}
-
-/// Whether work other than an initiative assessment is queued for, or
-/// occupies, any of `projects`.
-fn member_work_holds(ledger: &WorkItemStore, projects: &[String]) -> bool {
-    ledger.items.iter().any(|item| {
-        (item.is_queued() || item.occupies_slot())
-            && !item
-                .pending_root
-                .as_ref()
-                .or(item.started_root.as_ref())
-                .is_some_and(|root| root.event_type == EventType::InitiativeAdvanceRequested)
-            && std::iter::once(&item.project)
-                .chain(&item.reserved_projects)
-                .any(|project| projects.contains(project))
-    })
 }
 
 fn recorded_root(store: &WorkItemStore, id: &str) -> bool {
@@ -467,7 +450,7 @@ impl WorkAdmission for DurableWorkAdmission {
             .lock()
             .map_err(|_| anyhow::anyhow!("ledger write gate poisoned"))?;
         let mut store = self.store()?;
-        let Some(mut item) = self.planned(event, &store)? else {
+        let Some(mut item) = self.planned(event)? else {
             return Ok(Admission::Execute);
         };
         if let Some(existing) = store.items.iter().find(|item| {
@@ -1681,9 +1664,9 @@ mod tests {
         campaigns.save(&h.policy.campaigns_path).unwrap();
     }
 
-    /// A member cycle on `project`, queued and, when `held`, held by its owner.
-    fn seed_waiting(h: &Harness, project: &str, held: bool) {
-        let mut item = WorkItem::queued(
+    /// A member cycle on `project`, queued with a root the scheduler can start.
+    fn seed_waiting(h: &Harness, project: &str) -> String {
+        let item = WorkItem::queued(
             WorkItemSpec {
                 project: project.to_string(),
                 objective: "campaign".to_string(),
@@ -1695,45 +1678,103 @@ mod tests {
             root(EventType::CampaignAdvanceRequested, project),
             Utc::now(),
         );
-        if held {
-            item.hold();
-        }
+        let id = item.id.clone();
         let _gate = ledger_write_gate().lock().expect("gate");
         let mut store = h.policy.store().expect("load");
         store.upsert(item);
         store.save(&h.policy.path).expect("save");
+        id
+    }
+
+    /// Admit a gated steer and return its queued item.
+    fn admit_steer(h: &Harness) -> WorkItem {
+        let Admission::Deferred { id, .. } =
+            h.policy.prepare(&steer_root("member-settled"), None).unwrap()
+        else {
+            panic!("expected a queued steer");
+        };
+        h.items().into_iter().find(|item| item.id == id).unwrap()
     }
 
     #[test]
-    fn a_gated_steer_reserves_every_trunk_only_while_no_member_work_holds_one() {
-        let reservation = |seed: &dyn Fn(&Harness)| {
+    fn a_gated_steer_is_admitted_reserving_every_trunk_if_free_whatever_the_ledger_holds() {
+        let admitted = |seed: &dyn Fn(&Harness)| {
             let h = Harness::new(true);
             gated_initiative(&h);
             seed(&h);
-            let Admission::Deferred { id, .. } =
-                h.policy.prepare(&steer_root("member-settled"), None).unwrap()
-            else {
-                panic!("expected a queued steer");
-            };
-            h.items().into_iter().find(|item| item.id == id).unwrap().reserved_projects
+            admit_steer(&h)
         };
-        assert_eq!(reservation(&|_| {}), ["alpha", "beta"], "a quiet ledger lends every trunk");
-        assert!(
-            reservation(&|h| {
-                h.seed_running("alpha");
-            })
-            .is_empty(),
-            "a running member keeps its trunk, so the steer reserves none"
-        );
-        assert!(
-            reservation(&|h| seed_waiting(h, "beta", false)).is_empty(),
-            "a queued member is not made to wait behind the steer"
-        );
-        assert_eq!(
-            reservation(&|h| seed_waiting(h, "beta", true)),
-            ["alpha", "beta"],
-            "an owner hold does not starve integration"
-        );
+        for (steer, ledger) in [
+            (admitted(&|_| {}), "a quiet ledger"),
+            (
+                admitted(&|h| {
+                    h.seed_running("alpha");
+                }),
+                "a running member",
+            ),
+            (
+                admitted(&|h| {
+                    seed_waiting(h, "beta");
+                }),
+                "a queued member",
+            ),
+        ] {
+            assert_eq!(steer.reserved_projects, ["alpha", "beta"], "{ledger}");
+            assert!(steer.reservation_if_free, "pacing settles the reservation: {ledger}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_steer_that_starts_on_a_quiet_ledger_holds_every_trunk() {
+        let h = Harness::new(true);
+        gated_initiative(&h);
+        let steer = admit_steer(&h);
+        h.scheduler.tick().await;
+        let started = h.items().into_iter().find(|item| item.id == steer.id).unwrap();
+        assert!(started.started_at.is_some());
+        // The integration guard reads exactly this record.
+        assert_eq!(started.reserved_projects, ["alpha", "beta"]);
+        assert!(!started.reservation_if_free, "the reservation is held, no longer optional");
+    }
+
+    /// A member cycle that keeps its trunk until the test ends.
+    struct HoldingMember;
+    impl TaskBlock for HoldingMember {
+        fn name(&self) -> &'static str {
+            "Synthetic member cycle that never finishes"
+        }
+        fn kind(&self) -> BlockKind {
+            BlockKind::Observer
+        }
+        fn sinks_on(&self) -> &[EventType] {
+            &[EventType::CampaignAdvanceRequested]
+        }
+        fn execute(&self, _event: &Event) -> BlockFuture<'_> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_steer_kept_waiting_on_its_own_key_starts_beside_a_member_that_started_meanwhile() {
+        let h = Harness::with_blocks(true, vec![Box::new(HoldingMember)]);
+        std::fs::write(h.dir.path().join("pacing.json"), r#"{"max_running":4}"#).unwrap();
+        gated_initiative(&h);
+        // Other system work holds the key every steer starts on.
+        let scan = h.seed_running("system");
+        let steer = admit_steer(&h).id;
+        let member = seed_waiting(&h, "alpha");
+        h.scheduler.tick().await;
+        let item = |id: &str| h.items().into_iter().find(|item| item.id == id).unwrap();
+        assert_eq!(item(&steer).reason, foundry_sdk::pacing::repository_busy(&scan));
+        assert!(item(&member).occupies_slot(), "the member takes its trunk meanwhile");
+
+        h.settle(&scan);
+        h.scheduler.tick().await;
+        let started = item(&steer);
+        assert!(started.started_at.is_some(), "the steer starts beside the member: {started:?}");
+        assert!(started.reserved_projects.is_empty(), "it holds no initiative trunk");
+        assert!(!started.reservation_if_free);
+        assert!(item(&member).occupies_slot(), "the member still runs");
     }
 
     /// Steers like the real block: the first pass advances beta and requests
@@ -1849,7 +1890,7 @@ mod tests {
         );
         policy.supply_chain_remediation = false;
         let item = policy
-            .planned(&root(EventType::SupplyChainScanStarted, "system"), &h.policy.store().unwrap())
+            .planned(&root(EventType::SupplyChainScanStarted, "system"))
             .expect("plan")
             .expect("item");
         assert_eq!(item.kind, WorkItemKind::Workflow);

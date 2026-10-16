@@ -9,11 +9,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- An initiative steer no longer reserves every initiative repository while
-  member work is queued or running on one of them, so the next member starts
-  beside a running cycle instead of waiting "repository busy" behind it. Such a
-  steer skips integration (no trunk sync, gate, result or regression finding)
-  and records why as `integration_skipped` on its steering record.
+- An initiative steer no longer waits "repository busy" behind a member cycle
+  on any initiative repository, so the next member starts beside a running
+  cycle. A steer reserves every initiative repository only if all are free
+  when it starts: pacing settles this at the start (the work item's new
+  `reservation_if_free` flag), not at admission, so work that starts on a trunk
+  while the steer waits for its own key, host capacity or a lane cannot hold
+  it back. A steer that starts without the trunks skips integration (no trunk
+  sync, gate, result or regression finding) and records why as
+  `integration_skipped` on its steering record, which `foundry initiative show`
+  now prints. `pacing show` marks a waiting item's optional reservation as
+  `(and … if free)`.
 
 ## [0.52.0] - 2026-10-16
 
