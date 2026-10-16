@@ -260,13 +260,11 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn disposable_current_trunks_require_capture_logs_and_preexisting_artifacts() {
-        use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
         let bin = temp.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
         let capture = bin.join("foundry");
-        std::fs::write(&capture, "#!/bin/sh\nlog=$3\nshift 4\n\"$@\" >\"$log/probe.stdout.log\" 2>\"$log/probe.stderr.log\"\ncode=$?\nprintf 'sh: exit %s\\nstdout: %s\\nstderr: %s\\n' \"$code\" \"$log/probe.stdout.log\" \"$log/probe.stderr.log\"\nexit \"$code\"\n").unwrap();
-        std::fs::set_permissions(&capture, std::fs::Permissions::from_mode(0o755)).unwrap();
+        foundry_sdk::test_support::write_executable(&capture, "#!/bin/sh\nlog=$3\nshift 4\n\"$@\" >\"$log/probe.stdout.log\" 2>\"$log/probe.stderr.log\"\ncode=$?\nprintf 'sh: exit %s\\nstdout: %s\\nstderr: %s\\n' \"$code\" \"$log/probe.stdout.log\" \"$log/probe.stderr.log\"\nexit \"$code\"\n").unwrap();
         let mut entries = Vec::new();
         for name in ["first", "second"] {
             let root = temp.path().join(name);

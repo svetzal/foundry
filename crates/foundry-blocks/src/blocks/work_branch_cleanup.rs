@@ -433,7 +433,6 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn git_cleanup_allows_concurrent_ledger_write_and_preserves_its_changes() {
-        use std::os::unix::fs::PermissionsExt;
         if isolated("blocks::work_branch_cleanup::tests::git_cleanup_allows_concurrent_ledger_write_and_preserves_its_changes").await { return; }
         let (dir, project, registry, ledger, mut item) = fixture().await;
         git(Path::new(&project.path), &["push", "origin", "foundry-task/owned"])
@@ -445,8 +444,7 @@ mod tests {
         let hook = origin.join("hooks/pre-receive");
         // Pause a real Git operation until a synchronous writer releases it.
         // The bounded loop lets a failing regression exit without hanging Git.
-        std::fs::write(&hook, "#!/bin/sh\ntouch cleanup-ready\ni=0\nwhile [ ! -e cleanup-release ] && [ \"$i\" -lt 100 ]; do sleep 0.05; i=$((i+1)); done\ntest -e cleanup-release\n").unwrap();
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        foundry_sdk::test_support::write_executable(&hook, "#!/bin/sh\ntouch cleanup-ready\ni=0\nwhile [ ! -e cleanup-release ] && [ \"$i\" -lt 100 ]; do sleep 0.05; i=$((i+1)); done\ntest -e cleanup-release\n").unwrap();
         let writer_ledger = ledger.clone();
         let item_id = item.id.clone();
         let writer = tokio::spawn(async move {

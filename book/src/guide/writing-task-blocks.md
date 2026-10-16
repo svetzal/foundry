@@ -218,6 +218,22 @@ async fn detached_head_recovery_succeeds() {
 }
 ```
 
+### Stand-in scripts on disk
+
+Some tests need a real program on disk, for example a fake `mix` on `PATH` or
+a Git hook. Write it with `foundry_sdk::test_support::write_executable`, not
+with `std::fs::write` and `set_permissions`:
+
+```rust
+let mix = bin.path().join("mix");
+foundry_sdk::test_support::write_executable(&mix, "#!/bin/sh\nexit 1\n").unwrap();
+```
+
+Tests run on parallel threads. If another test forks while this test holds the
+script open for writing, the forked child keeps a write descriptor on the
+file. On Linux, the exec then fails with "Text file busy". The helper writes
+the file from a child shell, so the test process never holds that descriptor.
+
 ## File Organisation
 
 Place block implementations in `foundryd/src/blocks/`:

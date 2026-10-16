@@ -19,6 +19,8 @@ pub mod sentinel;
 pub mod span_context;
 pub mod supply_chain;
 pub mod task_block;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod throttle;
 pub mod token_rates;
 pub mod token_usage;

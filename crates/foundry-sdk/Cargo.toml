@@ -27,7 +27,8 @@ tokio = { version = "1", features = ["rt", "macros", "process"] }
 
 [features]
 # Ships in-memory gateway fakes (foundry_sdk::gateway::fakes) for testing
-# blocks without real I/O. Enable as a dev-dependency feature.
+# blocks without real I/O, and file helpers for tests that need real files
+# (foundry_sdk::test_support). Enable as a dev-dependency feature.
 test-support = []
 
 [dev-dependencies]

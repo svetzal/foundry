@@ -2016,18 +2016,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         touch(dir.path(), "pyproject.toml");
         std::fs::create_dir_all(dir.path().join(".venv/bin")).unwrap();
-        let script = "#!/bin/sh\necho 'pip_audit._service.interface.ServiceError: 503 Server Error' >&2\nexit 1\n";
-        let status = std::process::Command::new("sh")
-            .current_dir(dir.path())
-            .args([
-                "-c",
-                "printf '%s' \"$1\" > .venv/bin/pip-audit && chmod 755 .venv/bin/pip-audit",
-                "sh",
-                script,
-            ])
-            .status()
-            .unwrap();
-        assert!(status.success());
+        foundry_sdk::test_support::write_executable(
+            &dir.path().join(".venv/bin/pip-audit"),
+            "#!/bin/sh\necho 'pip_audit._service.interface.ServiceError: 503 Server Error' >&2\nexit 1\n",
+        )
+        .unwrap();
 
         let result = run_audit(dir.path(), &Stack::Python).await.unwrap();
 
@@ -2577,25 +2570,13 @@ mod tests {
 
     /// A stand-in `gradlew` that runs `body` as a shell script. The real
     /// wrapper is a shell script too, so this exercises the same spawn path.
-    ///
-    /// The file is written by a child `sh`, never through a file descriptor in
-    /// this process: tests run in parallel, and a sibling test forking while we
-    /// held the script open for writing would make exec fail with ETXTBSY
-    /// ("Text file busy") on Linux.
     #[cfg(unix)]
     fn fake_gradlew(dir: &Path, body: &str) {
-        let script = format!("#!/bin/sh\n{body}\n");
-        let status = std::process::Command::new("sh")
-            .current_dir(dir)
-            .args([
-                "-c",
-                "printf '%s' \"$1\" > gradlew && chmod 755 gradlew",
-                "sh",
-                &script,
-            ])
-            .status()
-            .unwrap();
-        assert!(status.success(), "writing the fake gradlew failed");
+        foundry_sdk::test_support::write_executable(
+            &dir.join("gradlew"),
+            &format!("#!/bin/sh\n{body}\n"),
+        )
+        .unwrap();
     }
 
     const DEPENDENCY_CHECK_ONE_FINDING: &str = r#"{
@@ -3212,13 +3193,11 @@ mod tests {
         // A `mix` on PATH that fails `deps.get` the way a lock mismatch would.
         let bin = tempfile::tempdir().unwrap();
         let script = bin.path().join("mix");
-        std::fs::write(
+        foundry_sdk::test_support::write_executable(
             &script,
             "#!/bin/sh\necho \"lock mismatch: run mix deps.get\" >&2\nexit 1\n",
         )
         .unwrap();
-        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-            .unwrap();
         let dir = tempfile::tempdir().unwrap();
         let error = mix_deps_get_with(dir.path(), "apps/bedrock", script.to_str().unwrap())
             .await

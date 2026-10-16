@@ -1093,7 +1093,6 @@ async fn reconcile_service_surfaces_fetch_git_ledger_and_digest_failures() {
 #[tokio::test]
 async fn reconcile_reloads_under_owner_gate_and_keeps_concurrent_cancellation_and_unrelated_writes()
 {
-    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let (checkout, preserved, _, _, _) = supersession_fixture(dir.path(), "ancestry", "local");
     let ledger = dir.path().join("work-items.json");
@@ -1106,8 +1105,7 @@ async fn reconcile_reloads_under_owner_gate_and_keeps_concurrent_cancellation_an
     let entered = dir.path().join("fetch-entered");
     let release = dir.path().join("release-fetch");
     let script = dir.path().join("upload-pack");
-    std::fs::write(&script, format!("#!/bin/sh\ntouch '{}'\nwhile [ ! -f '{}' ]; do sleep 0.05; done\nexec git-upload-pack \"$@\"\n", entered.display(), release.display())).unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    foundry_sdk::test_support::write_executable(&script, &format!("#!/bin/sh\ntouch '{}'\nwhile [ ! -f '{}' ]; do sleep 0.05; done\nexec git-upload-pack \"$@\"\n", entered.display(), release.display())).unwrap();
     assert!(git_ok(
         Some(&checkout),
         &[
