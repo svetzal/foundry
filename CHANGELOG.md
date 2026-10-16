@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-10-16
+
 ### Added
 
 - Initiative steering checks in code what a pass could do before it asks an
