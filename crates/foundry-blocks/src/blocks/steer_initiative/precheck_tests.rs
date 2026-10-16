@@ -48,6 +48,7 @@ fn steered_an_hour_ago(store: &mut CampaignStore) {
             },
             provider: Some(AgentProvider::Claude),
             recorded_at: chrono::Utc::now() - chrono::Duration::hours(1),
+            follow_up_of: None,
         });
 }
 

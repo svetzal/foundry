@@ -350,8 +350,8 @@ force ops observation below its normal volume threshold. Reports use
 
 | Event | Category | Main payload fields |
 | --- | --- | --- |
-| `InitiativeAdvanceRequested` | Workflow root | `initiative`, optional `member`, `operator_origin`, `trigger_id` |
-| `InitiativeSteered` | Domain fact | `success`, `outcome` (`applied`, `waited`, `no_op`, `skipped`, `rejected`, `stale`, `failed`), `error`, `initiative`, `steer_id`, exact `prompt`, typed `decision`, `provider`, optional durable `action`, `reason`, `eligible_members` |
+| `InitiativeAdvanceRequested` | Workflow root | `initiative`, optional `member`, `operator_origin`, `trigger_id`, optional `follow_up_of` (`steer_id`, `step`) |
+| `InitiativeSteered` | Domain fact | `success`, `outcome` (`applied`, `waited`, `no_op`, `skipped`, `rejected`, `stale`, `failed`), `error`, `initiative`, `steer_id`, exact `prompt`, typed `decision`, `provider`, optional durable `action`, `reason`, `eligible_members`, `follow_up_of` |
 | `InitiativeActionRequested` | Control | Durable `action` identity, typed decision, stage providers and context fingerprint |
 | `InitiativeOwnerActionRecorded` | Domain fact | `initiative`, `action_id`, `operator_origin`, typed owner `action` (`hold`, `milestone`, `member_override`) |
 | `InitiativeAdded` | Domain fact | `initiative`, `outcome`, `projects`, `members`, `status`, `budget` |

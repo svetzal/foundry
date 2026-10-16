@@ -91,6 +91,7 @@ impl ApplyInitiativeAction {
             action: None,
             reason: None,
             eligible_members: vec![],
+            follow_up_of: record.and_then(|record| record.follow_up_of.clone()),
         };
         let mut events = vec![trigger.with_payload(EventType::InitiativeSteered, &fact)?];
         if stale && !admitted && initiative.steering_enabled {
@@ -101,6 +102,7 @@ impl ApplyInitiativeAction {
                     member: None,
                     operator_origin: None,
                     trigger_id: Some(trigger.id.clone()),
+                    follow_up_of: fact.follow_up_of.clone(),
                 },
             )?;
             fresh.id = format!("evt_{}_fresh", trigger.id);
@@ -204,7 +206,7 @@ impl ApplyInitiativeAction {
         let kind = match &action.decision {
             SteeringDecision::Advance { .. } => EventType::CampaignAdvanceRequested,
             SteeringDecision::Dispatch { .. } => EventType::ExecutionRequested,
-            _ => return apply_idle(trigger, &action, &items, &mut guard),
+            _ => return apply_idle(trigger, &action, &items, &registry, &mut guard),
         };
         let project = action_project(&action.decision, &guard.store, &initiative)?
             .ok_or_else(|| anyhow::anyhow!("work action lacks project"))?
@@ -257,6 +259,7 @@ fn apply_idle(
     trigger: &Event,
     action: &foundry_sdk::initiative::DurableSteeringAction,
     items: &WorkItemStore,
+    registry: &Registry,
     guard: &mut foundry_sdk::campaign::CampaignStoreGuard,
 ) -> anyhow::Result<TaskBlockResult> {
     let initiative = guard.store.initiative_view(&action.initiative)?;
@@ -294,7 +297,78 @@ fn apply_idle(
     } else {
         vec![]
     };
-    Ok(TaskBlockResult::success("initiative idle decision applied", facts))
+    let mut events = facts;
+    events.extend(follow_up_request(trigger, action, items, registry, &guard.store)?);
+    Ok(TaskBlockResult::success("initiative idle decision applied", events))
+}
+
+/// The one follow-up assessment an applied step may request.
+///
+/// A steering agent's hold, relay, ask, escalate or stage changes state but
+/// dispatches nothing, and does not trigger another pass by itself. When the
+/// precheck, recomputed after the step, still finds a member eligible to
+/// advance, the step requests exactly one follow-up pass that records its
+/// cause. A pass that is itself a follow-up never requests another, an owner
+/// action (recorded without a provider) relies on its own fact, and an
+/// assessment already queued or running for the initiative makes the request
+/// unnecessary.
+fn follow_up_request(
+    trigger: &Event,
+    action: &foundry_sdk::initiative::DurableSteeringAction,
+    items: &WorkItemStore,
+    registry: &Registry,
+    store: &foundry_sdk::campaign::CampaignStore,
+) -> anyhow::Result<Option<Event>> {
+    if !action.decision.changes_state_without_dispatch() {
+        return Ok(None);
+    }
+    let initiative = store.initiative_view(&action.initiative)?;
+    let Some(record) = initiative.steering_history.iter().find(|record| record.id == action.id)
+    else {
+        return Ok(None);
+    };
+    if record.provider.is_none()
+        || record.follow_up_of.is_some()
+        || !initiative.steering_enabled
+        || initiative.status.is_terminal()
+        || assessment_in_flight(&initiative.name, items)
+    {
+        return Ok(None);
+    }
+    let active = store.ledger_active_members(items);
+    let busy = super::admission::busy_projects(&initiative, items, registry);
+    if store.steering_precheck(&initiative.name, &active, &busy)?.eligible.is_empty() {
+        return Ok(None);
+    }
+    let mut event = trigger.with_payload(
+        EventType::InitiativeAdvanceRequested,
+        &foundry_sdk::payload::InitiativeAdvanceRequestedPayload {
+            initiative: initiative.name.clone(),
+            member: None,
+            operator_origin: None,
+            trigger_id: Some(action.id.clone()),
+            follow_up_of: Some(foundry_sdk::initiative::SteeringFollowUp {
+                steer_id: action.id.clone(),
+                step: action.decision.tag().into(),
+            }),
+        },
+    )?;
+    event.id = format!("evt_{}_follow_up", action.id);
+    event.project = "system".into();
+    event.source = Some(WorkSource::initiative(&initiative.name, 0));
+    Ok(Some(event))
+}
+
+/// Whether another assessment of `initiative` is queued, held or running.
+/// `items` already excludes the steer that applied this step.
+fn assessment_in_flight(initiative: &str, items: &WorkItemStore) -> bool {
+    items.items.iter().any(|item| {
+        (item.state.is_waiting() || item.occupies_slot())
+            && item.pending_root.as_ref().or(item.started_root.as_ref()).is_some_and(|root| {
+                root.event_type == EventType::InitiativeAdvanceRequested
+                    && root.payload_str("initiative") == Some(initiative)
+            })
+    })
 }
 
 fn child_event(

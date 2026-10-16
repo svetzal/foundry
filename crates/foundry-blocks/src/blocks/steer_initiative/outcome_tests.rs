@@ -273,11 +273,11 @@ async fn stage_records_one_campaign_without_starting_or_spending_a_cycle() {
     .await
     .unwrap();
     assert!(applied.success, "{}", applied.summary);
-    assert!(
-        applied.events.is_empty(),
-        "expected `applied.events` to be empty: {:?}",
-        applied.events
-    );
+    // Staging starts no work. With members still eligible it asks for one
+    // follow-up assessment, which is the only event.
+    let kinds: Vec<_> = applied.events.iter().map(|event| &event.event_type).collect();
+    assert_eq!(kinds, [&EventType::InitiativeAdvanceRequested], "{:?}", applied.events);
+    assert_eq!(applied.events[0].payload["follow_up_of"]["step"], "stage");
 }
 
 #[tokio::test]

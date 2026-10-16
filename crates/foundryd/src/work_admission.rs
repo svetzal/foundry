@@ -117,6 +117,7 @@ impl DurableWorkAdmission {
                 member: None,
                 operator_origin: None,
                 trigger_id: Some(trigger.into()),
+                follow_up_of: None,
             })?;
         let mut event = Event::new(
             EventType::InitiativeAdvanceRequested,
@@ -1933,6 +1934,7 @@ mod tests {
             action: None,
             reason: quiet.then(|| detail.to_owned()),
             eligible_members: vec![],
+            follow_up_of: None,
         };
         ProcessResult {
             events: vec![Event::new(
@@ -1997,6 +1999,29 @@ mod tests {
         let item = h.items().into_iter().find(|item| item.id == id).unwrap();
         assert_eq!(item.state, WorkItemState::Failed);
         assert!(item.state.is_open());
+    }
+
+    #[test]
+    fn a_follow_up_request_during_its_steer_queues_once_after_it_with_its_cause() {
+        let h = Harness::new(true);
+        let (id, started) = start_admitted(&h, &steer_root("settled-fact"));
+        let mut follow_up = steer_root(&started.id);
+        follow_up.payload["follow_up_of"] =
+            serde_json::json!({"steer_id": started.id, "step": "relay"});
+        h.policy.prepare(&follow_up, None).expect("coalesce the follow-up");
+        h.policy.prepare(&follow_up, None).expect("a repeat is the same request");
+        assert_eq!(h.items().len(), 1, "no second assessment is admitted while one runs");
+
+        h.policy
+            .complete(&started, &steered(foundry_sdk::payload::SteeringOutcome::Applied, ""))
+            .expect("completion");
+
+        let queued: Vec<_> = h.items().into_iter().filter(|item| item.id != id).collect();
+        assert_eq!(queued.len(), 1);
+        assert!(queued[0].is_queued());
+        let root = queued[0].pending_root.as_ref().unwrap();
+        assert_eq!(root.payload["follow_up_of"]["step"], "relay");
+        assert_eq!(root.payload["follow_up_of"]["steer_id"], started.id.as_str());
     }
 
     #[test]

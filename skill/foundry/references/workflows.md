@@ -578,8 +578,13 @@ and proposes completion for owner confirmation.
 
 Only one assessment runs per initiative. Changed store or trunk evidence
 invalidates output. Durable pending actions recover on restart without double
-spending or dispatch. Hold, relay, ask, escalate and wait do not self-trigger idle
-loops. Existing initiatives remain passive until explicitly advanced.
+spending or dispatch. A steering hold, relay, ask, escalate or stage that
+changes state but dispatches nothing requests exactly one follow-up assessment
+when the recomputed precheck still lists an eligible member. The follow-up
+carries `follow_up_of` (the earlier steer id and step) on its request, steering
+record and `initiative_steered` fact, and never requests another. Wait, no-op,
+skipped, rejected, stale and failed passes request none, and a queued or
+running assessment for the initiative absorbs the request. Existing initiatives remain passive until explicitly advanced.
 
 Optional `provider_pairings` explicitly alternates stage maps. Member stage
 overrides remain binding, and continuations retain their admitted pairing.

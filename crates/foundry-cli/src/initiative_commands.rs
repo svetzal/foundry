@@ -167,6 +167,14 @@ pub(crate) fn to_proto(
                 record["decision_json"] =
                     serde_json::Value::String(serde_json::to_string(&record["decision"])?);
                 record.as_object_mut().context("invalid steering record")?.remove("decision");
+                if let Some(cause) = record
+                    .as_object_mut()
+                    .context("invalid steering record")?
+                    .remove("follow_up_of")
+                {
+                    record["follow_up_of_json"] =
+                        serde_json::Value::String(serde_json::to_string(&cause)?);
+                }
                 if let Some(context) = record
                     .as_object_mut()
                     .context("invalid steering record")?

@@ -102,6 +102,21 @@ pub struct SteeringSnapshot {
     pub initiative: Initiative,
     pub id: String,
     pub fingerprint: String,
+    /// Set when this pass is the follow-up of an earlier steering step. The
+    /// commit records it on the steering record.
+    #[serde(default)]
+    pub follow_up_of: Option<SteeringFollowUp>,
+}
+
+/// Why a steering pass was requested as a follow-up: an earlier steer applied
+/// a step that changed state but dispatched nothing while a member was
+/// eligible. A follow-up pass never requests another.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SteeringFollowUp {
+    /// The steer whose step caused the follow-up.
+    pub steer_id: String,
+    /// That steer's decision tag, such as `relay` or `hold`.
+    pub step: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,6 +196,43 @@ pub struct SteeringRecord {
     pub decision: SteeringDecision,
     pub provider: Option<AgentProvider>,
     pub recorded_at: DateTime<Utc>,
+    /// The earlier steer and step this pass followed up, when it was one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_up_of: Option<SteeringFollowUp>,
+}
+
+impl SteeringDecision {
+    /// The decision's serialized tag, such as `relay` or `advance`.
+    #[must_use]
+    pub fn tag(&self) -> &'static str {
+        match self {
+            Self::Advance { .. } => "advance",
+            Self::Dispatch { .. } => "dispatch",
+            Self::Hold { .. } => "hold",
+            Self::Relay { .. } => "relay",
+            Self::Ask { .. } => "ask",
+            Self::Escalate { .. } => "escalate",
+            Self::Stage { .. } => "stage",
+            Self::Done { .. } => "done",
+            Self::Wait { .. } => "wait",
+        }
+    }
+
+    /// Whether an applied step of this kind changes initiative state without
+    /// dispatching work, so an eligible member would otherwise wait for the
+    /// next settled fact. `done` hands the initiative to its owner and `wait`
+    /// changes nothing, so neither qualifies.
+    #[must_use]
+    pub fn changes_state_without_dispatch(&self) -> bool {
+        matches!(
+            self,
+            Self::Hold { .. }
+                | Self::Relay { .. }
+                | Self::Ask { .. }
+                | Self::Escalate { .. }
+                | Self::Stage { .. }
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,6 +314,7 @@ impl CampaignStore {
             initiative: initiative.clone(),
             id: id.into(),
             fingerprint: fingerprint.clone(),
+            follow_up_of: None,
         };
         self.find_initiative_mut(name)
             .ok_or_else(|| InitiativeError::NotFound(name.into()))?
@@ -283,7 +336,7 @@ impl CampaignStore {
         let mut candidate = self.clone();
         let snapshot = candidate.claim_steering(name, id, false)?;
         candidate.validate_steering(&snapshot)?;
-        let mut action = candidate.bind_steering_action(name, id, decision, prompt, None)?;
+        let mut action = candidate.bind_steering_action(name, id, decision, prompt, None, None)?;
         if let SteeringDecision::Hold { member, .. } = &action.decision {
             if let Some(hold) = candidate.find_initiative_mut(name).and_then(|initiative| {
                 initiative.holds.iter_mut().find(|hold| hold.member == *member)
@@ -418,15 +471,34 @@ impl CampaignStore {
                 return Err(InitiativeError::Invalid("wait requires a reason".into()));
             }
             let reason = reason.trim().to_owned();
-            candidate.record_steering_decision(name, steer_id, decision, prompt, provider)?;
+            candidate.record_steering_decision(
+                name,
+                steer_id,
+                decision,
+                prompt,
+                provider,
+                snapshot.follow_up_of.clone(),
+            )?;
             SteeringCommit::Wait { reason }
         } else if let Some(reason) = candidate.steering_no_op(name, &decision)? {
-            candidate.record_steering_decision(name, steer_id, decision, prompt, provider)?;
+            candidate.record_steering_decision(
+                name,
+                steer_id,
+                decision,
+                prompt,
+                provider,
+                snapshot.follow_up_of.clone(),
+            )?;
             SteeringCommit::NoOp { reason }
         } else {
-            SteeringCommit::Action(Box::new(
-                candidate.bind_steering_action(name, steer_id, decision, prompt, provider)?,
-            ))
+            SteeringCommit::Action(Box::new(candidate.bind_steering_action(
+                name,
+                steer_id,
+                decision,
+                prompt,
+                provider,
+                snapshot.follow_up_of.clone(),
+            )?))
         };
         *self = candidate;
         Ok(committed)
@@ -494,6 +566,7 @@ impl CampaignStore {
         decision: SteeringDecision,
         prompt: String,
         provider: Option<AgentProvider>,
+        follow_up_of: Option<SteeringFollowUp>,
     ) -> Result<()> {
         let initiative = self
             .find_initiative_mut(name)
@@ -504,6 +577,7 @@ impl CampaignStore {
             decision,
             provider,
             recorded_at: Utc::now(),
+            follow_up_of,
         });
         initiative.steering = None;
         Ok(())
@@ -516,6 +590,7 @@ impl CampaignStore {
         decision: SteeringDecision,
         prompt: String,
         provider: Option<AgentProvider>,
+        follow_up_of: Option<SteeringFollowUp>,
     ) -> Result<DurableSteeringAction> {
         if matches!(
             decision,
@@ -584,6 +659,7 @@ impl CampaignStore {
             decision,
             provider,
             recorded_at: Utc::now(),
+            follow_up_of,
         });
         initiative.pending_actions.push(action.clone());
         initiative.steering = None;

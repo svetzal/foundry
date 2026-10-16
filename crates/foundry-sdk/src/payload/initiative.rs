@@ -1,6 +1,6 @@
 //! Typed steering commands and reconstructible steering facts.
 use crate::gateway::AgentProvider;
-use crate::initiative::{DurableSteeringAction, SteeringDecision};
+use crate::initiative::{DurableSteeringAction, SteeringDecision, SteeringFollowUp};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -12,6 +12,10 @@ pub struct InitiativeAdvanceRequestedPayload {
     pub operator_origin: Option<String>,
     #[serde(default)]
     pub trigger_id: Option<String>,
+    /// Set on the one follow-up pass an applied step that dispatched nothing
+    /// requests. A pass that carries it never requests another.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_up_of: Option<SteeringFollowUp>,
 }
 
 /// How one steering assessment ended.
@@ -56,6 +60,9 @@ pub struct InitiativeSteeredPayload {
     /// `wait` beside a non-empty list is the agent declining to advance them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub eligible_members: Vec<String>,
+    /// The earlier steer and step this assessment followed up, when it was one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_up_of: Option<SteeringFollowUp>,
 }
 
 /// How a steer's work item settles when its outcome decides it.
