@@ -7,6 +7,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- A steering step that changes state but dispatches nothing (a hold, a relay
+  that adds a recipient, an ask, an escalation or a staged campaign) now
+  requests exactly one follow-up assessment when the precheck, recomputed after
+  the step, still lists an eligible member. Before, the initiative idled with
+  that member until the next settled fact: on 2026-10-16 the first steer of
+  `mojentic-3-0` relayed a finding while `mojentic-3-0-ex` was eligible, and
+  every member stayed staged. The request is an ordinary
+  `initiative_advance_requested` through the work ledger, so pacing, the
+  precheck and the one-assessment rule apply, and a queued or running
+  assessment absorbs it. It carries `follow_up_of` (`steer_id` and `step`),
+  which the follow-up's steering record, its `initiative_steered` fact and
+  `initiative show` keep. A follow-up never requests another. Wait, no-op,
+  skipped, rejected, stale and failed passes, `done` proposals and owner
+  actions request none.
+
 ## [0.51.0] - 2026-10-16
 
 ### Added

@@ -573,14 +573,19 @@ Consumption follows an actual landing. Forming or preserving a cycle emits no
 consumption fact.
 
 `initiative_advance_requested` carries `initiative`, an optional pinned `member`,
-`operator_origin` and `trigger_id`. Roots are paced on the campaign lane and
+`operator_origin` and `trigger_id`. A follow-up request also carries
+`follow_up_of`, with `steer_id` (the steer whose step caused it) and `step`
+(that steer's decision, such as `relay`). Foundry requests one only after an
+applied hold, relay, ask, escalate or stage while a member stays eligible, and
+never after a follow-up. Roots are paced on the campaign lane and
 deduplicated per initiative. A distinct trigger during assessment is retained
 for a subsequent assessment.
 
 `initiative_steered` carries `success`, `outcome`, `error`, `initiative`,
 `steer_id`, `prompt`, `decision`, `provider` and the optional durable `action`.
-It also carries `reason` when nothing changed, and `eligible_members` when the
-precheck found members that can advance. Its decision is exactly one of
+It also carries `reason` when nothing changed, `eligible_members` when the
+precheck found members that can advance, and `follow_up_of` when the assessment
+was a follow-up. Its decision is exactly one of
 `advance`, `dispatch`, `hold`, `relay`, `ask`, `escalate`, `stage`, `done` or
 `wait`. Only `applied` requests an action; every other outcome admits no work.
 

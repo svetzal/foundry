@@ -235,6 +235,10 @@ fn set_steering_receipts(response: &mut proto::Initiative, initiative: &Initiati
             decision_json: serde_json::to_string(&record.decision).unwrap_or_default(),
             provider: record.provider.map(|provider| provider.to_string()),
             recorded_at: record.recorded_at.to_rfc3339(),
+            follow_up_of_json: record
+                .follow_up_of
+                .as_ref()
+                .and_then(|cause| serde_json::to_string(cause).ok()),
         })
         .collect();
     response.pending_actions = initiative
@@ -770,6 +774,7 @@ pub(super) fn advance(
             member: request.member.clone(),
             operator_origin: Some(request.operator_origin.clone()).filter(|text| !text.is_empty()),
             trigger_id: None,
+            follow_up_of: None,
         })
         .map_err(|error| Status::internal(error.to_string()))?,
     )
@@ -859,6 +864,7 @@ pub(super) fn act(
             action: Some(action.clone()),
             reason: None,
             eligible_members: vec![],
+            follow_up_of: None,
         })
         .map_err(|error| Status::internal(error.to_string()))?,
     )
@@ -1058,6 +1064,7 @@ fn requeue_abandoned_steer(
                 member: None,
                 operator_origin: None,
                 trigger_id: Some(lease.id.clone()),
+                follow_up_of: None,
             })
             .map_err(|error| Status::internal(error.to_string()))?,
         )

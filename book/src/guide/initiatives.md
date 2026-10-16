@@ -185,7 +185,31 @@ Only one assessment can run per initiative. Store changes or a changed trunk
 invalidate stale output. Foundry releases the store guard during repository
 reads and agent execution. Durable action receipts prevent replay from starting
 work or spending cycles twice. Pending actions recover after daemon restart.
-Hold, relay, ask, escalate and wait do not repeatedly wake an idle initiative.
+Wait and the no-op decisions do not wake the initiative again.
+
+### Follow up a step that dispatches nothing
+
+A steering `hold`, `relay`, `ask`, `escalate` or `stage` changes state but
+starts no work. After Foundry applies one of these steps, it computes the
+eligibility again. If at least one member can advance, Foundry requests exactly
+one follow-up assessment. Without it, the eligible member waits until the next
+settled fact.
+
+The follow-up is an ordinary `initiative_advance_requested` through the work
+ledger. Pacing, the precheck and the one-assessment rule apply to it. If an
+assessment of the initiative is already queued or running, Foundry does not add
+another. A follow-up requested while its own steer still runs starts after that
+steer ends.
+
+The request carries `follow_up_of`, with the earlier steer's id and its step.
+The follow-up's steering record and its `initiative_steered` fact keep the same
+cause, so `initiative show` and the events show the chain. A follow-up pass
+never requests another follow-up, whatever it decides.
+
+These outcomes never request a follow-up: `waited`, `no_op`, `skipped`,
+`rejected`, `stale` and `failed`. A `done` proposal waits for the owner and does
+not request one either. An owner's direct hold or relay records its own fact,
+and that fact already requests the next assessment.
 
 An indefinite owner hold remains until an owner releases it. Pinning an
 `initiative advance --member` releases that member's owner hold. A steering

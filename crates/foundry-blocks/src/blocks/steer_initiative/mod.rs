@@ -127,7 +127,8 @@ impl SteerInitiative {
         {
             return Ok(Preparation::Skip { reason, events });
         }
-        let snapshot = guard.store.begin_steering(&initiative.name, &trigger.id)?;
+        let mut snapshot = guard.store.begin_steering(&initiative.name, &trigger.id)?;
+        snapshot.follow_up_of.clone_from(&request.follow_up_of);
         guard.save()?;
         let store = guard.store.clone();
         drop(guard);
@@ -884,6 +885,12 @@ fn steering_result(
     eligible: &[String],
 ) -> anyhow::Result<TaskBlockResult> {
     let success = outcome != SteeringOutcome::Failed;
+    // The fact, and a fresh request after a stale pass, keep the follow-up
+    // cause, so a stale follow-up cannot reset the one-follow-up bound.
+    let follow_up_of = trigger
+        .parse_payload::<InitiativeAdvanceRequestedPayload>()
+        .ok()
+        .and_then(|request| request.follow_up_of);
     let (error, reason) = match outcome {
         SteeringOutcome::Applied => (None, None),
         SteeringOutcome::Waited | SteeringOutcome::NoOp | SteeringOutcome::Skipped => {
@@ -905,6 +912,7 @@ fn steering_result(
         action,
         reason,
         eligible_members: eligible.to_vec(),
+        follow_up_of: follow_up_of.clone(),
     };
     let mut event = trigger.with_payload(EventType::InitiativeSteered, &payload)?;
     event.source = Some(WorkSource::initiative(initiative, 0));
@@ -921,6 +929,7 @@ fn steering_result(
                     .map(str::to_owned),
                 operator_origin: None,
                 trigger_id: Some(trigger.id.clone()),
+                follow_up_of,
             },
         )?;
         fresh.id = format!("evt_{}_fresh", trigger.id);
@@ -953,6 +962,8 @@ impl TaskBlock for SteerInitiative {
     }
 }
 
+#[cfg(test)]
+mod follow_up_tests;
 #[cfg(test)]
 mod outcome_tests;
 #[cfg(test)]

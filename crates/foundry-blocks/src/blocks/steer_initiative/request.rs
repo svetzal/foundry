@@ -66,6 +66,7 @@ impl RequestInitiativeAdvance {
                 member: None,
                 operator_origin: None,
                 trigger_id: Some(trigger.id.clone()),
+                follow_up_of: None,
             },
         )?;
         requested.id = format!("evt_{}_steer", trigger.id);

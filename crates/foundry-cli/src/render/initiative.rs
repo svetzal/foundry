@@ -213,6 +213,9 @@ fn render_steering(out: &mut String, initiative: &Initiative) {
     if let Some(steer) = initiative.steering_history.last() {
         let _ = writeln!(out, "Last steer: {} ({})", steer.id, steer.recorded_at);
         let _ = writeln!(out, "Decision: {}", steer.decision_json);
+        if let Some(cause) = &steer.follow_up_of_json {
+            let _ = writeln!(out, "Follow-up of: {cause}");
+        }
     }
     for proposal in &initiative.close_proposals {
         let _ = writeln!(
