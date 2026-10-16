@@ -1475,11 +1475,9 @@ impl CampaignStore {
             .budget
             .max_cycles = ceiling;
         if add_cycles > 0 {
-            for campaign in candidate
-                .campaigns
-                .iter_mut()
-                .filter(|campaign| campaign.initiative.as_deref() == Some(name))
-            {
+            for campaign in candidate.campaigns.iter_mut().filter(|campaign| {
+                campaign.initiative.as_deref() == Some(name) && !campaign.status.is_terminal()
+            }) {
                 campaign.budget.max_cycles = ceiling;
             }
         }

@@ -544,8 +544,14 @@ impl CampaignStore {
     }
     /// The owner and the members an owner decision applies to, or the reason
     /// the decision is refused: the initiative is unknown, terminal or
-    /// unauthorized, the decision is empty, or it names an outside member.
-    /// Writes nothing.
+    /// unauthorized, the decision is empty, it names an outside member, or it
+    /// names a completed or cancelled member. Writes nothing.
+    ///
+    /// Without named members, the decision applies to every member that can
+    /// still act (staged, active, paused or escalated, or a candidate or task
+    /// slot). Completed and cancelled members are skipped, as `campaign decide`
+    /// refuses them. When none can act, the decision is still recorded on the
+    /// initiative, with no applicable member.
     fn decision_scope(
         &self,
         name: &str,
@@ -569,7 +575,26 @@ impl CampaignStore {
         if decision.trim().is_empty() {
             return Err(InitiativeError::Invalid("decision must be non-empty".into()));
         }
-        Ok((owner, self.applicable_members(name, members)?))
+        let applicable = self.applicable_members(name, members)?;
+        let ended: Vec<String> = applicable
+            .iter()
+            .filter_map(|member| {
+                self.find(member)
+                    .filter(|campaign| campaign.status.is_terminal())
+                    .map(|campaign| format!("'{member}' is '{}'", campaign.status))
+            })
+            .collect();
+        if !members.is_empty() && !ended.is_empty() {
+            return Err(InitiativeError::Precondition(format!(
+                "{}; decide reaches only staged, active, paused or escalated members",
+                ended.join(", ")
+            )));
+        }
+        let applicable = applicable
+            .into_iter()
+            .filter(|member| !self.member_campaign_terminal(member))
+            .collect();
+        Ok((owner, applicable))
     }
     pub fn decide_initiative(
         &mut self,

@@ -101,6 +101,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
   then the store; if the store save fails the reservation stays and the error
   says so. `campaign cancel` releases it in the same store save as the
   cancellation.
+- `foundry initiative decide` no longer writes owner decisions to completed or
+  cancelled members. The decision fans out only to members that can still act
+  (staged, active, paused or escalated), and a shared budget extension raises
+  only their budgets. Naming a completed or cancelled member with `--member`
+  refuses the whole decide with "'<member>' is '<status>'; decide reaches only
+  staged, active, paused or escalated members" (`FAILED_PRECONDITION`) and
+  records nothing, as `foundry campaign decide` refuses those campaigns. With
+  no member left to act, the decision is recorded on the initiative only, with
+  no applicable member. The initiative control contract version 3 gains a
+  `decide-ended-member` group (seed `ended-member`) covering both refusals and
+  the fan-out that skips a cancelled member.
 
 ## [0.50.2] - 2026-10-13
 
