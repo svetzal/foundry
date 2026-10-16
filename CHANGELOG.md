@@ -7,6 +7,20 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Tests that write a stand-in script and then run it no longer fail at random
+  with "Text file busy". GitHub CI run 38902421734 failed
+  `a_failed_mix_deps_get_is_reported_and_names_the_project` this way. The
+  tests wrote the script with `std::fs::write` in the test process. A sibling
+  test that forked during that write gave its child a copy of the write
+  descriptor, and on Linux `execve` refuses a file while any process holds it
+  open for writing. A new `foundry_sdk::test_support::write_executable`
+  (behind the `test-support` feature) writes the file from a child shell, so
+  the test process never holds a descriptor to inherit. All six tests that
+  ran a script they had written now use it, including the two that already
+  wrote from a child shell. Test-only change; no production behaviour differs.
+
 ## [0.52.1] - 2026-10-16
 
 ### Fixed
