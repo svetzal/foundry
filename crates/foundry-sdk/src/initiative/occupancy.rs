@@ -41,7 +41,7 @@ impl CampaignStore {
     }
 
     /// Whether `member` names a completed or cancelled campaign.
-    fn member_campaign_terminal(&self, member: &str) -> bool {
+    pub(super) fn member_campaign_terminal(&self, member: &str) -> bool {
         self.find(member).is_some_and(|campaign| campaign.status.is_terminal())
     }
 

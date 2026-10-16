@@ -958,7 +958,11 @@ has `max_cycles`, `max_active_members` (default two) and `max_open_questions`.
 The initiative owns member budgets. `foundry initiative advance <name>`
 enables steering; passive initiatives retain manual campaign advance.
 
-Decisions fan out to applicable members even while they are active. A changed
+Decisions fan out to members that can still act (staged, active, paused or
+escalated), even while they are active. Completed and cancelled members are
+skipped; naming one with `--member` refuses the whole decide
+(`FAILED_PRECONDITION`) and records nothing. With no member left to act, the
+decision records on the initiative only. A changed
 formation snapshot is discarded and formed again. `queue open` shows an
 escalated initiative once, with member escalation rows suppressed. Open work
 items retain their own rows.

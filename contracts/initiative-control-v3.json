@@ -263,6 +263,60 @@
           ]
         }
       ]
+    },
+    "ended-member": {
+      "campaigns": [
+        {
+          "name": "first",
+          "project": "sample",
+          "mission": "Serve contract v2 from the API",
+          "status": "active",
+          "authorized_by": "Stacey",
+          "done_evidence": [
+            {
+              "kind": "review",
+              "statement": "The API serves contract v2"
+            }
+          ]
+        },
+        {
+          "name": "second",
+          "project": "sample",
+          "mission": "Consume contract v2 in the client",
+          "status": "cancelled",
+          "authorized_by": "Stacey",
+          "done_evidence": [
+            {
+              "kind": "review",
+              "statement": "The client consumes contract v2"
+            }
+          ]
+        }
+      ],
+      "initiative": {
+        "name": "shared",
+        "outcome": "Both members speak contract v2",
+        "projects": [
+          "sample"
+        ],
+        "authorized_by": "Stacey",
+        "members": [
+          {
+            "kind": "campaign",
+            "name": "first"
+          },
+          {
+            "kind": "campaign",
+            "name": "second"
+          }
+        ],
+        "done_evidence": [
+          {
+            "kind": "review",
+            "statement": "Both members speak contract v2"
+          }
+        ]
+      }
     }
   },
   "groups": [
@@ -3454,6 +3508,128 @@
             "status": 9
           },
           "unchanged": true
+        }
+      ]
+    },
+    {
+      "id": "decide-ended-member",
+      "seed": [
+        "ended-member"
+      ],
+      "scenarios": [
+        {
+          "id": "decide-names-cancelled-member",
+          "method": "DecideInitiative",
+          "request": {
+            "name": "shared",
+            "decision": "Revive the client work",
+            "members": [
+              "second"
+            ]
+          },
+          "error": {
+            "message": "'second' is 'cancelled'; decide reaches only staged, active, paused or escalated members",
+            "status": 9
+          },
+          "unchanged": true
+        },
+        {
+          "id": "decide-names-live-and-cancelled-members",
+          "method": "DecideInitiative",
+          "request": {
+            "name": "shared",
+            "decision": "Revive the client work",
+            "members": [
+              "first",
+              "second"
+            ]
+          },
+          "error": {
+            "message": "'second' is 'cancelled'; decide reaches only staged, active, paused or escalated members",
+            "status": 9
+          },
+          "unchanged": true
+        },
+        {
+          "id": "decide-skips-cancelled-member",
+          "method": "DecideInitiative",
+          "request": {
+            "name": "shared",
+            "decision": "Ship the API first"
+          },
+          "response": {
+            "initiative": {
+              "authorizedBy": "Stacey",
+              "budget": {
+                "maxActiveMembers": "2",
+                "maxCycles": "20",
+                "maxOpenQuestions": "3"
+              },
+              "deferredQuestionCount": "0",
+              "doneEvidence": [
+                {
+                  "kind": "review",
+                  "statement": "Both members speak contract v2"
+                }
+              ],
+              "holds": [],
+              "intentRefs": [],
+              "members": [
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "first",
+                    "project": "sample",
+                    "status": "active"
+                  },
+                  "kind": "campaign",
+                  "name": "first",
+                  "project": "sample",
+                  "reviewerGaps": []
+                },
+                {
+                  "after": [],
+                  "campaign": {
+                    "cyclesCompleted": "0",
+                    "initiative": "shared",
+                    "maxCycles": "20",
+                    "name": "second",
+                    "project": "sample",
+                    "status": "cancelled"
+                  },
+                  "kind": "campaign",
+                  "name": "second",
+                  "project": "sample",
+                  "reviewerGaps": []
+                }
+              ],
+              "milestones": [],
+              "name": "shared",
+              "openQuestions": [],
+              "outcome": "Both members speak contract v2",
+              "ownerDecisions": [
+                {
+                  "authorizedBy": "Stacey",
+                  "decision": "Ship the API first",
+                  "members": [
+                    "first"
+                  ]
+                }
+              ],
+              "pendingActions": [],
+              "projects": [
+                "sample"
+              ],
+              "reservations": [],
+              "status": "active",
+              "steeringEnabled": false,
+              "steeringHistoryCount": "0",
+              "taskDispatches": []
+            }
+          }
         }
       ]
     }

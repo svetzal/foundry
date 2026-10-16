@@ -223,8 +223,13 @@ Use its decision form to answer those members, or use the CLI below.
 The dashboard keeps your draft and member selection when live results arrive.
 If the daemon refuses a decision, the form shows its reason and retains your draft.
 
-A decision applies to all campaign members unless `--member` selects a subset.
-It reaches active members as well as escalated members.
+A decision applies to every member that can still act, unless `--member`
+selects a subset. It reaches staged, active, paused and escalated members.
+It skips completed and cancelled members, as `campaign decide` refuses them.
+If `--member` names a completed or cancelled member, Foundry refuses the whole
+decision and records nothing. The refusal names each such member.
+If no member can still act, Foundry records the decision on the initiative only.
+It then reaches no campaign and answers no member question.
 
 ```bash
 foundry initiative decide shared-contract --decision "Keep port 5001"
@@ -232,7 +237,7 @@ foundry initiative decide shared-contract \
   --decision "Retain the legacy adapter" --member adopt-contract
 ```
 
-Foundry records the decision on the initiative and each selected campaign.
+Foundry records the decision on the initiative and each applicable campaign.
 It closes the questions that decision answers for those members. Formation
 that was running when the decision arrived discards its stale outcome and
 forms again from the current record. It does not overwrite the decision.

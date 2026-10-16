@@ -524,3 +524,68 @@ fn fully_answered_question_reappears_with_a_new_age() {
     assert_eq!(reopened.id, original.id);
     assert!(reopened.opened_at > original.opened_at + chrono::Duration::days(2));
 }
+
+#[test]
+fn decision_fans_out_only_to_members_that_can_still_act() {
+    for ended in [CampaignStatus::Completed, CampaignStatus::Cancelled] {
+        let mut store = store();
+        store.find_mut("two").unwrap().status = ended;
+
+        let record = store.decide_initiative("sample", "Proceed", &[], chrono::Utc::now()).unwrap();
+
+        assert_eq!(record.members, ["one"], "{ended:?}");
+        assert_eq!(store.find("one").unwrap().owner_decisions.len(), 1);
+        assert!(store.find("two").unwrap().owner_decisions.is_empty(), "{ended:?}");
+    }
+}
+
+#[test]
+fn naming_a_terminal_member_refuses_the_whole_decision() {
+    let mut store = store();
+    store.find_mut("two").unwrap().status = CampaignStatus::Cancelled;
+    let before = serde_json::to_string(&store).unwrap();
+
+    for named in [
+        vec!["two".to_string()],
+        vec!["one".to_string(), "two".to_string()],
+    ] {
+        let refused = store
+            .decide_initiative("sample", "Proceed", &named, chrono::Utc::now())
+            .unwrap_err();
+        assert_eq!(
+            refused,
+            InitiativeError::Precondition(
+                "'two' is 'cancelled'; decide reaches only staged, active, paused or escalated members"
+                    .into()
+            )
+        );
+        assert!(
+            store
+                .decide_initiative_with_budget("sample", "Proceed", &named, 2, chrono::Utc::now())
+                .is_err()
+        );
+        assert_eq!(serde_json::to_string(&store).unwrap(), before, "nothing is recorded");
+    }
+}
+
+#[test]
+fn a_decision_with_no_member_left_to_act_records_on_the_initiative_only() {
+    let mut store = store();
+    store.find_mut("one").unwrap().status = CampaignStatus::Completed;
+    store.find_mut("two").unwrap().status = CampaignStatus::Cancelled;
+    let budgets: Vec<_> = store.campaigns.iter().map(|c| c.budget.max_cycles).collect();
+
+    let record = store
+        .decide_initiative_with_budget("sample", "Keep the v1 shim", &[], 3, chrono::Utc::now())
+        .unwrap();
+
+    assert!(record.members.is_empty(), "{:?}", record.members);
+    let initiative = store.find_initiative("sample").unwrap();
+    assert_eq!(initiative.owner_decisions, [record]);
+    assert!(store.campaigns.iter().all(|campaign| campaign.owner_decisions.is_empty()));
+    assert_eq!(
+        store.campaigns.iter().map(|c| c.budget.max_cycles).collect::<Vec<_>>(),
+        budgets,
+        "a terminal member's budget is left alone"
+    );
+}

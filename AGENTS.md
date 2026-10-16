@@ -245,8 +245,10 @@ existing guard. Never parse or mutate the store file directly.
   records owner-verified proof with repeated `--evidence <ref>`.
 - `foundry initiative decide <name> --decision <text> [--member <name>]...`
   accepts `--add-cycles N` for the shared budget. It records one decision and
-  fans it into every applicable campaign, including
-  active campaigns. Changes arriving during formation force reformation.
+  fans it into every member that can still act (staged, active, paused or
+  escalated); completed and cancelled members are skipped, and naming one with
+  `--member` refuses the whole decide. Changes arriving during formation force
+  reformation.
 - `foundry initiative complete|cancel <name> --reason <text>`.
 - `foundry initiative brief set <name> <file>` and `brief show <name>`.
 - `foundry finding add <definition.json>` and
