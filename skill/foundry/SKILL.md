@@ -1024,7 +1024,8 @@ can apply (outcome `skipped`). `wait` needs a reason and opens no question; use
 `failed`, so only genuine faults appear in `queue open`.
 
 Queued formation, reserved admissions, running cycles and standalone tasks
-count toward `max_active_members`; a completed or cancelled member never does. Shared cycles include initiative tasks. Use
+count toward `max_active_members`; a completed or cancelled member counts only
+while one of its cycles still runs. Shared cycles include initiative tasks. Use
 `initiative decide --add-cycles N` to authorize more shared cycles. Once the
 shared budget is spent, `initiative decide` without `--add-cycles` is refused
 and records nothing. Member budget grants cannot exceed that total. Owner holds and shared questions block

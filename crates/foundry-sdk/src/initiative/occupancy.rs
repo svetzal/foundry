@@ -11,10 +11,13 @@ use crate::work_item::WorkItemStore;
 impl CampaignStore {
     /// Initiative members with live work in the ledger.
     ///
-    /// Live work is an item still waiting to start (submitted, queued or held)
-    /// or one that still holds execution capacity. An item belongs to the
+    /// Live work is an item that still holds execution capacity, or one still
+    /// waiting to start (submitted, queued or held). An item belongs to the
     /// member campaign recorded on its root, or to the task slot whose dispatch
-    /// receipt names it. The result can name members of any initiative;
+    /// receipt names it. A waiting item of a completed or cancelled member
+    /// campaign is not live: it will never start. A running cycle of such a
+    /// member is live until it settles, because it occupies a real worker.
+    /// The result can name members of any initiative;
     /// [`Self::occupied_member_slots`] keeps only the members of the one it
     /// counts.
     #[must_use]
@@ -22,26 +25,35 @@ impl CampaignStore {
         ledger
             .items
             .iter()
-            .filter(|item| item.state.is_waiting() || item.occupies_slot())
             .filter_map(|item| {
-                item.campaign_name().map(str::to_owned).or_else(|| {
+                let member = item.campaign_name().map(str::to_owned).or_else(|| {
                     self.initiatives
                         .iter()
                         .flat_map(|initiative| &initiative.task_dispatches)
                         .find(|receipt| receipt.work_item == item.id)
                         .map(|receipt| receipt.member.clone())
-                })
+                })?;
+                let live = item.occupies_slot()
+                    || (item.state.is_waiting() && !self.member_campaign_terminal(&member));
+                live.then_some(member)
             })
             .collect()
     }
 
+    /// Whether `member` names a completed or cancelled campaign.
+    fn member_campaign_terminal(&self, member: &str) -> bool {
+        self.find(member).is_some_and(|campaign| campaign.status.is_terminal())
+    }
+
     /// The members of initiative `name` that occupy an active-member slot.
     ///
-    /// A member occupies a slot while it has a reserved admission, live work
-    /// named in `active_members` (from the ledger or the workflow tracker), or
-    /// a member campaign cycle in flight. A completed or cancelled member
-    /// campaign never occupies a slot: its stale reservation, unsettled last
-    /// objective or leftover ledger item is history, not capacity in use.
+    /// A member occupies a slot while it has live work named in
+    /// `active_members` (from the ledger, see [`Self::ledger_active_members`],
+    /// or the workflow tracker), a reserved admission, or a member campaign
+    /// cycle in flight. A completed or cancelled member campaign occupies a
+    /// slot only through live work: a cycle still running after a graceful
+    /// cancellation uses a real worker until it settles. Its reservation and
+    /// its unsettled last objective are history, not capacity in use.
     pub fn occupied_member_slots(
         &self,
         name: &str,
@@ -50,23 +62,26 @@ impl CampaignStore {
         let initiative = self.require_initiative(name)?;
         let is_member =
             |member: &str| initiative.members.iter().any(|definition| definition.name == member);
-        let mut occupied: BTreeSet<String> = initiative
+        let recorded = initiative
             .reservations
             .iter()
             .map(|reservation| reservation.member.clone())
-            .chain(active_members.iter().filter(|member| is_member(member)).cloned())
-            .chain(
-                self.campaigns
-                    .iter()
-                    .filter(|campaign| {
-                        campaign.initiative.as_deref() == Some(name)
-                            && campaign.has_cycle_in_flight()
-                    })
-                    .map(|campaign| campaign.name.clone()),
-            )
-            .collect();
-        occupied.retain(|member| !self.find(member).is_some_and(|c| c.status.is_terminal()));
-        Ok(occupied)
+            .filter(|member| !self.member_campaign_terminal(member));
+        // has_cycle_in_flight is already false for a terminal campaign.
+        let in_flight = self
+            .campaigns
+            .iter()
+            .filter(|campaign| {
+                campaign.initiative.as_deref() == Some(name) && campaign.has_cycle_in_flight()
+            })
+            .map(|campaign| campaign.name.clone());
+        Ok(active_members
+            .iter()
+            .filter(|member| is_member(member))
+            .cloned()
+            .chain(recorded)
+            .chain(in_flight)
+            .collect())
     }
 }
 
@@ -130,6 +145,14 @@ mod tests {
         item
     }
 
+    fn queued_item(campaign: &str) -> WorkItem {
+        let mut item = running_item(campaign);
+        item.state = crate::work_item::WorkItemState::Queued;
+        item.reason = "queued".into();
+        item.started_at = None;
+        item
+    }
+
     fn occupied(store: &CampaignStore, active: &[String]) -> Vec<String> {
         store.occupied_member_slots("shared", active).unwrap().into_iter().collect()
     }
@@ -157,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn a_terminal_member_frees_its_slot_despite_a_stale_reservation_or_ledger_item() {
+    fn a_terminal_member_frees_its_slot_despite_a_stale_reservation_or_waiting_item() {
         let mut store = store();
         dispatch_unsettled_cycle(&mut store, "backend");
         store
@@ -170,10 +193,50 @@ mod tests {
                 kind: ReservationKind::Formation,
             });
         store.find_mut("frontend").unwrap().status = CampaignStatus::Cancelled;
-        let leftover = vec!["frontend".to_string()];
+        let mut held = queued_item("frontend");
+        held.hold();
+        let ledger = WorkItemStore {
+            items: vec![queued_item("frontend"), held],
+            ..WorkItemStore::default()
+        };
+        let active = store.ledger_active_members(&ledger);
 
-        assert_eq!(occupied(&store, &leftover), ["backend"]);
-        store.enforce_member_eligibility("shared", "docs", &leftover).unwrap();
+        assert!(active.is_empty(), "a terminal member's waiting work never starts: {active:?}");
+        assert_eq!(occupied(&store, &active), ["backend"]);
+        store.enforce_member_eligibility("shared", "docs", &active).unwrap();
+    }
+
+    #[test]
+    fn a_running_cycle_of_a_cancelled_member_keeps_its_slot_until_it_settles() {
+        let mut store = store();
+        dispatch_unsettled_cycle(&mut store, "backend");
+        dispatch_unsettled_cycle(&mut store, "frontend");
+        store.find_mut("frontend").unwrap().status = CampaignStatus::Cancelled;
+        let mut ledger = WorkItemStore {
+            items: vec![running_item("frontend")],
+            ..WorkItemStore::default()
+        };
+        let active = store.ledger_active_members(&ledger);
+
+        assert_eq!(active, ["frontend"]);
+        assert_eq!(occupied(&store, &active), ["backend", "frontend"]);
+        assert!(store.enforce_member_eligibility("shared", "docs", &active).is_err());
+
+        ledger.items[0].execution_completed = true;
+        ledger.items[0].settle_landed("workflow completed", Utc::now());
+        let active = store.ledger_active_members(&ledger);
+        assert_eq!(occupied(&store, &active), ["backend"]);
+        store.enforce_member_eligibility("shared", "docs", &active).unwrap();
+    }
+
+    #[test]
+    fn a_live_members_waiting_item_still_counts() {
+        let store = store();
+        let ledger = WorkItemStore {
+            items: vec![queued_item("backend")],
+            ..WorkItemStore::default()
+        };
+        assert_eq!(store.ledger_active_members(&ledger), ["backend"]);
     }
 
     #[test]
