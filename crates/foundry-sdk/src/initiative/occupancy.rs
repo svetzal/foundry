@@ -274,7 +274,7 @@ mod tests {
             }),
         }];
 
-        assert!(occupied(&store, &[]).is_empty());
+        assert_eq!(occupied(&store, &[]), Vec::<String>::new());
     }
 
     #[test]

@@ -309,7 +309,7 @@ mod tests {
         let checked = precheck(&store);
 
         assert_eq!(checked.eligible, ["backend"]);
-        assert!(checked.occupied.is_empty());
+        assert_eq!(checked.occupied, Vec::<String>::new());
         assert_eq!(checked.blocked[0].reason, "campaign is cancelled");
     }
 
@@ -317,7 +317,7 @@ mod tests {
     fn a_busy_repository_or_a_spent_budget_blocks_advance() {
         let mut store = store();
         let busy = precheck_with_busy(&store);
-        assert!(busy.eligible.is_empty());
+        assert_eq!(busy.eligible, Vec::<String>::new());
         assert!(!busy.dispatch_open);
         assert_eq!(busy.blocked[0].reason, "its repository has an execution or cleanup owner");
         assert_eq!(busy.skip_reason(), None, "an idle initiative is always assessed");
