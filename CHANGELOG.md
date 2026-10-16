@@ -78,14 +78,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - A completed or cancelled member campaign no longer holds one of its
-  initiative's active-member slots. A campaign records a cycle's result on the
-  advance after the cycle settles. A campaign cancelled with `--now`, or with a
-  queued cycle that the cancellation withdrew, never takes that advance, so its
-  last objective kept no result and the member counted as running for good.
-  With the default limit of two, one such member halved the initiative's
-  capacity, and steering refused the remaining member with "initiative '<name>'
-  has reached its active member limit". A terminal member's stale reservation
-  or leftover ledger item no longer counts either. The same stale objective no
+  initiative's active-member slots through stale records. A campaign records a
+  cycle's result on the advance after the cycle settles. A campaign cancelled
+  with `--now`, or with a queued cycle that the cancellation withdrew, never
+  takes that advance, so its last objective kept no result and the member
+  counted as running for good. With the default limit of two, one such member
+  halved the initiative's capacity, and steering refused the remaining member
+  with "initiative '<name>' has reached its active member limit". A terminal
+  member's stale reservation or queued or held ledger item no longer counts
+  either. A cycle still running after a graceful cancellation keeps its slot
+  until it settles, because it uses a real worker. The same stale objective no
   longer blocks a completion proposal. Every admission check (steering,
   formation, owner advance and action admission) now counts occupancy through
   one store function, and the ledger side through one more, where four copies

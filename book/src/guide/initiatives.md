@@ -78,8 +78,10 @@ member budgets. `max_active_members` defaults to two. A member with an open
 owner question cannot advance. A member's `after` prerequisite must have
 landed a cycle or completed before that member can advance. Queued formation,
 reserved dispatches, running cycles and standalone initiative tasks count
-toward the active cap. A completed or cancelled member never counts, even when
-its last cycle has no recorded result or a reservation was left behind.
+toward the active cap. A completed or cancelled member counts only while one of
+its cycles still runs, for example after a graceful cancellation. Its last
+cycle without a recorded result, a reservation left behind, or a queued or held
+item never counts.
 The engine checks repository ownership before starting another mutation.
 
 Initiatives and findings use the campaign store API and its existing lock.

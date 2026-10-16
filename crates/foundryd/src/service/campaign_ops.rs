@@ -851,7 +851,14 @@ pub(super) fn advance(
         .store
         .campaigns
         .iter()
-        .filter(|member| find_campaign_work_in_flight(&member.name, &ledger, &tracked).is_some())
+        .filter(|member| {
+            // A completed or cancelled member's waiting work never starts, so
+            // only its still-running work holds an active-member slot.
+            find_campaign_work_in_flight(&member.name, &ledger, &tracked).is_some_and(|work| {
+                !member.status.is_terminal()
+                    || !WorkItemState::from_tag(&work.state).is_some_and(WorkItemState::is_waiting)
+            })
+        })
         .map(|member| member.name.clone())
         .collect::<Vec<_>>();
     guard
