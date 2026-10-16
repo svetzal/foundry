@@ -849,7 +849,7 @@ pub(super) fn act(
         foundry_sdk::throttle::Throttle::Full,
         Event::serialize_payload(&foundry_sdk::payload::InitiativeSteeredPayload {
             success: true,
-            outcome: "applied".into(),
+            outcome: foundry_sdk::payload::SteeringOutcome::Applied,
             error: None,
             initiative: request.name.clone(),
             steer_id: id.clone(),
@@ -857,6 +857,8 @@ pub(super) fn act(
             decision: Some(decision),
             provider: None,
             action: Some(action.clone()),
+            reason: None,
+            eligible_members: vec![],
         })
         .map_err(|error| Status::internal(error.to_string()))?,
     )

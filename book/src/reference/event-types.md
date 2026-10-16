@@ -579,8 +579,20 @@ for a subsequent assessment.
 
 `initiative_steered` carries `success`, `outcome`, `error`, `initiative`,
 `steer_id`, `prompt`, `decision`, `provider` and the optional durable `action`.
-Its decision is exactly one of `advance`, `dispatch`, `hold`, `relay`, `ask`
-or `escalate`. Failed or stale assessments admit no work.
+It also carries `reason` when nothing changed, and `eligible_members` when the
+precheck found members that can advance. Its decision is exactly one of
+`advance`, `dispatch`, `hold`, `relay`, `ask`, `escalate`, `stage`, `done` or
+`wait`. Only `applied` requests an action; every other outcome admits no work.
+
+| `outcome` | `success` | Detail | Assessment work item |
+| --- | --- | --- | --- |
+| `applied` | true | none | `landed` |
+| `waited` | true | `reason` | `landed`, reason `steering waited: <reason>` |
+| `no_op` | true | `reason` | `landed`, reason `steering decision already in force: <reason>` |
+| `skipped` | true | `reason`; no agent ran, so `prompt` is empty | `landed`, reason `steering skipped: <reason>` |
+| `rejected` | true | `error` holds the guard's message | `cancelled`, reason `steering rejected: <message>` |
+| `stale` | true | `error` | `landed`; a fresh `initiative_advance_requested` follows |
+| `failed` | false | `error` | `failed` |
 
 `initiative_action_requested` carries the persisted `action`, including its
 identity, initiative, typed decision, provider pairing and context fingerprint.

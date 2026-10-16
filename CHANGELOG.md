@@ -7,7 +7,44 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Initiative steering checks in code what a pass could do before it asks an
+  agent. The packet now carries an `eligibility` section: the members that can
+  advance now, every other member with its reason (owner hold, unmet milestone
+  or prerequisite, open question, no free slot, spent budget, busy repository),
+  the members using the active-member slots, and whether a task can start. An
+  automatic steer with no eligible member, no free task slot, at least one
+  member running, and no new relayable finding or owner decision since the last
+  steering decision starts no agent. It records `initiative_steered` with
+  outcome `skipped` and the reason, and its work item lands. An owner's
+  `initiative advance` always starts an assessment. On 2026-10-15 an
+  initiative ran about 76 assessments of roughly 50 seconds each, many while
+  both slots were busy.
+- A `wait` steering decision, with a required reason. It is recorded in the
+  steering history and on `initiative_steered` (outcome `waited`), opens no
+  question, leaves the initiative status alone and lands its work item. The
+  prompt now tells the agent to use `wait`, not `ask`, while workers finish.
+  A wait while members are eligible is recorded beside the eligible list
+  (`eligible_members`) rather than refused, so the agent keeps its judgement.
+
 ### Changed
+
+- A steering decision that is already in force is a no-op, not a failure. A
+  `hold` on a member with an owner hold keeps the owner hold, and a `relay` to
+  members a finding already reaches adds nobody. Both are recorded with outcome
+  `no_op` and their reason, request no action, spend no budget and land the
+  work item. Before, the hold settled `failed` with "steering cannot replace an
+  owner hold" although the agent agreed with the owner.
+- A steering decision refused by a guard (held member, active-member limit,
+  busy repository, project outside the initiative, owner-pinned member, invalid
+  audit evidence) now has outcome `rejected`, and its work item settles
+  `cancelled` with the reason `steering rejected: <guard message>`. It used to
+  settle `failed`, so `foundry queue open` listed refusals as work that needs a
+  person. Agent crashes, unusable output and store or ledger faults still
+  settle `failed`. `initiative_steered.outcome` is now a typed value
+  (`applied`, `waited`, `no_op`, `skipped`, `rejected`, `stale`, `failed`)
+  and the fact gains optional `reason` and `eligible_members` fields.
 
 - `foundry campaign decide` now records an owner decision on an `active` or
   `paused` campaign, not only an `escalated` one. An owner who rules on policy

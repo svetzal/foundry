@@ -551,9 +551,14 @@ keeps the outcome reviews supplied by Tracker.
 `foundry initiative advance <name>` submits one outcome assessment and enables
 steering after subsequent member settlements. `--member <name>` pins the next
 advance and releases that member's owner hold. Steering chooses one typed
-`advance`, `dispatch`, `hold`, `relay`, `ask`, `stage`, `done` or `escalate`
-action. The retained
+`advance`, `dispatch`, `hold`, `relay`, `ask`, `stage`, `done`, `escalate` or
+`wait` action. The retained
 `initiative_steered` fact includes the prompt, provider and decision.
+Foundry computes the eligible members first and skips the agent when no action
+can apply (outcome `skipped`). `wait` needs a reason and opens no question; use
+`ask` only for an owner question. A hold or relay already in force is a
+`no_op`. A guard's refusal is `rejected` and settles the steer `cancelled`, not
+`failed`, so only genuine faults appear in `queue open`.
 
 Queued formation, reserved admissions, running cycles and standalone tasks
 count toward `max_active_members`; a completed or cancelled member never does. Shared cycles include initiative tasks. Use
@@ -572,7 +577,7 @@ and proposes completion for owner confirmation.
 
 Only one assessment runs per initiative. Changed store or trunk evidence
 invalidates output. Durable pending actions recover on restart without double
-spending or dispatch. Hold, relay, ask and escalate do not self-trigger idle
+spending or dispatch. Hold, relay, ask, escalate and wait do not self-trigger idle
 loops. Existing initiatives remain passive until explicitly advanced.
 
 Optional `provider_pairings` explicitly alternates stage maps. Member stage

@@ -2,7 +2,9 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::gateway::ShellGateway;
 use foundry_sdk::campaign::CampaignStore;
-use foundry_sdk::initiative::{AuditEvidence, SteeringDecision, SteeringSnapshot};
+use foundry_sdk::initiative::{
+    AuditEvidence, SteeringDecision, SteeringPrecheck, SteeringSnapshot,
+};
 use foundry_sdk::registry::Registry;
 use serde::Deserialize;
 
@@ -54,6 +56,7 @@ pub(super) fn prompt(
     repos: &[RepositorySnapshot],
     requested_member: Option<&str>,
     ledger: &str,
+    eligibility: &SteeringPrecheck,
     evidence_root: &Path,
 ) -> anyhow::Result<BoundedPrompt> {
     let initiative = &snapshot.initiative;
@@ -98,6 +101,7 @@ pub(super) fn prompt(
         "owner_decisions":initiative.owner_decisions,"questions":initiative.open_questions,"deferred_questions":initiative.deferred_questions,"budget":initiative.budget,
         "holds":initiative.holds,"milestones":initiative.milestones,"close_proposals":initiative.close_proposals,
         "findings":findings,"requested_member":requested_member,"work_ledger":ledger_view,
+        "eligibility":eligibility,
         "done_evidence":initiative.done_evidence,"integration_results":integration_results,
         "completion_proposal":initiative.completion_proposal});
     let (packet, artifact) = bounded_packet(packet, evidence_root)?;
@@ -106,6 +110,8 @@ pub(super) fn prompt(
         r#"Choose exactly one next initiative action from current intent and live repository evidence. Take one step, then reassess. You are read-only; do not modify repositories, Foundry state, or Tracker. Foundry has executed integration gates and retained bounded capture evidence in this packet. Inspect the registered repository paths and Foundry-owned brief yourself. All owner decisions are binding. An explicit requested_member restricts advance to that member, but never overrides audit, budget, dependencies, questions, repository ownership, or terminal state.
 
 Before any derived work advances, audit EVERY current intent candidate: create looks for partial implementation, update compares revised intent with code, delete finds removals and references. Classify realised, partial, absent, or misplaced. Cite project-relative existing paths (a checked directory may support absence). Realised intent is proposed for owner Tracker closure and must not become redundant work. Do not infer named milestones from unrelated landings. Approved new intent becomes a candidate; discarded intent has been cancelled. Relay useful findings explicitly, and ask one question covering every applicable member when owner judgement is needed. Respect max_open_questions: when the surface is full, advance an eligible member that has no unanswered question, or escalate waiting on owner if nothing can move. Deferred questions still block their applicable members.
+
+Foundry computed the packet's eligibility section from the store and the work ledger. eligible lists the members that can advance now; blocked lists every other member with the reason; occupied lists the members using the max_active_members slots; dispatch_open says whether a new task can start. Advance only an eligible member. A hold on a member that already has an owner hold, or a relay to members a finding already reaches, changes nothing. When nothing should move until running work settles, choose wait and say what the initiative waits for. Use ask only for a question the owner must answer, never to wait for workers to finish. You may wait while members are eligible when the mission requires it; Foundry records your reason beside the eligible list.
 
 {contract_guidance}
 
@@ -116,6 +122,7 @@ hold: {{"decision":"hold","member":"member","until":["prerequisite:landed"],"rea
 relay: {{"decision":"relay","finding":{{full finding record from packet}},"to":["member"]}}
 ask: {{"decision":"ask","question":"one question","members":["member"]}}
 escalate: {{"decision":"escalate","reason":"reason"}}
+wait: {{"decision":"wait","reason":"what the initiative waits for"}}
 stage: {STAGE_ACTION_EXAMPLE}
 done: {{"decision":"done","reviews":[{{"statement":"exact initiative review statement","affirmed":true,"evidence":["checked project-relative path or gate result id"]}}]}}
 Assign a project on advance only to activate an existing intent candidate as a campaign; set dispatch.member only to activate an existing candidate as a task. Stage adds one campaign when uncovered outcome work requires it, and starts no execution. Done requires every required gate to have passed on current trunk identities and every initiative review statement affirmed from checked evidence. A done decision proposes completion for the owner's initiative complete confirmation; it never completes the initiative or closes Tracker itself. If evidence is missing, choose work, stage it, or ask the owner. Use existing exact finding records for relay. Audits are records {{"intent_ref":"et:interaction:id","classification":"realised|partial|absent|misplaced","project":"registered project","paths":["relative/path"],"explanation":"checked evidence"}}.
@@ -259,7 +266,9 @@ mod tests {
             "expected `store.list_findings(\"shared\").unwrap()` to be empty: {:?}",
             store.list_findings("shared").unwrap()
         );
-        let prompt = prompt(&snapshot, &store, &[], None, "[]", fixture.temp.path()).unwrap();
+        let eligibility = store.steering_precheck("shared", &[], &[]).unwrap();
+        let prompt =
+            prompt(&snapshot, &store, &[], None, "[]", &eligibility, fixture.temp.path()).unwrap();
         assert!(
             prompt
                 .text
@@ -272,7 +281,9 @@ mod tests {
         let fixture = super::super::tests::Fixture::new();
         let mut store = CampaignStore::load(&fixture.store).unwrap();
         let snapshot = store.begin_steering("shared", "stage-schema").unwrap();
-        let prompt = prompt(&snapshot, &store, &[], None, "[]", fixture.temp.path()).unwrap();
+        let eligibility = store.steering_precheck("shared", &[], &[]).unwrap();
+        let prompt =
+            prompt(&snapshot, &store, &[], None, "[]", &eligibility, fixture.temp.path()).unwrap();
         let example = prompt.text.lines().find_map(|line| line.strip_prefix("stage: ")).unwrap();
         let response = parse_response(&format!(r#"{{"action":{example},"audits":[]}}"#)).unwrap();
         let SteeringDecision::Stage { campaign, member } = response.action else {

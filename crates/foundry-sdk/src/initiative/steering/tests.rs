@@ -19,14 +19,16 @@ fn commit(
     decision: SteeringDecision,
 ) -> Result<DurableSteeringAction> {
     let snapshot = store.begin_steering("shared", id)?;
-    store.commit_steering(
-        &snapshot,
-        id,
-        decision,
-        vec![],
-        "Observed current evidence".into(),
-        Some(AgentProvider::Codex),
-    )
+    store
+        .commit_steering(
+            &snapshot,
+            id,
+            decision,
+            vec![],
+            "Observed current evidence".into(),
+            Some(AgentProvider::Codex),
+        )
+        .map(|committed| committed.into_action().expect("the decision needs an action"))
 }
 
 #[test]
@@ -495,6 +497,8 @@ fn realised_audit_proposes_close_and_proves_journey_prerequisite_without_dispatc
             "Audit".into(),
             Some(AgentProvider::Claude),
         )
+        .unwrap()
+        .into_action()
         .unwrap();
     assert!(store.find("intent").is_none());
     assert!(store.find("next").is_some());
@@ -983,4 +987,170 @@ fn refreshed_tracker_intent_preserves_owner_gate_indexes_and_invalidates_old_out
             .collect::<Vec<_>>(),
         vec![0, 1]
     );
+}
+
+fn commit_any(store: &mut CampaignStore, id: &str, decision: SteeringDecision) -> SteeringCommit {
+    let snapshot = store.begin_steering("shared", id).unwrap();
+    store
+        .commit_steering(
+            &snapshot,
+            id,
+            decision,
+            vec![],
+            "Prompt".into(),
+            Some(AgentProvider::Codex),
+        )
+        .unwrap()
+}
+
+#[test]
+fn wait_is_recorded_with_its_reason_and_changes_nothing_else() {
+    let mut store = store();
+    let status = store.find_initiative("shared").unwrap().status;
+
+    let committed = commit_any(
+        &mut store,
+        "wait",
+        SteeringDecision::Wait {
+            reason: "  Both members are running  ".into(),
+        },
+    );
+
+    assert_eq!(
+        committed,
+        SteeringCommit::Wait {
+            reason: "Both members are running".into()
+        }
+    );
+    let initiative = store.find_initiative("shared").unwrap();
+    assert_eq!(initiative.steering_history.len(), 1);
+    assert_eq!(initiative.steering_history[0].id, "wait");
+    assert!(initiative.pending_actions.is_empty(), "{:?}", initiative.pending_actions);
+    assert!(initiative.reservations.is_empty(), "{:?}", initiative.reservations);
+    assert!(initiative.open_questions.is_empty(), "{:?}", initiative.open_questions);
+    assert!(initiative.steering.is_none());
+    assert_eq!(initiative.status, status);
+    assert_eq!(store.shared_cycles_used("shared").unwrap(), 0);
+    assert!(store.begin_steering("shared", "next").is_ok(), "the lease was released");
+}
+
+#[test]
+fn wait_without_a_reason_is_refused_and_records_nothing() {
+    let mut store = store();
+    let snapshot = store.begin_steering("shared", "blank").unwrap();
+    let before = serde_json::to_string(&store).unwrap();
+    let refused = store
+        .commit_steering(
+            &snapshot,
+            "blank",
+            SteeringDecision::Wait { reason: " ".into() },
+            vec![],
+            "Prompt".into(),
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(refused, InitiativeError::Invalid("wait requires a reason".into()));
+    assert_eq!(serde_json::to_string(&store).unwrap(), before);
+}
+
+#[test]
+fn a_steering_hold_on_an_owner_held_member_keeps_the_owner_hold() {
+    let mut store = store();
+    store.hold_member("shared", "two", "Owner reviews the API").unwrap();
+
+    let committed = commit_any(
+        &mut store,
+        "hold",
+        SteeringDecision::Hold {
+            member: "two".into(),
+            until: vec!["one:landed".into()],
+            reason: "Wait for the contract".into(),
+        },
+    );
+
+    assert_eq!(
+        committed,
+        SteeringCommit::NoOp {
+            reason: "member 'two' already has an owner hold, which steering keeps: Owner reviews the API"
+                .into()
+        }
+    );
+    let initiative = store.find_initiative("shared").unwrap();
+    assert_eq!(
+        initiative.holds,
+        [MemberHold {
+            member: "two".into(),
+            until: vec![],
+            reason: "Owner reviews the API".into(),
+            owner: true,
+        }]
+    );
+    assert!(initiative.pending_actions.is_empty(), "{:?}", initiative.pending_actions);
+    assert_eq!(initiative.steering_history.len(), 1);
+}
+
+#[test]
+fn a_relay_to_members_a_finding_already_reaches_is_a_no_op() {
+    let mut store = store();
+    let finding = store
+        .add_finding(Finding::new(
+            "shared",
+            FindingSource {
+                kind: "owner".into(),
+                id: "Stacey".into(),
+            },
+            vec!["one".into(), "two".into()],
+            FindingKind::ContractChanged,
+            "The producer listens on port 5001",
+            vec![],
+        ))
+        .unwrap();
+
+    let committed = commit_any(
+        &mut store,
+        "relay",
+        SteeringDecision::Relay {
+            finding: Box::new(finding.clone()),
+            to: vec!["two".into()],
+        },
+    );
+
+    assert_eq!(
+        committed,
+        SteeringCommit::NoOp {
+            reason: format!("finding '{}' already reaches one, two", finding.id)
+        }
+    );
+    assert_eq!(store.find_finding(&finding.id).unwrap(), &finding);
+    assert!(store.find_initiative("shared").unwrap().pending_actions.is_empty());
+}
+
+#[test]
+fn a_relay_that_adds_a_recipient_is_still_an_action() {
+    let mut store = store();
+    let finding = store
+        .add_finding(Finding::new(
+            "shared",
+            FindingSource {
+                kind: "owner".into(),
+                id: "Stacey".into(),
+            },
+            vec!["one".into()],
+            FindingKind::ContractChanged,
+            "The producer listens on port 5001",
+            vec![],
+        ))
+        .unwrap();
+
+    let committed = commit_any(
+        &mut store,
+        "relay",
+        SteeringDecision::Relay {
+            finding: Box::new(finding.clone()),
+            to: vec!["two".into()],
+        },
+    );
+
+    assert!(matches!(committed, SteeringCommit::Action(_)), "{committed:?}");
+    assert_eq!(store.find_finding(&finding.id).unwrap().to, ["one", "two"]);
 }

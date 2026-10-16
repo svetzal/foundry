@@ -9,7 +9,9 @@ use chrono::Utc;
 use foundry_engine::admission::{Admission, ResultFuture, WorkAdmission};
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::pacing::PacingPaths;
-use foundry_sdk::payload::{ExecutionRequestedPayload, WorkItemEventPayload};
+use foundry_sdk::payload::{
+    ExecutionRequestedPayload, InitiativeSteeredPayload, SteeringSettlement, WorkItemEventPayload,
+};
 use foundry_sdk::registry::Registry;
 use foundry_sdk::trace::{BlockExecution, ProcessResult};
 use foundry_sdk::work_item::{
@@ -509,6 +511,18 @@ impl WorkAdmission for DurableWorkAdmission {
                 let item = store
                     .find(&id)
                     .ok_or_else(|| anyhow::anyhow!("deferred item disappeared: {id}"))?;
+                // A traversal that ran to completion and then settled
+                // `cancelled` (a steer whose decision a guard refused) returns
+                // its own result. An aborted traversal has none and stops below.
+                if item.state == WorkItemState::Cancelled
+                    && item.execution_completed
+                    && let Some(result) = item
+                        .started_root
+                        .as_ref()
+                        .and_then(|root| self.result_writer.read(&root.id))
+                {
+                    return Ok(result);
+                }
                 if (item.state == WorkItemState::Cancelled && !item.occupies_slot())
                     || item.reason == "daemon restarted"
                     || (item.started_at.is_none() && !item.state.is_waiting())
@@ -573,6 +587,15 @@ impl WorkAdmission for DurableWorkAdmission {
                         "task traversal ended without typed settlement; inspect its trace",
                         Utc::now(),
                     );
+                } else if let Some(settlement) = steering_settlement(root, result) {
+                    match settlement {
+                        SteeringSettlement::Landed(reason) => {
+                            item.settle_landed(&reason, Utc::now());
+                        }
+                        SteeringSettlement::Cancelled(reason) => {
+                            item.settle_cancelled(&reason, item.disposition.clone(), Utc::now());
+                        }
+                    }
                 } else if workflow_succeeded(root, result) {
                     let reason = if root.throttle.permits_mutation() {
                         "workflow completed"
@@ -750,6 +773,26 @@ fn workflow_succeeded(root: &Event, result: &ProcessResult) -> bool {
         .map_or(&result.block_executions[..0], |at| &result.block_executions[at + 1..]);
     after_terminal.iter().all(|block| block.success)
         && !result.events[last + 1..].iter().any(reports_failure)
+}
+
+/// The settlement a steer's own outcome decides, when its workflow succeeded.
+///
+/// A wait, a decision already in force and a skipped assessment land with
+/// their reason. A decision a guard refused settles `cancelled`: it took no
+/// effect and owes nobody anything, so it must not appear among the failures
+/// that need a person. `None` keeps the ordinary judgement.
+fn steering_settlement(root: &Event, result: &ProcessResult) -> Option<SteeringSettlement> {
+    if root.event_type != EventType::InitiativeAdvanceRequested || !workflow_succeeded(root, result)
+    {
+        return None;
+    }
+    result
+        .events
+        .iter()
+        .rfind(|event| event.event_type == EventType::InitiativeSteered)?
+        .parse_payload::<InitiativeSteeredPayload>()
+        .ok()?
+        .settlement()
 }
 
 fn stopped_result(item: &WorkItem) -> ProcessResult {
@@ -1870,6 +1913,90 @@ mod tests {
         assert!(after.iter().all(|item| item.coalesced_root.is_none()));
         h.policy.complete(&started, &result).expect("completion retry");
         assert_eq!(h.items().len(), 2);
+    }
+
+    fn steered(outcome: foundry_sdk::payload::SteeringOutcome, detail: &str) -> ProcessResult {
+        use foundry_sdk::payload::SteeringOutcome;
+        let quiet = matches!(
+            outcome,
+            SteeringOutcome::Waited | SteeringOutcome::NoOp | SteeringOutcome::Skipped
+        );
+        let fact = InitiativeSteeredPayload {
+            success: outcome != SteeringOutcome::Failed,
+            outcome,
+            error: (!quiet).then(|| detail.to_owned()),
+            initiative: "shared".into(),
+            steer_id: "steer".into(),
+            prompt: String::new(),
+            decision: None,
+            provider: None,
+            action: None,
+            reason: quiet.then(|| detail.to_owned()),
+            eligible_members: vec![],
+        };
+        ProcessResult {
+            events: vec![Event::new(
+                EventType::InitiativeSteered,
+                "system".into(),
+                Throttle::Full,
+                serde_json::to_value(&fact).unwrap(),
+            )],
+            block_executions: vec![],
+            total_duration_ms: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rejected_steer_settles_cancelled_with_the_guard_reason_and_owes_nothing() {
+        use foundry_sdk::payload::SteeringOutcome;
+        let h = Harness::new(true);
+        let (id, started) = start_admitted(&h, &steer_root("held-member"));
+        let result =
+            steered(SteeringOutcome::Rejected, "member 'two' is held: Owner reviews the API");
+
+        h.policy.complete(&started, &result).expect("completion");
+
+        let item = h.items().into_iter().find(|item| item.id == id).unwrap();
+        assert_eq!(item.state, WorkItemState::Cancelled);
+        assert_eq!(item.reason, "steering rejected: member 'two' is held: Owner reviews the API");
+        assert!(!item.state.is_open(), "a rejection is not an obligation for a person");
+        let waited = h.policy.wait(&id).await.expect("the traversal's own result");
+        assert_eq!(waited.events, result.events, "no synthetic stop event replaces the fact");
+    }
+
+    #[test]
+    fn a_waited_skipped_or_no_op_steer_lands_with_its_reason() {
+        use foundry_sdk::payload::SteeringOutcome;
+        for (outcome, expected) in [
+            (SteeringOutcome::Waited, "steering waited: both members are running"),
+            (SteeringOutcome::Skipped, "steering skipped: both members are running"),
+            (
+                SteeringOutcome::NoOp,
+                "steering decision already in force: both members are running",
+            ),
+        ] {
+            let h = Harness::new(true);
+            let (id, started) = start_admitted(&h, &steer_root("settled"));
+            h.policy
+                .complete(&started, &steered(outcome, "both members are running"))
+                .expect("completion");
+            let item = h.items().into_iter().find(|item| item.id == id).unwrap();
+            assert_eq!(item.state, WorkItemState::Landed, "{outcome:?}");
+            assert_eq!(item.reason, expected);
+        }
+    }
+
+    #[test]
+    fn a_failed_steer_still_fails() {
+        use foundry_sdk::payload::SteeringOutcome;
+        let h = Harness::new(true);
+        let (id, started) = start_admitted(&h, &steer_root("crash"));
+        h.policy
+            .complete(&started, &steered(SteeringOutcome::Failed, "steering agent failed: crash"))
+            .expect("completion");
+        let item = h.items().into_iter().find(|item| item.id == id).unwrap();
+        assert_eq!(item.state, WorkItemState::Failed);
+        assert!(item.state.is_open());
     }
 
     #[test]

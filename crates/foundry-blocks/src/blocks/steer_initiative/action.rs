@@ -5,7 +5,7 @@ use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::initiative::SteeringDecision;
 use foundry_sdk::payload::{
     CampaignAdvanceRequestedPayload, ChainContext, ExecutionRequestedPayload,
-    InitiativeActionRequestedPayload,
+    InitiativeActionRequestedPayload, SteeringOutcome,
 };
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -74,9 +74,14 @@ impl ApplyInitiativeAction {
         let initiative = guard.store.initiative_view(&supplied.initiative)?;
         let record = initiative.steering_history.iter().find(|record| record.id == supplied.id);
         let stale = error.is::<StaleExternal>();
+        let outcome = if stale {
+            SteeringOutcome::Stale
+        } else {
+            super::outcome_of(&error)
+        };
         let fact = foundry_sdk::payload::InitiativeSteeredPayload {
-            success: stale,
-            outcome: if stale { "stale" } else { "failed" }.into(),
+            success: outcome != SteeringOutcome::Failed,
+            outcome,
             error: Some(error.to_string()),
             initiative: supplied.initiative.clone(),
             steer_id: supplied.id.clone(),
@@ -84,6 +89,8 @@ impl ApplyInitiativeAction {
             decision: Some(supplied.decision),
             provider: record.and_then(|record| record.provider),
             action: None,
+            reason: None,
+            eligible_members: vec![],
         };
         let mut events = vec![trigger.with_payload(EventType::InitiativeSteered, &fact)?];
         if stale && !admitted && initiative.steering_enabled {
@@ -101,7 +108,7 @@ impl ApplyInitiativeAction {
             events.push(fresh);
         }
         Ok(TaskBlockResult {
-            success: stale,
+            success: outcome != SteeringOutcome::Failed,
             summary: error.to_string(),
             events,
             ..Default::default()
@@ -181,14 +188,18 @@ impl ApplyInitiativeAction {
         );
         let registry = super::super::read_registry(&self.registry)?.clone();
         let active = guard.store.ledger_active_members(&items);
-        guard.store.enforce_steering_action(&initiative.name, &action.id, &active)?;
+        guard
+            .store
+            .enforce_steering_action(&initiative.name, &action.id, &active)
+            .map_err(super::store_refusal)?;
         ensure_action_repository_free(
             &action.decision,
             &guard.store,
             &initiative,
             &items,
             &registry,
-        )?;
+        )
+        .map_err(super::rejected)?;
         enforce_task_providers(&action, &initiative)?;
         let kind = match &action.decision {
             SteeringDecision::Advance { .. } => EventType::CampaignAdvanceRequested,

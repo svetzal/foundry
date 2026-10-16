@@ -351,7 +351,7 @@ force ops observation below its normal volume threshold. Reports use
 | Event | Category | Main payload fields |
 | --- | --- | --- |
 | `InitiativeAdvanceRequested` | Workflow root | `initiative`, optional `member`, `operator_origin`, `trigger_id` |
-| `InitiativeSteered` | Domain fact | `success`, `outcome`, `error`, `initiative`, `steer_id`, exact `prompt`, typed `decision`, `provider`, optional durable `action` |
+| `InitiativeSteered` | Domain fact | `success`, `outcome` (`applied`, `waited`, `no_op`, `skipped`, `rejected`, `stale`, `failed`), `error`, `initiative`, `steer_id`, exact `prompt`, typed `decision`, `provider`, optional durable `action`, `reason`, `eligible_members` |
 | `InitiativeActionRequested` | Control | Durable `action` identity, typed decision, stage providers and context fingerprint |
 | `InitiativeOwnerActionRecorded` | Domain fact | `initiative`, `action_id`, `operator_origin`, typed owner `action` (`hold`, `milestone`, `member_override`) |
 | `InitiativeAdded` | Domain fact | `initiative`, `outcome`, `projects`, `members`, `status`, `budget` |
@@ -373,7 +373,8 @@ never formation alone or preservation.
 Integration results retain exact trunk commits, host, command exit status and
 capture logs in the initiative record. Failed integration checks record
 findings before steering chooses its next action. `InitiativeSteered` also
-retains `stage` and `done` decisions. A `done` decision proposes completion;
+retains `stage`, `done` and `wait` decisions. A `rejected` steer settles its
+work item `cancelled` with the guard's reason; only `failed` settles `failed`. A `done` decision proposes completion;
 only successful owner-confirmed completion emits `InitiativeCompleted`.
 Tracker closure receipts are exposed by typed initiative reads and retained
 for retry after a partial failure.
