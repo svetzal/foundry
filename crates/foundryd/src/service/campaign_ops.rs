@@ -667,6 +667,11 @@ pub(super) async fn cancel(
             )
             .with_trace_id(Some(foundry_sdk::event::mint_trace_id()))
             .with_span_ids(Some(foundry_sdk::event::mint_span_id()), None);
+            // A withdrawn cycle or formation never runs, so its completion never
+            // releases the initiative reservation it holds. Release it in the
+            // same store save as the cancellation.
+            let withdrawn: Vec<String> = waiting_cycles.iter().map(|item| item.id.clone()).collect();
+            guard.store.release_reservations_held_by(&withdrawn);
             guard.save().map_err(map_save_error)?;
             (detail, event, waiting_cycles)
         };

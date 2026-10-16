@@ -745,6 +745,7 @@ impl Foundry for FoundryService {
         let request = request.into_inner();
         let item = work_item_ops::cancel_item(
             &self.work_items_path,
+            &self.campaigns_path,
             &self.ctx,
             request.id,
             request.reason,
@@ -881,6 +882,7 @@ impl Foundry for FoundryService {
         let request = request.into_inner();
         let item = work_item_ops::cancel_item(
             &self.work_items_path,
+            &self.campaigns_path,
             &self.ctx,
             request.id,
             "cancelled by operator".to_string(),

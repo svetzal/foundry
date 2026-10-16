@@ -81,7 +81,8 @@ reserved dispatches, running cycles and standalone initiative tasks count
 toward the active cap. A completed or cancelled member counts only while one of
 its cycles still runs, for example after a graceful cancellation. Its last
 cycle without a recorded result, a reservation left behind, or a queued or held
-item never counts.
+item never counts. Cancelling a queued cycle or formation with `queue cancel` or
+`campaign cancel` releases the slot it reserved.
 The engine checks repository ownership before starting another mutation.
 
 Initiatives and findings use the campaign store API and its existing lock.
