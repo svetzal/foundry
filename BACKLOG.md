@@ -71,15 +71,15 @@ and a second advance failed the same way. The actual cause was
 `E2BIG`: the formation prompt is passed as one argv element and had grown
 past Linux's 131,072-byte per-argument limit (the five successful prompts
 were 111 KB to 122 KB; the two failures 134 KB and 133 KB). That fix is
-dispatched separately. Two behaviours remain wrong:
+dispatched separately.
 
-- The `std::io::Error` from `Command::spawn` is not recorded. The event
-  says `failed to spawn claude` and nothing else, so an argument-length
-  error, a missing binary and a resource limit all look like a provider
-  outage.
-- A formation agent that never starts escalates the campaign, which needs an
-  owner `resume`. The lifecycle documents provider unavailability as a
-  `paused` state for task runs; the formation should take the same path.
+The spawn error text has landed: `agent_stream.rs` now carries the OS error
+into the `failed to spawn` message, and the escalation reason lists it for
+every attempt. One behaviour remains wrong. A formation agent that never
+starts still escalates the campaign after three attempts spaced 5 s and
+10 s apart (`campaign decision agent did not answer in 3 attempts`), and the
+owner must `resume` it. The lifecycle documents provider unavailability as a
+`paused` state for task runs; the formation should take the same path.
 
 Evidence: `campaign_advance_completed` and `campaign_escalated` at
 2026-09-30T06:16:37Z and 07:56:22Z on ops-01, `agent_session_ended`
@@ -88,17 +88,15 @@ Evidence: `campaign_advance_completed` and `campaign_escalated` at
 
 Completion evidence:
 
-- `agent_session_ended` for a spawn failure carries the OS error text (for
-  example `Argument list too long (os error 7)`), and the escalation or
-  pause reason repeats it.
 - A formation decision agent that cannot be spawned, or returns no output,
   moves the campaign to `paused` with a typed provider-unavailable reason and
   a retry-after, does not consume a cycle, and is retried by the daemon
   without an owner `resume`. The ops digest carries the pause only if it
   persists past one retry window.
-- Retries are spaced by a backoff, not fifteen seconds.
-- Tests cover spawn failure with error text, empty output, and a successful
-  retry.
+- Daemon retries are spaced by a backoff measured in minutes, not the
+  in-block 5 s and 10 s delays.
+- Tests cover spawn failure, empty output, and a successful retry, each
+  ending in `paused` rather than `escalated`.
 
 ## P0 — Classify temporary provider limits without opening a lifetime breaker
 
@@ -135,12 +133,22 @@ provider escalation and an exhausted campaign budget.
 Evidence: task event `evt_175de8fc578b50f8a6300d92` and campaign escalation
 `evt_90e0d015e4025e9cd4724d5f`.
 
+Provider outages are handled since 2026-07-22. A tripped breaker, or a runner
+error carrying a provider failure label, moves the campaign to `paused` with
+its pending run result kept, and `foundry campaign resume` continues the same
+objective. What remains is the other pre-execution failures. A runner error
+that is not recognised as a provider outage (a spawn failure, a transport
+error, a runner that exits before the agent starts) still escalates with
+`runner/provider unavailable: …`. `cycles_completed` is counted when the
+cycle is dispatched, so that cycle stays spent although no work ran.
+
 Completion evidence:
 
-- Pre-execution provider, authentication, transport, and runner-start failures
-  do not increment `cycles_completed` or reduce the authorized work budget.
-- A retry after provider recovery resumes the same objective and preserved base
-  without requiring an unrelated cycle extension.
+- Transport and runner-start failures that ran no agent work do not leave a
+  cycle spent: the cycle counted at dispatch is returned, or counting moves
+  to the point where the agent begins the objective.
+- Those failures pause the campaign, as provider outages do, rather than
+  escalate it.
 - Tests distinguish a started-but-defective implementation cycle from a runner
   that never began executing the objective.
 
@@ -171,10 +179,16 @@ reason and the last incomplete review evidence. Diagnosis required querying raw
 JSONL events and correlating task review, runner failure, and campaign terminal
 records manually.
 
+The reason has landed (2026-10-11). `campaign show` and `campaign report`
+print an Escalation block with the reason, time, cycle counts, the task
+agent's question and choices, and the owner options, and gRPC carries it as
+`CampaignEscalation`. The reason is still prose, and the rest of the context
+is missing.
+
 Completion evidence:
 
-- Campaign detail exposes the latest typed escalation reason, originating event,
-  last objective/verdict, preserved work reference, and unmet done evidence.
+- Campaign detail exposes the escalation's originating event, last
+  objective/verdict, preserved work reference, and unmet done evidence.
 - CLI and typed gRPC output distinguish provider failure, owner-decision need,
   exhausted budget, and implementation remainder without parsing prose.
 - Tests cover escalation after provider failure, skeptical-review remainder,
