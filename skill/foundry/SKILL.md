@@ -20,7 +20,7 @@ compatibility:
   Requires foundryd daemon running locally (Rust binary, gRPC on
   127.0.0.1:50051)
 metadata:
-  version: "0.53.0"
+  version: "0.53.1"
   author: Stacey Vetzal
 ---
 
@@ -1062,8 +1062,15 @@ Without that setting, Foundry keeps the configured stage providers.
 
 ### Initiative outcome evidence
 
-For a changed boundary, require provider and consumer verification of the same
-versioned executable contract set in each project's required gates.
+A library distributed through a package registry self-validates: its own tests
+consume it through its public API and packaged artifact, against its contract
+documents and fixtures, and a fresh consumer install verifies the release.
+Dependents verify when they adopt the released version, in their own work, not
+against an unreleased library.
+
+For a changed boundary between running applications or services, require
+provider and consumer verification of the same versioned executable contract
+set in each project's required gates.
 Cover relevant errors, optional fields and supported versions.
 Retain the contract version or hash, tested commits and both verification results.
 Independent mocks or matching schemas alone do not prove compatibility.

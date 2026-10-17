@@ -7,6 +7,20 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.53.1] - 2026-10-17
+
+### Changed
+
+- Initiative contract-testing guidance no longer asks a library to prove
+  compatibility with its dependents before release. A library distributed
+  through a package registry self-validates with its own tests that consume it
+  through its public API and packaged artifact, against its contract documents
+  and fixtures, plus a fresh consumer install. Dependents verify when they adopt
+  the released version. Paired producer and consumer verification still
+  applies to boundaries between running applications or services. On
+  2026-10-17 the Mojentic 3.0 port campaigns kept failing review for missing
+  "paired" verification that only unreleased consumers could supply.
+
 ### Fixed
 
 - A campaign cycle that cannot reach its acceptance boundary now asks the
