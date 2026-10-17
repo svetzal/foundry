@@ -353,9 +353,14 @@ async fn a_steer_started_beside_member_work_skips_integration_and_records_why() 
     );
     assert!(!result.events.iter().any(|event| event.event_type == EventType::FindingRecorded));
     let store = CampaignStore::load(&fixture.store).unwrap();
-    assert!(store.list_findings("shared").unwrap().is_empty());
+    let findings = store.list_findings("shared").unwrap();
+    assert!(findings.is_empty(), "{findings:?}");
     let initiative = store.initiative_view("shared").unwrap();
-    assert!(initiative.integration_results.is_empty());
+    assert!(
+        initiative.integration_results.is_empty(),
+        "{:?}",
+        initiative.integration_results
+    );
     let reason = "integration skipped: other work holds initiative trunks: sample";
     assert_eq!(initiative.steering_history[0].integration_skipped.as_deref(), Some(reason));
     assert!(agent.invocations()[0].prompt.contains(reason));

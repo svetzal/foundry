@@ -604,7 +604,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(run.results[0].logs.is_empty());
+        assert!(run.results[0].logs.is_empty(), "{:?}", run.results[0].logs);
         assert!(!log_root.exists(), "a passing run leaves nothing on disk");
         let json = serde_json::to_string(&run.results[0]).unwrap();
         assert!(!json.contains("logs"), "passing results serialize as before: {json}");
@@ -680,7 +680,7 @@ mod tests {
             .unwrap();
 
         assert!(run.results[0].passed);
-        assert!(run.results[0].logs.is_empty());
+        assert!(run.results[0].logs.is_empty(), "{:?}", run.results[0].logs);
         assert!(!log_root.exists());
     }
 
@@ -697,7 +697,7 @@ mod tests {
             .unwrap();
 
         assert!(!run.results[0].passed);
-        assert!(run.results[0].logs.is_empty());
+        assert!(run.results[0].logs.is_empty(), "{:?}", run.results[0].logs);
         assert_eq!(run.results[0].output, format!("out\n{}\nerr", output::STDERR_MARKER));
     }
 

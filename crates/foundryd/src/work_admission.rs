@@ -1925,7 +1925,8 @@ mod tests {
         let items = h.items();
         let item = |id: &str| items.iter().find(|item| item.id == id).unwrap();
         assert!(item(&alpha).is_running(), "alpha's cycle never settled");
-        assert!(item(&steer).reserved_projects.is_empty());
+        let reserved = &item(&steer).reserved_projects;
+        assert!(reserved.is_empty(), "{reserved:?}");
         let follow_up = items
             .iter()
             .find(|item| {
@@ -1936,7 +1937,7 @@ mod tests {
             })
             .expect("the follow-up steer has its own started item");
         assert_eq!(follow_up.project, "system");
-        assert!(follow_up.reserved_projects.is_empty());
+        assert!(follow_up.reserved_projects.is_empty(), "{:?}", follow_up.reserved_projects);
         assert!(items.iter().any(|item| item.project == "beta" && item.started_at.is_some()));
     }
 
@@ -2916,7 +2917,8 @@ mod tests {
         assert_eq!(queued_steers(&h).len(), 1, "the one slot is free for beta-port");
         let campaigns =
             foundry_sdk::campaign::CampaignStore::load(&h.policy.campaigns_path).unwrap();
-        assert!(campaigns.find_initiative("shared").unwrap().reservations.is_empty());
+        let reservations = &campaigns.find_initiative("shared").unwrap().reservations;
+        assert!(reservations.is_empty(), "{reservations:?}");
     }
 
     /// Dispatch a cycle for `member` as its formation does: the campaign
@@ -3086,6 +3088,7 @@ mod tests {
         // steering again could choose the same advance without end.
         let (_, unchanged) = start_admitted(&h, &steered_advance("beta-port", "beta"));
         h.policy.complete(&unchanged, &advance_settled("beta", true, None)).unwrap();
-        assert!(queued_steers(&h).is_empty());
+        let queued = queued_steers(&h);
+        assert!(queued.is_empty(), "{queued:?}");
     }
 }

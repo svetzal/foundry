@@ -493,7 +493,8 @@ mod tests {
     fn nothing_is_selected_inside_the_limits() {
         let now = SystemTime::now();
         let entries = [run_dir("20261001T000000Z-a", 1, 100, now)];
-        assert!(select_for_pruning(&entries, now, &RetentionPolicy::default(), "x").is_empty());
+        let pruned = select_for_pruning(&entries, now, &RetentionPolicy::default(), "x");
+        assert!(pruned.is_empty(), "{pruned:?}");
     }
 
     fn make_run(root: &Path, name: &str, bytes: usize) {
@@ -590,6 +591,6 @@ mod tests {
 
         let paths = writer.write_failed_gate("test", &[(RunRole::Initial, &capture)]);
 
-        assert!(paths.is_empty());
+        assert!(paths.is_empty(), "{paths:?}");
     }
 }

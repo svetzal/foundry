@@ -8,8 +8,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -147,7 +148,12 @@ async fn daemon_over(items: Vec<WorkItem>) -> Daemon {
 }
 
 fn run_foundry(home: &Path, daemon: &Daemon, addr: &str, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_foundry"))
+    foundry_command(home, daemon, addr, args).output().expect("run foundry binary")
+}
+
+fn foundry_command(home: &Path, daemon: &Daemon, addr: &str, args: &[&str]) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_foundry"));
+    command
         .arg("--addr")
         .arg(addr)
         .args(args)
@@ -156,9 +162,8 @@ fn run_foundry(home: &Path, daemon: &Daemon, addr: &str, args: &[&str]) -> std::
         .env("FOUNDRY_WORK_ITEMS_PATH", &daemon.ledger)
         .env("FOUNDRY_PACING_PATH", &daemon.pacing.limits)
         .env("FOUNDRY_PACING_STATE_PATH", &daemon.pacing.state)
-        .env("FOUNDRY_REGISTRY_PATH", home.join("absent-registry.json"))
-        .output()
-        .expect("run foundry binary")
+        .env("FOUNDRY_REGISTRY_PATH", home.join("absent-registry.json"));
+    command
 }
 
 fn stdout_string(output: &std::process::Output) -> String {
@@ -333,33 +338,51 @@ async fn pacing_drain_with_a_timeout_exits_non_zero_naming_what_still_runs() {
 async fn pacing_drain_prints_each_item_as_it_settles_then_exits_zero() {
     let daemon = daemon_over(vec![running("wi_run", "alpha")]).await;
     let home = tempfile::tempdir().expect("client home");
-    let ledger = daemon.ledger.clone();
-    let addr = daemon.addr.clone();
 
-    // Settle the running item through the daemon while drain waits: an owner
-    // close is the one settlement an operator can make from outside a run.
-    let home_path = home.path().to_path_buf();
-    let settle = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(500));
-        let mut store = WorkItemStore::load(&ledger).unwrap();
-        store.find_mut("wi_run").unwrap().settle_failed("stopped by hand", Utc::now());
-        store.save(&ledger).unwrap();
-        Command::new(env!("CARGO_BIN_EXE_foundry"))
-            .args([
-                "--addr", &addr, "queue", "close", "wi_run", "--reason", "drained",
-            ])
-            .env("HOME", &home_path)
-            .env("XDG_CONFIG_HOME", home_path.join(".config"))
-            .output()
-            .expect("run foundry binary")
-    });
+    let mut drain = foundry_command(
+        home.path(),
+        &daemon,
+        &daemon.addr,
+        &["pacing", "drain", "--timeout", "30s"],
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .expect("spawn foundry drain");
+    let mut stdout = BufReader::new(drain.stdout.take().expect("piped stdout"));
 
-    let output =
-        run_foundry(home.path(), &daemon, &daemon.addr, &["pacing", "drain", "--timeout", "30s"]);
-    let closed = settle.join().unwrap();
+    // Settle only once drain reports it is waiting: it has subscribed, paused
+    // and seen the item running, so the settlement must reach it as an event.
+    // A fixed sleep races drain's start-up on slow (instrumented) runs.
+    let mut out = String::new();
+    while !out.contains("waiting for 1 running item(s) to settle") {
+        let read = stdout.read_line(&mut out).expect("read drain stdout");
+        assert!(read > 0, "drain exited before it waited; got:\n{out}");
+    }
+
+    // An owner close is the one settlement an operator can make from outside
+    // a run.
+    let mut store = WorkItemStore::load(&daemon.ledger).unwrap();
+    store.find_mut("wi_run").unwrap().settle_failed("stopped by hand", Utc::now());
+    store.save(&daemon.ledger).unwrap();
+    let closed = run_foundry(
+        home.path(),
+        &daemon,
+        &daemon.addr,
+        &["queue", "close", "wi_run", "--reason", "drained"],
+    );
     assert_command_succeeded(&closed);
-    assert_command_succeeded(&output);
-    let out = stdout_string(&output);
+
+    stdout.read_to_string(&mut out).expect("read drain stdout");
+    let mut stderr = String::new();
+    drain
+        .stderr
+        .take()
+        .expect("piped stderr")
+        .read_to_string(&mut stderr)
+        .expect("read stderr");
+    let status = drain.wait().expect("wait for drain");
+    assert!(status.success(), "stdout: {out}\nstderr: {stderr}");
     assert!(out.contains("settled wi_run: cancelled — drained"), "got:\n{out}");
     assert!(out.contains("idle: nothing is running"), "got:\n{out}");
 }
