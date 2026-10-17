@@ -154,6 +154,12 @@ pub(crate) const FOUNDRY_DIR: &str = ".foundry";
 /// `blocks::finalize_task` keeps an interpreted, portable copy of it.
 pub(crate) const PROOF_FILE: &str = ".foundry/proof.json";
 
+/// The record a campaign executor writes in place of [`PROOF_FILE`] when it
+/// cannot reach the acceptance boundary because a capability, access or owner
+/// decision is missing. Review turns a valid one into a question for the
+/// owner rather than a missing-proof defect.
+pub(crate) const BLOCKER_FILE: &str = ".foundry/blocker.json";
+
 /// Run a git command that lists paths with `-z` and return them, empty
 /// entries dropped. Not [`checked`]: trimming the output could alter a name.
 async fn nul_separated_paths(

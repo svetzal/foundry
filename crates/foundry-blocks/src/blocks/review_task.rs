@@ -11,6 +11,7 @@ use foundry_sdk::throttle::Throttle;
 use foundry_sdk::workflow::WorkflowType;
 
 use crate::gateway::{AgentAccess, AgentGateway, ModelTier, ReasoningEffort};
+use crate::workspace::{BLOCKER_FILE, PROOF_FILE};
 
 use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
@@ -180,9 +181,88 @@ fn review_objective(context: &LoopContext) -> String {
         .to_string()
 }
 
+/// The executor's own account of why it could not reach the acceptance
+/// boundary, read from [`BLOCKER_FILE`].
+struct Blocker {
+    tried: String,
+    missing: String,
+    question: String,
+    options: Vec<String>,
+}
+
+/// The owner's choices when the executor offered none.
+const DEFAULT_BLOCKER_OPTIONS: [&str; 2] = [
+    "Provide the missing capability, access or decision, then run the objective again",
+    "Change the objective so it no longer needs what is missing",
+];
+
+impl Blocker {
+    /// The executor's question first, because the campaign shows the finding
+    /// as the question the owner answers; what is missing and what was tried
+    /// follow in the executor's own words.
+    fn finding(&self) -> String {
+        format!("{} (missing: {}; tried: {})", self.question, self.missing, self.tried)
+    }
+
+    fn into_verdict(self, finding: String) -> TaskVerdict {
+        let options = if self.options.is_empty() {
+            DEFAULT_BLOCKER_OPTIONS.iter().map(ToString::to_string).collect()
+        } else {
+            self.options
+        };
+        TaskVerdict::BlockedOnDecision { finding, options }
+    }
+}
+
+/// Read the executor's blocker record. `None` when there is none, so the
+/// proof check runs as before; an `Err` names what is wrong with the record.
+fn read_blocker(repo: &std::path::Path) -> Option<Result<Blocker, String>> {
+    let path = repo.join(BLOCKER_FILE);
+    // An unanswerable existence check falls through to the read, which
+    // reports the fault as an invalid blocker rather than ignoring it.
+    if matches!(path.try_exists(), Ok(false)) {
+        return None;
+    }
+    let parse = || -> anyhow::Result<Blocker> {
+        let value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+        require_object(&value, "blocker")?;
+        if require_string(&value["kind"], "kind")? != "blocked" {
+            anyhow::bail!("kind must be \"blocked\"");
+        }
+        let text = |field: &str| -> anyhow::Result<String> {
+            let text = require_string(&value[field], field)?.trim();
+            if text.is_empty() {
+                anyhow::bail!("{field} must not be empty");
+            }
+            Ok(text.to_owned())
+        };
+        let options = match &value["options"] {
+            serde_json::Value::Null => Vec::new(),
+            serde_json::Value::Array(options) => options
+                .iter()
+                .map(|option| match option.as_str().map(str::trim) {
+                    Some(choice) if !choice.is_empty() => Ok(choice.to_owned()),
+                    _ => Err(anyhow::anyhow!(
+                        "options must hold only non-empty strings, found {}",
+                        json_type(option)
+                    )),
+                })
+                .collect::<anyhow::Result<_>>()?,
+            other => anyhow::bail!("options must be an array, found {}", json_type(other)),
+        };
+        Ok(Blocker {
+            tried: text("tried")?,
+            missing: text("missing")?,
+            question: text("question")?,
+            options,
+        })
+    };
+    Some(parse().map_err(|e| format!("invalid execution blocker at {BLOCKER_FILE}: {e}")))
+}
+
 /// Check evidence shape cheaply; the skeptical reviewer checks its meaning.
 fn proof_error(repo: &std::path::Path) -> Option<String> {
-    let path = repo.join(".foundry/proof.json");
+    let path = repo.join(PROOF_FILE);
     let check = || -> anyhow::Result<()> {
         let value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
         require_object(&value, "proof")?;
@@ -220,9 +300,9 @@ fn proof_error(repo: &std::path::Path) -> Option<String> {
         }
         validate_probe(repo, &value["corrected"], "corrected", true)
     };
-    check().err().map(|e| {
-        format!("invalid or missing early acceptance evidence at .foundry/proof.json: {e}")
-    })
+    check()
+        .err()
+        .map(|e| format!("invalid or missing early acceptance evidence at {PROOF_FILE}: {e}"))
 }
 
 fn json_type(value: &serde_json::Value) -> &'static str {
@@ -301,17 +381,42 @@ fn campaign_proof_review(
     if context.campaign_limits.is_none() || throttle == Throttle::DryRun {
         return None;
     }
-    let reason = proof_error(directory)?;
+    let (verdict, review) = early_evidence_verdict(directory)?;
     Some(early_review_payload(
         project,
         objective.into(),
         results.to_vec(),
         context.clone(),
+        verdict,
+        review,
+    ))
+}
+
+/// The verdict and review text when a campaign cycle's early evidence stops it
+/// before a paid review, or `None` when the proof is sound.
+///
+/// A blocker comes first: an executor that could not reach the acceptance
+/// boundary owes the owner a question, not proof, and calling the absent proof
+/// a defect would carry the same blocked objective into the next cycle.
+fn early_evidence_verdict(directory: &std::path::Path) -> Option<(TaskVerdict, String)> {
+    match read_blocker(directory) {
+        Some(Ok(blocker)) => {
+            let finding = blocker.finding();
+            let review = format!("execution blocked before the acceptance boundary: {finding}");
+            Some((blocker.into_verdict(finding), review))
+        }
+        Some(Err(reason)) => Some(defect(reason)),
+        None => proof_error(directory).map(defect),
+    }
+}
+
+fn defect(reason: String) -> (TaskVerdict, String) {
+    (
         TaskVerdict::Defect {
             diagnosis: reason.clone(),
         },
         reason,
-    ))
+    )
 }
 
 impl TaskBlock for ReviewTask {
@@ -569,6 +674,151 @@ mod tests {
         assert!(agent.invocations().is_empty());
         assert_eq!(result.events[0].payload["verdict"], "defect");
         assert!(result.events[0].payload["diagnosis"].as_str().unwrap().contains("proof.json"));
+    }
+
+    /// Review a campaign cycle whose worktree holds `files`, with a reviewer
+    /// that would answer `complete` if asked. Returns the `TaskReviewed`
+    /// payload and how many times the reviewer was asked.
+    async fn review_campaign_worktree(files: &[(&str, String)]) -> (serde_json::Value, usize) {
+        use crate::{blocks::test_helpers, gateway::fakes::FakeAgentGateway};
+        use foundry_sdk::{event::EventType, task_block::TaskBlock};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".foundry")).unwrap();
+        for (path, content) in files {
+            std::fs::write(dir.path().join(path), content).unwrap();
+        }
+        let registry = test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
+        let agent = FakeAgentGateway::success_with("```json\n{\"verdict\":\"complete\"}\n```");
+        let block = super::ReviewTask::new(agent.clone(), registry);
+        let trigger = test_event!(EventType::GateVerificationCompleted, "p", {
+            "project":"p", "workflow":"task", "all_passed":true,
+            "required_passed":true, "results":[], "retry_count":0,
+            "task_worktree":dir.path().to_str().unwrap(), "campaign_limits":{}
+        });
+        let result = block.execute(&trigger).await.unwrap();
+        (result.events[0].payload.clone(), agent.invocations().len())
+    }
+
+    fn darwin_blocker() -> serde_json::Value {
+        serde_json::json!({
+            "kind": "blocked",
+            "tried": "listed every SSH host; all report Linux",
+            "missing": "a macOS host to run the Darwin URLSession tests",
+            "question": "Can you provide a macOS runner for the Swift timeout diagnosis?",
+            "options": ["Register a macOS runner", "Drop Darwin timeouts from this objective"]
+        })
+    }
+
+    // Production, 2026-10-17 (campaign mojentic-3-0-sw): an executor that
+    // could not reach Darwin wrote no proof and the cycle became a
+    // missing-proof defect, carried into the next cycle unchanged.
+    #[tokio::test]
+    async fn a_campaign_blocker_asks_the_owner_instead_of_reporting_missing_proof() {
+        let (payload, asked) =
+            review_campaign_worktree(&[(".foundry/blocker.json", darwin_blocker().to_string())])
+                .await;
+
+        assert_eq!(asked, 0, "a blocked cycle needs the owner, not a paid review");
+        assert_eq!(payload["verdict"], "blocked_on_decision");
+        let finding = payload["finding"].as_str().unwrap();
+        assert!(finding.starts_with("Can you provide a macOS runner"), "{finding}");
+        assert!(finding.contains("missing: a macOS host to run the Darwin URLSession tests"));
+        assert!(finding.contains("tried: listed every SSH host; all report Linux"));
+        assert_eq!(
+            payload["options"],
+            serde_json::json!([
+                "Register a macOS runner",
+                "Drop Darwin timeouts from this objective"
+            ])
+        );
+        let review = payload["review"].as_str().unwrap();
+        assert!(
+            review.starts_with("execution blocked before the acceptance boundary"),
+            "{review}"
+        );
+        assert!(!review.contains("proof.json"), "{review}");
+    }
+
+    #[tokio::test]
+    async fn a_blocker_without_options_offers_the_default_choices() {
+        for options in [None, Some(serde_json::json!([]))] {
+            let mut blocker = darwin_blocker();
+            match options {
+                None => blocker.as_object_mut().unwrap().remove("options"),
+                Some(empty) => blocker.as_object_mut().unwrap().insert("options".into(), empty),
+            };
+            let (payload, _) =
+                review_campaign_worktree(&[(".foundry/blocker.json", blocker.to_string())]).await;
+
+            assert_eq!(payload["verdict"], "blocked_on_decision");
+            assert_eq!(payload["options"], serde_json::json!(super::DEFAULT_BLOCKER_OPTIONS));
+        }
+    }
+
+    #[tokio::test]
+    async fn an_invalid_blocker_is_a_defect_naming_the_blocker_file() {
+        let mut cases: Vec<(String, &str)> = Vec::new();
+        let mut wrong_kind = darwin_blocker();
+        wrong_kind["kind"] = serde_json::json!("behavioral");
+        cases.push((wrong_kind.to_string(), "kind must be \"blocked\""));
+        let mut empty_question = darwin_blocker();
+        empty_question["question"] = serde_json::json!("  ");
+        cases.push((empty_question.to_string(), "question must not be empty"));
+        let mut missing_tried = darwin_blocker();
+        missing_tried.as_object_mut().unwrap().remove("tried");
+        cases.push((missing_tried.to_string(), "tried must be a string, found null"));
+        let mut number_option = darwin_blocker();
+        number_option["options"] = serde_json::json!(["Register a macOS runner", 2]);
+        cases.push((number_option.to_string(), "options must hold only non-empty strings"));
+        let mut options_string = darwin_blocker();
+        options_string["options"] = serde_json::json!("Register a macOS runner");
+        cases.push((options_string.to_string(), "options must be an array, found string"));
+        cases.push(("[]".to_string(), "blocker must be an object, found array"));
+        cases.push(("not json".to_string(), "expected ident"));
+
+        for (content, expected) in cases {
+            let (payload, asked) =
+                review_campaign_worktree(&[(".foundry/blocker.json", content.clone())]).await;
+
+            assert_eq!(asked, 0);
+            assert_eq!(payload["verdict"], "defect", "{content}");
+            let diagnosis = payload["diagnosis"].as_str().unwrap();
+            assert!(
+                diagnosis.starts_with("invalid execution blocker at .foundry/blocker.json: "),
+                "{content}: {diagnosis}"
+            );
+            assert!(diagnosis.contains(expected), "{content}: {diagnosis}");
+        }
+    }
+
+    #[tokio::test]
+    async fn no_blocker_and_no_proof_is_still_the_missing_proof_defect() {
+        let (payload, asked) = review_campaign_worktree(&[]).await;
+
+        assert_eq!(asked, 0);
+        assert_eq!(payload["verdict"], "defect");
+        let diagnosis = payload["diagnosis"].as_str().unwrap();
+        assert!(
+            diagnosis.starts_with(
+                "invalid or missing early acceptance evidence at .foundry/proof.json: "
+            ),
+            "{diagnosis}"
+        );
+        assert_eq!(payload["review"], diagnosis);
+    }
+
+    #[tokio::test]
+    async fn a_valid_proof_without_a_blocker_goes_to_the_reviewer() {
+        let proof = serde_json::json!({"kind":"direct", "reason":"documentation-only objective",
+            "corrected":{"command":"mdbook build book","exit_code":0,"log":".foundry/pass.log"}});
+        let (payload, asked) = review_campaign_worktree(&[
+            (".foundry/proof.json", proof.to_string()),
+            (".foundry/pass.log", "book built".to_string()),
+        ])
+        .await;
+
+        assert_eq!(asked, 1, "sound proof proceeds to the skeptical reviewer");
+        assert_eq!(payload["verdict"], "complete");
     }
     use foundry_sdk::gates::GateResult;
     use foundry_sdk::payload::TaskVerdict;

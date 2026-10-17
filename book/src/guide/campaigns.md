@@ -421,6 +421,42 @@ For a non-behavioral objective, use this direct shape:
 }
 ```
 
+Sometimes the executor cannot reach the acceptance boundary because a
+capability, an access or an owner decision is missing. For example, the
+objective needs macOS and every available host runs Linux. Then the executor
+must not write `.foundry/proof.json` and must not invent evidence. It records
+`.foundry/blocker.json` and stops:
+
+```json
+{
+  "kind": "blocked",
+  "tried": "what was attempted",
+  "missing": "the capability, access or decision that is absent",
+  "question": "the one question for the owner",
+  "options": ["...", "..."]
+}
+```
+
+`tried`, `missing` and `question` are non-empty strings. `options` is optional.
+When it is present, it is an array of non-empty strings.
+
+Review reads the blocker before the proof:
+
+- A valid blocker gives the verdict `blocked_on_decision`. Its finding is the
+  executor's question, followed by what is missing and what was tried. Its
+  options are the executor's options. When the executor gave no options (or an
+  empty array), the options are "provide what is missing, then run the
+  objective again" and "change the objective". No review session runs. The
+  campaign escalates with that question, and the cycle's work item settles
+  `needs_decision`. Foundry does not dispatch the blocked objective again until
+  the owner answers with `campaign decide`, `resume`, `complete` or `cancel`.
+- An invalid blocker (wrong `kind`, an empty or absent text field, `options`
+  that is not an array of non-empty strings, or malformed JSON) is a `defect`
+  whose diagnosis starts with
+  `invalid execution blocker at .foundry/blocker.json`.
+- With no blocker, review checks the proof as described above. A missing or
+  malformed proof stays a `defect`.
+
 Review reads the worktree proof before finalization. Before committing,
 Foundry copies the proof and named logs into
 `~/.foundry/evidence/<trace-id>/<unique-attempt>/` (event id when no trace is
