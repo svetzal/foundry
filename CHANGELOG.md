@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.52.2] - 2026-10-16
+
 ### Fixed
 
 - An initiative no longer stalls when a member advance settles, and its
