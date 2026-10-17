@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-10-16
+
 ### Fixed
 
 - A failed gate keeps enough output to diagnose it. A gate's `output` used to
