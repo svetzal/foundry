@@ -136,6 +136,18 @@ pub struct GateResult {
     /// after autofix". Defaults to false for older persisted events.
     #[serde(default, skip_serializing_if = "is_false")]
     pub fix_applied: bool,
+    /// Absolute paths of the complete stdout and stderr captures of a gate
+    /// that failed, kept outside the worktree under
+    /// `~/.foundry/evidence/gate-logs/`. `output` holds only a bounded view;
+    /// these files hold everything each command printed (the initial run, and
+    /// the fix and re-check runs when self-heal was attempted), so a failure
+    /// stays diagnosable after the worktree is gone.
+    ///
+    /// Empty for a passing gate, for results loaded from older persisted
+    /// events, and when the logs could not be written. Omitted from JSON when
+    /// empty, so passing results serialize exactly as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub logs: Vec<String>,
 }
 
 /// serde `skip_serializing_if` helper — omit `fix_applied` when false so older
@@ -188,6 +200,7 @@ mod tests {
             exit_code: 0,
             duration_ms: None,
             fix_applied: false,
+            logs: Vec::new(),
         };
         let json = serde_json::to_string(&result).unwrap();
         let restored: GateResult = serde_json::from_str(&json).unwrap();
@@ -199,6 +212,33 @@ mod tests {
         assert!(!json.contains("duration_ms"));
         // fix_applied is omitted from JSON when false
         assert!(!json.contains("fix_applied"));
+        // logs is omitted from JSON when empty
+        assert!(!json.contains("logs"));
+    }
+
+    #[test]
+    fn gate_result_round_trips_with_logs() {
+        let result = GateResult {
+            name: "test".to_string(),
+            command: "cargo test".to_string(),
+            passed: false,
+            required: true,
+            output: "test foo ... FAILED".to_string(),
+            exit_code: 101,
+            duration_ms: None,
+            fix_applied: false,
+            logs: vec!["/home/u/.foundry/evidence/gate-logs/r/test.stdout.log".to_string()],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let restored: GateResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.logs, result.logs);
+    }
+
+    #[test]
+    fn gate_result_without_logs_field_deserializes_empty() {
+        let json = r#"{"name":"fmt","command":"cargo fmt","passed":false,"required":true,"output":"x","exit_code":1}"#;
+        let restored: GateResult = serde_json::from_str(json).unwrap();
+        assert!(restored.logs.is_empty());
     }
 
     #[test]
@@ -212,6 +252,7 @@ mod tests {
             exit_code: 0,
             duration_ms: Some(1234),
             fix_applied: false,
+            logs: Vec::new(),
         };
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("\"duration_ms\":1234"), "duration_ms must appear in JSON");
@@ -236,6 +277,7 @@ mod tests {
                     exit_code: 0,
                     duration_ms: None,
                     fix_applied: false,
+                    logs: Vec::new(),
                 },
                 GateResult {
                     name: "lint".to_string(),
@@ -246,6 +288,7 @@ mod tests {
                     exit_code: 1,
                     duration_ms: None,
                     fix_applied: false,
+                    logs: Vec::new(),
                 },
             ],
         };

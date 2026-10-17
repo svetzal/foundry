@@ -162,6 +162,12 @@ pub fn validation_result(project: &str, payload_json: &str) -> String {
                 let _ = write!(out, " \u{2014} {snippet}");
             }
             let _ = writeln!(out);
+            // A failed gate's complete output, saved outside the worktree.
+            if let Some(logs) = gate.get("logs").and_then(serde_json::Value::as_array) {
+                for log in logs.iter().filter_map(serde_json::Value::as_str) {
+                    let _ = writeln!(out, "      full log: {log}");
+                }
+            }
         }
     }
 
@@ -382,6 +388,14 @@ mod tests {
         assert!(r.contains(&expected_snippet), "got: {r}");
         // Should not contain the 201st 'x' — only the 200-char snippet is included.
         assert_eq!(r.matches('x').count(), 200, "got: {r}");
+    }
+
+    #[test]
+    fn validation_result_lists_a_failed_gates_full_logs() {
+        let payload = r#"{"success":false,"results":[{"name":"test","passed":false,"required":true,"output":"FAILED","logs":["/l/test.stdout.log","/l/test.stderr.log"]}]}"#;
+        let r = validation_result("proj", payload);
+        assert!(r.contains("      full log: /l/test.stdout.log\n"), "got: {r}");
+        assert!(r.contains("      full log: /l/test.stderr.log\n"), "got: {r}");
     }
 
     #[test]

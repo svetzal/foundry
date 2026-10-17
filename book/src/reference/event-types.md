@@ -353,7 +353,7 @@ changes no status and counts no cycle. Its work item settles `landed`.
 | `workflow`        | string | Workflow that triggered the preflight                                                             |
 | `all_passed`      | bool   | Whether every gate passed                                                                         |
 | `required_passed` | bool   | Whether all required gates passed                                                                 |
-| `results`         | array  | Per-gate results (name, command, passed, required, output, exit_code, duration_ms?, fix_applied?) |
+| `results`         | array  | Per-gate results (name, command, passed, required, output, exit_code, duration_ms?, fix_applied?, logs?) |
 
 Each `results[]` entry includes an optional `duration_ms` field (unsigned
 integer) recording how long the gate command took in milliseconds. This field is
@@ -365,6 +365,14 @@ the gate initially failed but its `fix_command` repaired the working tree and
 the re-check then passed (a self-healed gate). The field is omitted when false,
 so it is absent for gates that passed clean and for events persisted before
 self-healing gates were added.
+
+The `output` field is a bounded view: at most 200 lines per command run, with
+stdout and stderr tailed separately and a `--- stderr ---` line between them.
+A failed gate also carries an optional `logs` array: the absolute paths of the
+files under `~/.foundry/evidence/gate-logs/` that hold the complete stdout and
+stderr of each command the gate ran. The field is omitted when empty, so it is
+absent for passing gates and for events persisted before gate logs were added.
+See [Gate output and full logs](../guide/iteration-workflow.md#gate-output-and-full-logs).
 
 **`gate_verification_completed` payload**
 
@@ -375,7 +383,7 @@ self-healing gates were added.
 | `all_passed`      | bool   | Whether every gate passed                                                                         |
 | `required_passed` | bool   | Whether all required gates passed                                                                 |
 | `retry_count`     | number | Current retry count (0 on first attempt)                                                          |
-| `results`         | array  | Per-gate results (name, command, passed, required, output, exit_code, duration_ms?, fix_applied?) |
+| `results`         | array  | Per-gate results (name, command, passed, required, output, exit_code, duration_ms?, fix_applied?, logs?) |
 
 Each `results[]` entry includes an optional `duration_ms` field (unsigned
 integer) recording how long the gate command took in milliseconds. This field is
@@ -388,6 +396,14 @@ the re-check then passed (a self-healed gate). The field is omitted when false,
 so it is absent for gates that passed clean and for events persisted before
 self-healing gates were added.
 
+The `output` field is a bounded view: at most 200 lines per command run, with
+stdout and stderr tailed separately and a `--- stderr ---` line between them.
+A failed gate also carries an optional `logs` array: the absolute paths of the
+files under `~/.foundry/evidence/gate-logs/` that hold the complete stdout and
+stderr of each command the gate ran. The field is omitted when empty, so it is
+absent for passing gates and for events persisted before gate logs were added.
+See [Gate output and full logs](../guide/iteration-workflow.md#gate-output-and-full-logs).
+
 **`retry_requested` payload**
 
 | Field             | Type              | Description                              |
@@ -395,7 +411,7 @@ self-healing gates were added.
 | `project`         | string            | Project name                             |
 | `workflow`        | string            | Originating workflow                     |
 | `retry_count`     | number            | Incremented retry count                  |
-| `failure_context` | string            | Gate output from the failed verification |
+| `failure_context` | string            | Gate output from the failed verification, with each failed gate's log paths |
 | `actions`         | object (optional) | Forwarded actions                        |
 
 ## Validation

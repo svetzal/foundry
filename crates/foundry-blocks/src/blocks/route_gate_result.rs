@@ -284,10 +284,14 @@ fn build_failure_context(results: &[foundry_sdk::gates::GateResult]) -> String {
         .iter()
         .filter(|r| !r.passed)
         .map(|r| {
-            if r.output.is_empty() {
+            let failure = if r.output.is_empty() {
                 r.name.clone()
             } else {
                 format!("{}: {}", r.name, r.output)
+            };
+            match crate::gate_runner::full_logs_note(&r.logs) {
+                Some(note) => format!("{failure}\n({note})"),
+                None => failure,
             }
         })
         .collect();

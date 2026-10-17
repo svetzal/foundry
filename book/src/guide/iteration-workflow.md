@@ -80,6 +80,46 @@ This establishes a baseline: the iterate workflow only attempts improvements
 when the project is already in a passing state (or can be brought to one
 mechanically).
 
+#### Gate output and full logs
+
+Each gate result carries an `output` field with a bounded view of what the
+command printed. The view holds at most 200 lines per command run. Stdout and
+stderr are tailed separately and share that budget. When both streams are
+longer than 100 lines, each keeps its last 100 lines. When one stream needs
+fewer lines, the other stream gets the lines it does not use. A
+`--- stderr ---` line separates the two tails when both streams printed
+something. So a tool that writes thousands of compile lines to stderr cannot
+push the failing test name on stdout out of the view. A failed self-heal
+attempt adds the fix or re-check view after an `--- autofix attempted, gate
+still failing ---` or `--- autofix command failed ---` line.
+
+When a gate fails, Foundry also writes the complete stdout and stderr of each
+command the gate ran. This includes the fix and re-check runs when self-heal
+was attempted. The files go under `~/.foundry/evidence/gate-logs/`, in one
+directory per gate run. The directory name starts with a UTC timestamp, so the
+names sort by time (for example `20261016T221500Z-<uuid>/`). The files are
+named for the gate and the run:
+
+```text
+coverage.stdout.log
+coverage.stderr.log
+format.fix.stdout.log
+format.recheck.stderr.log
+```
+
+The result's `logs` field lists the absolute paths. Prompts and reports that
+show a failed gate to an agent or to you include these paths, and
+`foundry validate` prints them under the failed gate. A passing gate writes no
+files and has no `logs` field. A stream larger than 8 MiB keeps its last
+8 MiB, after a one-line note that gives the original size.
+
+Foundry prunes this directory after each write. It deletes run directories
+older than 14 days. Then, if the directory is still larger than 1 GiB, it
+deletes the oldest run directories until the total is 1 GiB or less. The prune
+only removes directories inside `evidence/gate-logs/` and never touches other
+evidence. If a log cannot be written, Foundry logs a warning and the gate
+result is unchanged, with an empty `logs` field.
+
 ### 3. Charter Validation
 
 `Check Charter` verifies that the project has intent documentation

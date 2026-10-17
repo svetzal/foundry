@@ -463,8 +463,12 @@ async fn attempt_full_update<'a>(
 
     match crate::gate_runner::run_gates(rail.gates, rail.path, rail.shell).await {
         Ok(r) if r.required_passed => {}
-        Ok(_) => {
-            return reverted("gate verification failed after the full update".to_string()).await;
+        Ok(r) => {
+            return reverted(format!(
+                "gate verification failed after the full update: {}",
+                failed_required_gates(&r)
+            ))
+            .await;
         }
         Err(e) => return reverted(format!("gate run errored after the full update: {e}")).await,
     }
@@ -557,11 +561,28 @@ async fn apply_targeted_pin(
                 Err(e) => ("rolled_back", format!("fix verified but {e}; reverted")),
             }
         }
-        Ok(_) => ("rolled_back", "gate verification failed after the bump; reverted".to_string()),
+        Ok(r) => (
+            "rolled_back",
+            format!(
+                "gate verification failed after the bump: {}; reverted",
+                failed_required_gates(&r)
+            ),
+        ),
         Err(e) => ("rolled_back", format!("gate run errored: {e}; reverted")),
     };
     git_restore_files(rail.shell, rail.path, &applied.files).await;
     outcome(proj, f, status, Some(&format!("{label}: {detail}")))
+}
+
+/// The required gates that failed, each with the paths of its full logs, so
+/// the owner reading the remediation outcome can see why without a rerun.
+fn failed_required_gates(run: &foundry_sdk::gates::GatesRunResult) -> String {
+    run.results
+        .iter()
+        .filter(|gate| gate.required && !gate.passed)
+        .map(crate::gate_runner::describe_failed_gate)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 async fn git_tree_clean(shell: &dyn ShellGateway, path: &Path) -> bool {
