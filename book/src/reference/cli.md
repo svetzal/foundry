@@ -606,6 +606,10 @@ For each project, emits a `validation_requested` event which triggers:
 `validation_completed`. No Mutator blocks are involved, so throttle level is
 irrelevant.
 
+A failed gate shows the start of its output, followed by one `full log:` line
+for each file that holds its complete stdout or stderr under
+`~/.foundry/evidence/gate-logs/`.
+
 **Output example:**
 
 ```text

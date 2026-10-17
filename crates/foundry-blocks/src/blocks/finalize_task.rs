@@ -464,7 +464,7 @@ async fn rebase_and_verify(
 }
 
 /// Re-run the required gates in `worktree`, returning the names of those that
-/// failed.
+/// failed, each with the paths of its full logs when they were written.
 ///
 /// Gates are read from the rebased tree, so a gate definition trunk changed is
 /// the one that runs. Fix commands are not run: a fix would edit the tree
@@ -491,7 +491,7 @@ async fn rerun_required_gates(
         .results
         .into_iter()
         .filter(|gate| !gate.passed)
-        .map(|gate| gate.name)
+        .map(|gate| crate::gate_runner::describe_failed_gate(&gate))
         .collect())
 }
 
@@ -937,6 +937,7 @@ mod tests {
                 exit_code: 1,
                 duration_ms: None,
                 fix_applied: false,
+                logs: Vec::new(),
             }],
             verdict: TaskVerdict::Complete,
             context: LoopContext::default(),
@@ -975,6 +976,7 @@ mod tests {
             exit_code: i32::from(!passed),
             duration_ms: None,
             fix_applied: false,
+            logs: Vec::new(),
         }
     }
 

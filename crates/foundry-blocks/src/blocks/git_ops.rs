@@ -311,11 +311,11 @@ async fn verify_rebased_commits(
     if run.required_passed {
         return Ok(());
     }
-    let failed: Vec<&str> = run
+    let failed: Vec<String> = run
         .results
         .iter()
         .filter(|r| r.required && !r.passed)
-        .map(|r| r.name.as_str())
+        .map(crate::gate_runner::describe_failed_gate)
         .collect();
     Err(format!("required gates failed on rebased commits: {}", failed.join(", ")))
 }

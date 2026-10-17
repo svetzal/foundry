@@ -82,6 +82,7 @@ impl TaskBlock for RunVerifyGates {
                     exit_code: 1,
                     duration_ms: None,
                     fix_applied: false,
+                    logs: Vec::new(),
                 };
                 let run_result = GatesRunResult {
                     all_passed: false,
@@ -321,6 +322,7 @@ mod tests {
                 exit_code: 2,
                 duration_ms: Some(100),
                 fix_applied: false,
+                logs: Vec::new(),
             }],
         };
 

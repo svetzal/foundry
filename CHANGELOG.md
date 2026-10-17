@@ -7,6 +7,35 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A failed gate keeps enough output to diagnose it. A gate's `output` used to
+  be the last 200 lines of stdout followed by stderr, so a tool that writes
+  many compile lines to stderr pushed every stdout line out. A failed
+  `cargo tarpaulin --fail-under 56` gate recorded only compile lines, and the
+  failing test name was lost. Now stdout and stderr are tailed separately and
+  share the 200-line budget: each keeps at least half when both overflow, and
+  a stream that needs less gives its unused lines to the other. A
+  `--- stderr ---` line separates them when both have content. `output` stays
+  one string, so stored events and readers still deserialize.
+- Campaign formation and the task reviewer shorten failed gate output section
+  by section, so the stdout failure lines survive a flood of stderr.
+
+### Added
+
+- Full logs for failed gates. When a gate fails, the complete stdout and
+  stderr of each command it ran (and the fix and re-check runs when self-heal
+  was attempted) are written under `~/.foundry/evidence/gate-logs/`, one
+  directory per gate run named by UTC timestamp and uuid. `GateResult` has a
+  new `logs` field with the absolute paths. It is omitted when empty, so
+  passing results serialize as before. Each stream is capped at its last
+  8 MiB. After each write, run directories older than 14 days are deleted,
+  then the oldest are deleted until the tree is at most 1 GiB. A write failure
+  logs a warning and never changes the gate's result. Retry prompts, the task
+  reviewer, campaign formation and red done-gate objectives, maintenance triage
+  evidence, land-blocked and rebase gate failures, supply-chain rollback
+  details and `foundry validate` now name these files.
+
 ## [0.52.2] - 2026-10-16
 
 ### Fixed

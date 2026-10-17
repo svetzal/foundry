@@ -445,6 +445,7 @@ async fn run_done_gates(
                 exit_code: 1,
                 duration_ms: Some(0),
                 fix_applied: false,
+                logs: Vec::new(),
             });
             continue;
         }
@@ -567,11 +568,14 @@ fn decision_prompt(
 }
 
 /// Keep every gate's identity and truth, but spend diagnostic space only on
-/// failures. Full results remain in the durable advance event.
+/// failures. Full results remain in the durable advance event, and a failed
+/// gate's complete output is in the files its `logs` names (serialized with
+/// it). Shortening keeps a tail of every output section, so a flood of stderr
+/// cannot hide the stdout line that names the failure.
 fn formation_gate_results(
     results: &[foundry_sdk::gates::GateResult],
 ) -> Vec<foundry_sdk::gates::GateResult> {
-    let mut remaining = 2 * 1024;
+    let mut remaining: usize = 2 * 1024;
     results
         .iter()
         .map(|gate| {
@@ -580,17 +584,13 @@ fn formation_gate_results(
                 String::new()
             } else {
                 let limit = remaining.min(512);
-                let mut start = gate.output.len().saturating_sub(limit);
-                while !gate.output.is_char_boundary(start) {
-                    start += 1;
-                }
-                let tail = &gate.output[start..];
-                remaining -= tail.len();
-                if start == 0 {
-                    tail.to_string()
+                remaining -= gate.output.len().min(limit);
+                let shortened = crate::gate_runner::output::compact_output(&gate.output, limit);
+                if shortened == gate.output {
+                    shortened
                 } else {
                     format!(
-                        "[{start} diagnostic bytes omitted; full output in advance event]\n{tail}"
+                        "[diagnostic output shortened; full output in advance event]\n{shortened}"
                     )
                 }
             };
@@ -1196,7 +1196,12 @@ fn enforce_done_gate_truth(
     let failures = gate_results
         .iter()
         .filter(|gate| gate.required && !gate.passed)
-        .map(|gate| format!("$ {}\n{}", gate.command, or_none(gate.output.clone())))
+        .map(|gate| {
+            let logs = crate::gate_runner::full_logs_note(&gate.logs)
+                .map(|note| format!("\n{note}"))
+                .unwrap_or_default();
+            format!("$ {}\n{}{logs}", gate.command, or_none(gate.output.clone()))
+        })
         .collect::<Vec<_>>()
         .join("\n\n");
     CampaignDecision::Advance {
@@ -2472,6 +2477,47 @@ mod tests {
             );
         }
         assert_eq!(gates[0].output.len(), 40_011, "original audit evidence is intact");
+    }
+
+    #[test]
+    fn formation_keeps_the_stdout_failure_line_when_stderr_is_noisy() {
+        let stderr = (0..300)
+            .map(|i| format!("   Compiling noisy-crate-{i} v1.0.0"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut gate = failing_clippy_gate();
+        gate.output = format!(
+            "test foo::bar ... FAILED\ntest result: FAILED. 1 failed\n{}\n{stderr}",
+            crate::gate_runner::output::STDERR_MARKER
+        );
+        gate.logs = vec!["/home/u/.foundry/evidence/gate-logs/r/test.stdout.log".to_string()];
+
+        let compact = formation_gate_results(std::slice::from_ref(&gate));
+
+        let output = &compact[0].output;
+        assert!(output.contains("test foo::bar ... FAILED"), "{output}");
+        assert!(output.contains("Compiling noisy-crate-299"));
+        assert!(output.contains("full output in advance event"));
+        assert_eq!(compact[0].logs, gate.logs, "the log paths reach the formation prompt");
+    }
+
+    #[test]
+    fn red_done_gate_objective_names_the_full_logs() {
+        let mut gate = failing_clippy_gate();
+        gate.logs = vec!["/logs/campaign_done_1.stderr.log".to_string()];
+
+        let decision = enforce_done_gate_truth(
+            &campaign_for_accumulation_test(),
+            CampaignDecision::Done {
+                reason: "looks shipped".to_string(),
+            },
+            std::slice::from_ref(&gate),
+        );
+
+        let CampaignDecision::Advance { objective, .. } = decision else {
+            panic!("a red required gate must rewrite done into advance");
+        };
+        assert!(objective.contains("full logs: /logs/campaign_done_1.stderr.log"), "{objective}");
     }
 
     #[tokio::test]
@@ -4770,6 +4816,7 @@ mod tests {
             exit_code: 1,
             duration_ms: Some(10),
             fix_applied: false,
+            logs: Vec::new(),
         }
     }
 

@@ -84,13 +84,18 @@ fn render_gate(g: &foundry_sdk::gates::GateResult) -> String {
     } else {
         FAILING_GATE_OUTPUT_BUDGET
     };
+    // Section-aware: a byte tail of the whole view would keep only stderr
+    // when a tool floods it, dropping the stdout line that names the failure.
+    let logs = crate::gate_runner::full_logs_note(&g.logs)
+        .map(|note| format!("\n({note})"))
+        .unwrap_or_default();
     format!(
-        "- {} [{}]: {} (exit {})\n{}",
+        "- {} [{}]: {} (exit {})\n{}{logs}",
         g.name,
         if g.required { "REQUIRED" } else { "OPTIONAL" },
         if g.passed { "PASS" } else { "FAIL" },
         g.exit_code,
-        cap_tail_bytes(&g.output, budget)
+        crate::gate_runner::output::compact_output(&g.output, budget)
     )
 }
 
@@ -602,6 +607,7 @@ mod tests {
                 exit_code: 0,
                 duration_ms: None,
                 fix_applied: false,
+                logs: Vec::new(),
             },
             GateResult {
                 name: "dialyzer".to_string(),
@@ -612,6 +618,7 @@ mod tests {
                 exit_code: 2,
                 duration_ms: None,
                 fix_applied: false,
+                logs: Vec::new(),
             },
         ];
 
@@ -666,6 +673,7 @@ mod tests {
             exit_code: i32::from(!passed),
             duration_ms: None,
             fix_applied: false,
+            logs: Vec::new(),
         }
     }
 
@@ -729,6 +737,28 @@ mod tests {
         );
         assert!(passing.len() <= super::REVIEW_PROMPT_BUDGET_BYTES);
         assert!(failing.len() <= super::REVIEW_PROMPT_BUDGET_BYTES);
+    }
+
+    #[test]
+    fn a_failing_gate_keeps_its_stdout_failure_line_and_names_its_full_logs() {
+        let stderr = (0..2_000)
+            .map(|i| format!("   Compiling noisy-crate-{i} v1.0.0 (registry `crates-io`)"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let output = format!(
+            "test foo::bar ... FAILED\n{}\n{stderr}",
+            crate::gate_runner::output::STDERR_MARKER
+        );
+        let mut gate = gate_with_output("test", false, true, output);
+        gate.logs = vec![
+            "/logs/test.stdout.log".to_string(),
+            "/logs/test.stderr.log".to_string(),
+        ];
+
+        let prompt = build_review_prompt("obj", &[gate]);
+
+        assert!(prompt.contains("test foo::bar ... FAILED"));
+        assert!(prompt.contains("full logs: /logs/test.stdout.log, /logs/test.stderr.log"));
     }
 
     #[test]

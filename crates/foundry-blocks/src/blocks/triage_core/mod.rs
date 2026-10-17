@@ -28,6 +28,8 @@ pub struct RawFailure {
     pub exit_code: Option<i32>,
     pub fix_command: Option<String>,
     pub occurred_at: DateTime<Utc>,
+    /// Files holding the gate's complete output (see `GateResult::logs`).
+    pub logs: Vec<String>,
 }
 
 /// Extract raw failures from a set of events within a time window.
@@ -85,6 +87,7 @@ pub fn run_failures(
                 exit_code: Some(result.exit_code),
                 fix_command: None, // gate result does not carry fix_command
                 occurred_at: event.occurred_at,
+                logs: result.logs.clone(),
             });
         }
     }
@@ -138,6 +141,17 @@ mod tests {
         assert_eq!(failures.len(), 1, "only the real failure should be included");
         assert_eq!(failures[0].project, "beta");
         assert_eq!(unparsed, 0);
+    }
+
+    #[test]
+    fn run_failures_carry_the_gate_log_paths() {
+        let mut event = make_preflight_event("alpha", "test", false, false);
+        event.payload["results"][0]["logs"] = serde_json::json!(["/logs/test.stdout.log"]);
+        let window_end = Utc::now() + Duration::seconds(1);
+
+        let (failures, _) = run_failures(&[event], window_end - Duration::hours(1), window_end);
+
+        assert_eq!(failures[0].logs, vec!["/logs/test.stdout.log".to_string()]);
     }
 
     #[test]

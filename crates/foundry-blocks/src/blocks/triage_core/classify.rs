@@ -202,6 +202,7 @@ mod tests {
             exit_code: Some(1),
             fix_command: None,
             occurred_at: Utc::now(),
+            logs: Vec::new(),
         }
     }
 

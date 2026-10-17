@@ -331,7 +331,12 @@ It returns a decision; the daemon dispatches that decision. It must not probe
 localhost or start nested Foundry workflows.
 
 Passing gate output is omitted. Failed output keeps at most 512 bytes per gate
-and 2 KiB across all gates. Full results remain in `CampaignAdvanceCompleted`.
+and 2 KiB across all gates. The shortening keeps the end of every section of
+the output (stdout, stderr, and each self-heal run), so noisy stderr cannot
+hide the stdout line that names the failure. Full results remain in
+`CampaignAdvanceCompleted`, and a failed gate's `logs` field names the files
+that hold its complete output (see
+[Gate output and full logs](iteration-workflow.md#gate-output-and-full-logs)).
 An oversized packet fails before an agent starts. Binding declarations are
 never silently truncated to fit the packet.
 
@@ -378,7 +383,9 @@ foundry capture -- cargo test --workspace
 This command needs no daemon. It returns the child's exit code and stores both
 complete streams in `~/.foundry/tool-logs/`. Passing commands print only status
 and log paths. Failures print at most 2 KiB from each stream. Use `--log-dir`
-to choose another directory. Logs remain until you remove them.
+to choose another directory. Logs remain until you remove them. Gate runs keep
+their own logs for failed gates under `~/.foundry/evidence/gate-logs/`, which
+Foundry prunes automatically.
 
 Coding prompts request this command for verbose output. Codex also applies a
 2,000-token limit to tool output retained in conversation history. The native

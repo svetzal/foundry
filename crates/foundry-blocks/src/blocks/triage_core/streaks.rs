@@ -129,7 +129,10 @@ pub fn build_verdicts(
             None
         };
 
-        let evidence = failure.gate_output.chars().take(500).collect::<String>();
+        let mut evidence = failure.gate_output.chars().take(500).collect::<String>();
+        if let Some(note) = crate::gate_runner::full_logs_note(&failure.logs) {
+            evidence = format!("{evidence}\n{note}");
+        }
 
         verdicts.push(FailureVerdict {
             project: failure.project,
@@ -256,6 +259,7 @@ mod tests {
                 exit_code: Some(1),
                 fix_command: None,
                 occurred_at: e.occurred_at,
+                logs: Vec::new(),
             });
         }
 
@@ -271,5 +275,23 @@ mod tests {
         assert_eq!(verdicts[0].class, FailureClass::ChronicDeadlock);
         assert_eq!(verdicts[0].decision, Decision::Escalate);
         assert_eq!(unparsed, 0);
+    }
+
+    #[test]
+    fn verdict_evidence_names_the_full_logs() {
+        let failure = RawFailure {
+            project: "alpha".to_string(),
+            gate_name: "test".to_string(),
+            gate_output: "test foo ... FAILED".to_string(),
+            exit_code: Some(101),
+            fix_command: None,
+            occurred_at: Utc::now(),
+            logs: vec!["/logs/test.stdout.log".to_string()],
+        };
+
+        let (verdicts, _, _) = build_verdicts(vec![failure], &[], 30);
+
+        assert!(verdicts[0].evidence.starts_with("test foo ... FAILED"));
+        assert!(verdicts[0].evidence.ends_with("full logs: /logs/test.stdout.log"));
     }
 }
