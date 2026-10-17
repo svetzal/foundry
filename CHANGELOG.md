@@ -7,6 +7,22 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A campaign cycle that cannot reach its acceptance boundary now asks the
+  owner instead of failing as a missing-proof defect. On 2026-10-17 a Swift
+  cycle needed macOS, found only Linux hosts, and stopped without proof.
+  Review called that a `defect`, so the next cycle ran the same blocked
+  objective again. The executor prompt now offers a third shape: when a
+  capability, access or owner decision is missing, the executor records
+  `.foundry/blocker.json` (`kind`, `tried`, `missing`, `question`, optional
+  `options`) and does not fabricate evidence. Review reads a valid blocker
+  before the proof and returns `blocked_on_decision` with the executor's own
+  question, what is missing and what was tried, plus its options or a default
+  pair. The campaign escalates with that question and the work item settles
+  `needs_decision`. An invalid blocker is a `defect` that names
+  `.foundry/blocker.json`. Without a blocker, the proof check is unchanged.
+
 ## [0.53.0] - 2026-10-16
 
 ### Fixed

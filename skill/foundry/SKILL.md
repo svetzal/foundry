@@ -318,7 +318,10 @@ Coding sessions should run verbose checks through `foundry capture -- <command>`
 It needs no daemon, keeps full stdout/stderr logs, returns the actual exit code,
 and prints a bounded failure tail. New campaign tasks must record early real
 acceptance proof in `.foundry/proof.json` before broad expansion. See the
-campaign guide for the behavioral/direct proof schema. In any task
+campaign guide for the behavioral/direct proof schema. A task that cannot
+reach the acceptance boundary (a missing capability, access or owner decision)
+records `.foundry/blocker.json` instead; review turns a valid one into a
+`blocked_on_decision` owner question, not a missing-proof defect. In any task
 worktree, `.foundry/` is Foundry scratch: nothing under it lands, except a
 deletion of a file HEAD tracks there. Finalize copies every `.foundry` file
 that did not land (new, gitignored, or an edited tracked file) to

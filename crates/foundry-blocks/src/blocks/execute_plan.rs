@@ -41,6 +41,15 @@ For a non-behavioral objective, use this exact direct shape with the smallest pa
   "corrected": {"command": "acceptance command", "exit_code": 0, "log": ".foundry/logs/corrected.log"}
 }
 Validate the file's JSON, field types, actual exit codes, and existence of each log before finishing. The reviewer must inspect this evidence.
+BLOCKED: if you cannot reach the acceptance boundary because a capability, access or owner decision is missing (for example, the objective needs an operating system, service or credential that no available host provides), do not fabricate evidence and do not write .foundry/proof.json. Record .foundry/blocker.json with this exact shape instead, then stop:
+{
+  "kind": "blocked",
+  "tried": "what was attempted",
+  "missing": "the capability, access or decision that is absent",
+  "question": "the one question for the owner",
+  "options": ["...", "..."]
+}
+tried, missing and question are non-empty strings. options is optional; when present it is an array of non-empty strings, each a concrete choice for the owner. Foundry asks the owner your question and does not run this objective again until the owner answers.
 WRITABLE REPOSITORY: this isolated worktree only; do not edit sibling checkouts, dispatch nested Foundry work, commit, or push.
 "#;
 
@@ -909,6 +918,12 @@ mod tests {
         let campaign = super::task_prompt_suffix(WorkflowType::Task, true);
         assert!(campaign.contains("files under .foundry/ are Foundry scratch"), "{campaign}");
         assert!(campaign.contains("PROOF FIRST"), "{campaign}");
+        // A campaign executor that cannot reach the boundary has a recorded
+        // way to say so instead of leaving proof absent.
+        assert!(campaign.contains("Record .foundry/blocker.json"), "{campaign}");
+        assert!(campaign.contains(r#""kind": "blocked""#), "{campaign}");
+        assert!(campaign.contains("do not fabricate evidence"), "{campaign}");
+        assert!(!standalone.contains("blocker.json"), "{standalone}");
         assert!(
             !campaign.contains("committed with your change"),
             "no prompt may say .foundry files land: {campaign}"

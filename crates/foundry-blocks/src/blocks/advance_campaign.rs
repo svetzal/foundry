@@ -2751,6 +2751,8 @@ mod tests {
 
         assert!(result.success);
         assert!(result.events.iter().any(|e| e.event_type == EventType::CampaignEscalated));
+        // The blocked objective is the owner's question, not the next cycle.
+        assert!(!result.events.iter().any(|e| e.event_type == EventType::ExecutionRequested));
         assert!(agent.invocations().is_empty());
         let stored = CampaignStore::load(&store_path).unwrap().find("c").unwrap().clone();
         assert_eq!(stored.status, CampaignStatus::Escalated);
@@ -2780,6 +2782,7 @@ mod tests {
         );
         let result = block.execute(&again).await.unwrap();
         assert!(terminal_reason(&result, &EventType::CampaignEscalated).contains("requires owner"));
+        assert!(!result.events.iter().any(|e| e.event_type == EventType::ExecutionRequested));
         let stored = CampaignStore::load(&store_path).unwrap().find("c").unwrap().clone();
         assert_eq!(stored.open_escalation.unwrap().reason, open.reason);
     }
