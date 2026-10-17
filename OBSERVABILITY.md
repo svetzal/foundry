@@ -5,9 +5,9 @@ captured as it happens, stored where the daemon can answer questions about it,
 and rolled up through blocks, work items, campaigns and initiatives so the whole
 estate reads top to bottom from one API.
 
-Status: plan for review, 2026-10-16. Nothing here is built. Every number in
-section 1 was measured on `mojility-ops-01` on 2026-10-16 unless the sentence
-says otherwise.
+Status: decisions taken 2026-10-16 (section 6); phase 0 not started. Nothing
+here is built. Every number in section 1 was measured on `mojility-ops-01` on
+2026-10-16 unless the sentence says otherwise.
 
 ## 0. Why
 
@@ -54,7 +54,7 @@ running. The `TRACEPARENT` env var is injected so a child that runs
 | --- | --- | --- | --- |
 | claude (`claude-code`) | `claude --print --output-format stream-json --verbose --session-id <id>` | `system` (init, thinking_tokens), `assistant` (per API request, with `message.usage`, `message.model`, `request_id`, `parent_tool_use_id`), `user` (tool results), `tool_progress`, `rate_limit_event`, terminal `result` | Terminal `result` only: `total_cost_usd`, `modelUsage`, cache TTL split |
 | codex | `codex exec --json -m <model> -c model_reasoning_effort=<e> -o <last>.txt -` | `thread.started` (with `thread_id`), `turn.started`, `item.started` / `item.completed` (`command_execution` with command, `aggregated_output`, `exit_code`; `agent_message`; `file_change`; `web_search`; `collab_tool_call`), `turn.completed` (with `usage`), `turn.failed`, `error` | Terminal `turn.completed` only; model from Foundry's tier hint because the stream never names it |
-| opencode | `opencode run --format json --model <m>` | JSON events, session id extracted, `opencode export` for the answer | None. Every OpenCode session is unmeasured spend |
+| opencode | `opencode run --format json --model <m>` | JSON events, session id extracted, `opencode export` for the answer | None. Every OpenCode session is unmeasured spend. Provider to be removed before phase 1 (section 6) |
 
 Line mix across the last 300 transcripts on ops-01:
 
@@ -252,21 +252,28 @@ fn finish(&mut self, exit: &SettledRun) -> SessionRollup
 
 Stateful, because both dialects split a tool call across two lines (Claude
 `tool_use` then `tool_result`; codex `item.started` then `item.completed`) and
-the adapter holds the open calls by id. Three adapters:
+the adapter holds the open calls by id. Two adapters, because OpenCode is
+removed before this work starts:
 
 - **Claude Code** (stream-json). Complete today from the stream alone.
   `--include-partial-messages` is not needed for v1 and would multiply line
   volume; `tool_progress` already gives in-flight signal.
-- **Codex** (`exec --json`). Complete for tool calls and messages; `turn`
-  usage once per exec; no model, no timestamps (Foundry stamps receive time).
-  Optional secondary source: the rollout file under `~/.codex/sessions`
-  joined on `thread_id`, read at session end, for per-response `token_count`
-  and `reasoning` items. Off by default until its fields are verified against
-  two codex versions.
-- **OpenCode**. Tool calls and messages from its JSON events; `turn` absent;
-  cost basis `unmeasured`. OpenCode has no proven writable-root enforcement
-  and no usage parser. The plan does not spend effort on it beyond keeping
-  its sessions visible. Decision for Stacey in section 6.
+- **Codex** (`exec --json` plus its rollout). The stream alone is complete
+  for tool calls and messages but gives `turn` usage once per exec, no model
+  and no timestamps (Foundry stamps receive time). That is not full support,
+  and Codex must have full support at launch. So the adapter also reads the
+  rollout file under `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, joined
+  on the `thread_id` from `thread.started`, for per-response `token_count`
+  (with `model_context_window` and rate limits), `reasoning` items, and
+  `session_meta` (cwd, cli version, model provider). The rollout is tailed
+  during the session, not read at the end, so a Codex session reports turn
+  cost as it goes the way a Claude session does. The join is a second file
+  on the same host, so the fixture set in phase 0 pins rollout fields across
+  two codex versions, and an absent or unreadable rollout degrades to the
+  stream with a `notice`, never a failure. What this adapter needs from a
+  provider's own session store, beyond its stdout stream, is the pattern a
+  fourth platform will most likely need too; its shape is kept generic
+  (`SecondarySource` with a locate-by-key and a tail) for that reason.
 
 The `AgentStreamRunner` gains a per-line observer instead of returning the
 collected `Vec<StreamedLine>`. The observer calls the adapter, appends records
@@ -398,10 +405,15 @@ reviewer checks, not what the code claims.
 
 - `contracts/activity-record-v1.json` and the record types in `foundry-sdk`
   (`activity.rs`), with serde round-trip tests.
+- Remove the OpenCode provider first, in its own commit: `AgentProvider::
+  Opencode`, `gateway/opencode.rs`, its router arm, its `agents.json` seed
+  and its book and CLI mentions. Existing events naming `opencode` stay
+  readable (the enum keeps deserializing the string for history).
 - Fixture transcripts under `crates/foundry-blocks/tests/fixtures/transcripts/`:
-  one claude and one codex session from ops-01, redacted; plus the
-  `turn.failed`, `error`, `rate_limit_event`, `permission_denials` and
-  interrupted (no terminal record) cases.
+  one claude and one codex session from ops-01, redacted, the codex one with
+  its rollout file; plus the `turn.failed`, `error`, `rate_limit_event`,
+  `permission_denials` and interrupted (no terminal record) cases, and a
+  codex session whose rollout is missing.
 - Golden normalized output for each fixture; a test that the tool-call count
   matches ops-visualizer's `Metrics` on the same files.
 
@@ -410,7 +422,7 @@ Done: the contract exists, the goldens pass, and no daemon behaviour changed.
 ### Phase 1: streaming adapters and heartbeat
 
 - `AgentStreamRunner` line observer; `TranscriptAdapter` for claude and
-  codex; opencode adapter emitting `tool_call`, `message`, `session_*` only.
+  codex, the codex one tailing its rollout as a `SecondarySource`.
 - Activity writer (append, newline repair) to
   `~/.foundry/activity/<date>/<session>.jsonl`; live channel; heartbeat task.
 - `session_ended` rollup from live records, cross-checked against
@@ -430,11 +442,16 @@ whose cost equals the current event's cost. CI passes with the fixtures.
   cursor; `Trace` by `trace_id`; `Span` disk fallback.
 - Event audit writer moved onto the write-before-publish path.
 - `foundry observe` CLI.
-- Backfill: `reindex --from-transcripts` runs the adapters over the 3,036
-  existing transcripts on ops-01 with `backfilled: true` on every record and
-  the scope recovered the way ops-visualizer recovers it today (by trace,
-  labelled `inferred`). History becomes queryable without pretending it was
-  stamped.
+- Historical import, `foundry observe import`, so nothing already on disk
+  is lost to the new layer. Three sources, each idempotent on re-run:
+  the 3,036 existing transcripts (adapters run over them, with the codex
+  rollouts where they still exist), the `~/.foundry/traces` `ProcessResult`
+  files (events and block executions back to the first dated directory), and
+  the `~/.foundry/events` JSONL back to 2026-08. Every imported record carries
+  `imported: true`, and its scope is recovered the way ops-visualizer
+  recovers it today (by trace, by position, labelled `inferred`). History
+  becomes queryable without pretending it was stamped. The import runs on
+  ops-01 once before the first retention window closes (phase 5).
 
 Done: `foundry observe tail <running work item>` on ops-01 shows commands as
 codex runs them. `foundry observe cost initiative:mojentic-3-0 --json` returns
@@ -468,17 +485,30 @@ every session, and a total that reconciles exactly with the sum of its
 leaves. The 2026-10-11 usage study's owner-wait and execution hours are
 reproduced from the API for the same window.
 
-### Phase 5: retention and the daemon's own health
+### Phase 5: retention, archive and the daemon's own health
 
-- `foundry observe prune` and a `retention` sentinel with per-store budgets
-  (proposal: transcripts and activity 90 days, traces 30 days with
-  `raw_output` dropped after 7, tool-logs 14 days, index unbounded).
+- Retention is 90 days hot for transcripts, activity and rollout copies;
+  traces 30 days with `raw_output` dropped after 7; tool-logs 14 days; the
+  index unbounded. The clock starts when phase 1 lands on ops-01, so the
+  archive below must exist before that first 90 days elapses.
+- Archive, not delete. `foundry observe prune` moves expired session files
+  (transcript, activity, rollout copy) into a dated archive tier as a
+  compressed bundle per day, and the index keeps every session's summary
+  row and cost with an `archived_at`, so aggregates never lose history and a
+  bundle can be re-imported on demand. The archive destination is the one
+  open decision (section 6): a directory under `~/.foundry/archive` on the
+  daemon host, or the bulk tier at `/srv/mojility/archive` on ops-01.
+- A `retention` sentinel runs the prune nightly after the maintenance
+  window; `foundry observe prune --dry-run` prints what it would move.
 - Daemon self-observation: the index records `Watch` lag gaps, writer
   failures and adapter parse failures as `notice` records on a `system`
   session, so the observability layer reports its own blind spots.
 
-Done: sizes on ops-01 stop growing past budget; a deliberately corrupted
-transcript line shows up as one parse notice and nothing else breaks.
+Done: sizes of the hot stores on ops-01 stop growing past budget while
+`foundry observe cost` for a month-old initiative still answers from the
+index; one archived day re-imports and its sessions reappear in
+`SessionActivity`; a deliberately corrupted transcript line shows up as one
+parse notice and nothing else breaks.
 
 ## 5. Risks
 
@@ -508,26 +538,35 @@ transcript line shows up as one parse notice and nothing else breaks.
   as the transcripts already are, lives in the same home, and never leaves
   the host over anything but the loopback or trusted-LAN gRPC endpoint.
 
-## 6. Decisions for Stacey
+## 6. Decisions
 
-Each blocks the phase named.
+Taken by Stacey on 2026-10-16, after walking the six questions the first
+draft put to her.
 
-1. **SQLite as the derived index** (phase 2), or stay with in-memory indexes
-   rebuilt at daemon start. Recommendation: SQLite, rebuildable, because the
-   questions span months and the daemon should not hold three months of
-   events in memory.
-2. **Crate placement** (phase 1). Recommendation: record types in
-   `foundry-sdk`, adapters beside the gateways in `foundry-blocks`, store and
-   RPCs in `foundryd`. A separate `foundry-observe` crate only if `foundryd`
-   grows past comfort.
-3. **OpenCode** (phase 1): keep it visible but unmeasured, or remove the
-   provider. Recommendation: keep visible, spend nothing on a usage parser.
-4. **Codex rollout as a secondary source** (phase 2): read
-   `~/.codex/sessions` for per-response token counts, or trust `turn.completed`
-   alone. Recommendation: off by default, fields verified first.
-5. **Retention budgets** (phase 5): the numbers proposed there, or others.
-6. **Interactive sessions** (3.6): in or out of Foundry's index. No
-   recommendation yet; it touches the business stream's ownership.
+1. **SQLite is the derived index.** `rusqlite` bundled, `~/.foundry/observe.db`,
+   rebuildable from the JSONL. The JSONL stays the record.
+2. **Crate placement as proposed.** Record types in `foundry-sdk`, adapters
+   beside the gateways in `foundry-blocks`, store and RPCs in `foundryd`. A
+   separate crate only if `foundryd` grows past comfort.
+3. **OpenCode is dropped for now.** The provider is removed in its own commit
+   before phase 1 (see phase 0), not kept as an unmeasured adapter. History
+   that names it stays readable.
+4. **Codex gets full support at launch.** The rollout under `~/.codex/sessions`
+   is a required secondary source, tailed live, not an optional flag. Stacey's
+   reason, beyond Codex itself: what a second platform needs from its own
+   session store is the pattern other agent platforms will need, so learning
+   it early shapes the adapter contract.
+5. **Retention is 90 days hot, with an archive before the window closes.**
+   Hot budgets as proposed in phase 5. An archival strategy must be in place
+   before the first 90 days after phase 1 lands elapse, and the layer imports
+   as much as possible of the existing trace, transcript and event history
+   (phase 2, `foundry observe import`). Open: the archive destination,
+   `~/.foundry/archive` on the daemon host or `/srv/mojility/archive` on
+   ops-01.
+6. **Interactive sessions stay with the hooks for now.** The Claude Code
+   `Stop` hook keeps reporting to the business stream. Bringing those sessions
+   into Foundry's index is deferred to a later plan; the record shape allows
+   it (section 3.6).
 
 ## 7. References
 
