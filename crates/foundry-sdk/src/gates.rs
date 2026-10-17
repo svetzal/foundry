@@ -238,7 +238,7 @@ mod tests {
     fn gate_result_without_logs_field_deserializes_empty() {
         let json = r#"{"name":"fmt","command":"cargo fmt","passed":false,"required":true,"output":"x","exit_code":1}"#;
         let restored: GateResult = serde_json::from_str(json).unwrap();
-        assert!(restored.logs.is_empty());
+        assert!(restored.logs.is_empty(), "{:?}", restored.logs);
     }
 
     #[test]

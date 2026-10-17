@@ -24,6 +24,12 @@ use tokio::sync::{Notify, broadcast};
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
+/// Upper bound for work these tests expect to finish: it only turns a hang
+/// into a failure. It is generous because the CLI runs as a subprocess, which
+/// is slow under coverage instrumentation (tarpaulin's ptrace engine) on a
+/// loaded host.
+const LIVENESS_BOUND: Duration = Duration::from_secs(60);
+
 struct Summary {
     started: Arc<Notify>,
     release: Arc<Notify>,
@@ -205,11 +211,10 @@ fn events(daemon: &Daemon) -> Vec<Event> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn project_without_actions_completes_the_cli_and_records_its_correlated_terminal() {
     let daemon = daemon().await;
-    let output =
-        tokio::time::timeout(Duration::from_secs(5), run(&daemon, true).wait_with_output())
-            .await
-            .expect("project CLI must complete")
-            .unwrap();
+    let output = tokio::time::timeout(LIVENESS_BOUND, run(&daemon, true).wait_with_output())
+        .await
+        .expect("project CLI must complete")
+        .unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let logged = events(&daemon);
     let root = logged
@@ -237,7 +242,7 @@ async fn system_cli_waits_for_the_final_notification_on_its_separate_summary_tra
     let daemon = daemon().await;
     let child = run(&daemon, false);
     let mut output = tokio::spawn(child.wait_with_output());
-    tokio::time::timeout(Duration::from_secs(5), daemon.started.notified())
+    tokio::time::timeout(LIVENESS_BOUND, daemon.started.notified())
         .await
         .expect("summary started");
     assert!(
@@ -245,7 +250,7 @@ async fn system_cli_waits_for_the_final_notification_on_its_separate_summary_tra
         "CLI must wait for summary completion"
     );
     daemon.release.notify_one();
-    let output = tokio::time::timeout(Duration::from_secs(5), output)
+    let output = tokio::time::timeout(LIVENESS_BOUND, output)
         .await
         .expect("system CLI must complete")
         .unwrap()
@@ -285,7 +290,7 @@ async fn cancelled_queued_project_has_one_failed_terminal_and_a_failing_cli() {
         .unwrap();
     let child = run(&daemon, true);
     let ledger = daemon.state.path().join("work-items.json");
-    let item = tokio::time::timeout(Duration::from_secs(5), async {
+    let item = tokio::time::timeout(LIVENESS_BOUND, async {
         loop {
             if let Some(item) = WorkItemStore::load(&ledger).unwrap().items.into_iter().next() {
                 break item;
@@ -303,13 +308,13 @@ async fn cancelled_queued_project_has_one_failed_terminal_and_a_failing_cli() {
         })
         .await
         .unwrap();
-    let output = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output())
+    let output = tokio::time::timeout(LIVENESS_BOUND, child.wait_with_output())
         .await
         .expect("cancelled CLI stops")
         .unwrap();
     assert!(!output.status.success());
     let traces = TraceWriter::new(daemon.state.path().join("traces").to_str().unwrap());
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(LIVENESS_BOUND, async {
         while traces.read(&root_id).is_none() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

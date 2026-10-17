@@ -157,7 +157,8 @@ mod tests {
         assert_eq!(shares[0], 5);
         assert!(shares[1..].iter().all(|&s| s >= 31));
         assert!(shares.iter().sum::<usize>() <= 100);
-        assert!(share_budget(&[], 100).is_empty());
+        let shares = share_budget(&[], 100);
+        assert!(shares.is_empty(), "{shares:?}");
     }
 
     #[test]
