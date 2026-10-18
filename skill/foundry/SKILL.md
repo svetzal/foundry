@@ -20,7 +20,7 @@ compatibility:
   Requires foundryd daemon running locally (Rust binary, gRPC on
   127.0.0.1:50051)
 metadata:
-  version: "0.54.1"
+  version: "0.55.0"
   author: Stacey Vetzal
 ---
 
@@ -316,9 +316,17 @@ or unpriced spend, landed cycles, and external repairs.
 
 Coding sessions should run verbose checks through `foundry capture -- <command>`.
 It needs no daemon, keeps full stdout/stderr logs, returns the actual exit code,
-and prints a bounded failure tail. New campaign tasks must record early real
-acceptance proof in `.foundry/proof.json` before broad expansion. See the
-campaign guide for the behavioral/direct proof schema. A task that cannot
+and prints a bounded failure tail. New campaign tasks must record early
+acceptance proof, through the project's public API, in `.foundry/proof.json`
+before broad expansion. See the campaign guide for the behavioral/direct proof
+schema. Formation, execution, review and steering share one test-design rule:
+the boundary a test proves is the public API, not a real network. Unit and
+library tests use in-process doubles at the I/O boundary (a stub transport, a
+fake gateway, an injected clock and sleeper), never real sockets, local
+servers, external services, wall-clock assertions or real sleeps. A double at
+the gateway or transport boundary is valid proof; mocking library internals is
+not. Only a suite the project's own AGENTS.md or gate file designates as
+integration or end-to-end keeps real infrastructure. A task that cannot
 reach the acceptance boundary (a missing capability, access or owner decision)
 records `.foundry/blocker.json` instead; review turns a valid one into a
 `blocked_on_decision` owner question, not a missing-proof defect. In any task
@@ -1113,7 +1121,10 @@ provider and consumer verification of the same versioned executable contract
 set in each project's required gates.
 Cover relevant errors, optional fields and supported versions.
 Retain the contract version or hash, tested commits and both verification results.
-Independent mocks or matching schemas alone do not prove compatibility.
+Matching schemas, or mocks each side writes independently of the other, do not
+prove that two services agree; derive cross-service test doubles from the
+verified contract set. A boundary double inside one repository is still valid
+proof.
 Coordinate missing verification through the initiative within authorized repositories.
 Integration gates also check wiring and the user's full journey.
 The initiative reminder is agent guidance.
