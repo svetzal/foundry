@@ -296,7 +296,10 @@ fn invoke_claude(project_dir: &Path, context: &str) -> Result<String> {
         .arg("-p")
         .arg(&prompt)
         .current_dir(project_dir)
-        .env("CLAUDE_CODE", "");
+        .env("CLAUDE_CODE", "")
+        // One headless turn: nothing may run in the background and end the
+        // turn waiting for it (the same setting Foundry's Claude gateway uses).
+        .env("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "1");
     // Forward TRACEPARENT from the CLI's environment to the spawned child so
     // distributed tracing context propagates when this CLI is invoked by a
     // foundryd block (which sets TRACEPARENT). No-op when invoked manually.

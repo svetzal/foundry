@@ -8,6 +8,7 @@ use crate::gateway::{
     AgentAccess, AgentGateway, AgentRequest, ModelTier, ReasoningEffort, ShellGateway,
 };
 
+mod checkout_report;
 mod cut_release;
 mod execute_release;
 mod tag_verify;
@@ -81,6 +82,9 @@ pub(super) struct ReleaseOutput {
     pub summary: String,
     pub raw_output: Option<String>,
     pub exit_code: Option<i32>,
+    /// Paths a failed release left uncommitted that were clean when it
+    /// started, relative to the repository root. Empty on success.
+    pub left_uncommitted: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +123,20 @@ pub(super) fn release_completed_event(
     Event::new(EventType::ReleaseCompleted, project.to_string(), throttle, payload)
 }
 
+/// Add `left_uncommitted` to a `ReleaseCompleted` event built by
+/// [`release_completed_event`].
+///
+/// The key is omitted when `paths` is empty, so a successful release and a
+/// failure that left nothing behind keep the existing payload shape.
+pub(super) fn with_left_uncommitted(mut event: Event, paths: &[String]) -> Event {
+    if !paths.is_empty()
+        && let Some(obj) = event.payload.as_object_mut()
+    {
+        obj.insert("left_uncommitted".to_string(), serde_json::json!(paths));
+    }
+    event
+}
+
 // ---------------------------------------------------------------------------
 // Shared release runner
 // ---------------------------------------------------------------------------
@@ -126,10 +144,20 @@ pub(super) fn release_completed_event(
 /// Generous timeout for Claude CLI — release tasks can take several minutes.
 const CLAUDE_TIMEOUT: Duration = Duration::from_secs(900);
 
+/// Release prompt sentence that keeps the agent's work inside its one turn.
+///
+/// The gateway disables background tasks outright; this sentence is the
+/// belt-and-braces half, so the agent plans for it rather than discovering it.
+pub(super) const FOREGROUND_INSTRUCTION: &str = "This is a single non-interactive turn: run the \
+     quality gates to completion in the foreground, passing a Bash timeout long enough for them, \
+     and do not end your turn waiting on anything.";
+
 /// Invoke the Claude agent for a release and return structured output.
 ///
 /// Verifies `AGENTS.md` exists, builds the agent request, invokes the agent,
-/// and verifies the tag points at HEAD.
+/// and verifies the tag points at HEAD. When the release fails, the summary
+/// also names what it left in the checkout (see `checkout_report`); the
+/// checkout itself is never cleaned.
 ///
 /// Returns `Err` if `AGENTS.md` is missing — callers convert this to a failure result.
 pub(super) async fn run_release(
@@ -162,11 +190,20 @@ pub(super) async fn run_release(
         requires_json: false,
     };
 
+    // The release runs in the registered checkout, so a failure can strand its
+    // edits there. Record what was already dirty to tell the two apart.
+    let before = match checkout_report::probe(project_dir, shell).await {
+        Some(checkout) => checkout_report::snapshot(project_dir, shell)
+            .await
+            .map(|state| (checkout, state)),
+        None => None,
+    };
+
     let run_result = agent.invoke(&request).await;
     let (raw_output, exit_code) = agent_run_metadata(&run_result);
     let (cli_success, new_tag, cli_summary) = interpret_agent_result(run_result);
 
-    let (success, summary) = tag_verify::check_tag_at_head(
+    let (success, mut summary) = tag_verify::check_tag_at_head(
         cli_success,
         new_tag.as_deref(),
         cli_summary,
@@ -174,6 +211,19 @@ pub(super) async fn run_release(
         shell,
     )
     .await;
+
+    let mut left_uncommitted = Vec::new();
+    if !success
+        && let Some((checkout, before)) = before
+        && let Some(after) = checkout_report::snapshot(project_dir, shell).await
+    {
+        let leftovers = checkout_report::leftovers(&before, &after);
+        if let Some(sentences) = checkout_report::describe(&checkout, &leftovers) {
+            tracing::warn!(checkout = %checkout.display(), %sentences, "failed release left work in the checkout");
+            summary = checkout_report::append_to_summary(&summary, &sentences);
+        }
+        left_uncommitted = leftovers.left;
+    }
 
     tracing::info!(
         new_tag = new_tag.as_deref().unwrap_or("(not detected)"),
@@ -187,6 +237,7 @@ pub(super) async fn run_release(
         summary,
         raw_output,
         exit_code,
+        left_uncommitted,
     })
 }
 

@@ -359,6 +359,24 @@ reference a project agent file pass it via `--agent`. Timeouts are set
 per-project from the registry entry, except Triage and Summarisation which
 use a fixed 120-second timeout for their lightweight Quick calls.
 
+A Claude invocation is one non-interactive turn, so nothing it starts can
+continue after the turn ends. Foundry sets these for every Claude run:
+
+- `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`. Claude Code cannot run a Bash
+  command or a subagent in the background, and it does not move a slow command
+  to the background.
+- `BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS`, both set to the
+  session's timeout. A long gate run can use the whole session budget in the
+  foreground. Foundry's stream timeout still stops the session. A session with
+  no timeout keeps Claude Code's defaults.
+- On a full-access run, `--disallowedTools
+  Monitor,ScheduleWakeup,CronCreate,CronDelete,CronList`. These tools schedule
+  work for later and remain available when background tasks are off. A bounded
+  run already excludes them with its `--tools` allowlist.
+
+An environment variable that a block sets on the request replaces the value
+Foundry sets. The JSON recovery turn (`--resume`) keeps the same settings.
+
 ## Payload Fields
 
 | Field | Carried By | Purpose |
