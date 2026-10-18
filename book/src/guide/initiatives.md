@@ -274,7 +274,9 @@ it is never silently dropped.
 Open the Sources page in ops-visualizer to review initiatives above campaigns.
 Each initiative shows its outcome, member results and integration evidence.
 Each shared question shows its age and applicable members.
-Use its decision form to answer those members, or use the CLI below.
+Use the CLI below to answer an exact question.
+Dashboard clients must use `RecordInitiativeDecision` with its ID in `question_ids`.
+Older clients can still record policy, but cannot implicitly answer questions.
 
 The dashboard keeps your draft and member selection when live results arrive.
 If the daemon refuses a decision, the form shows its reason and retains your draft.
@@ -282,6 +284,7 @@ If the daemon refuses a decision, the form shows its reason and retains your dra
 A decision applies to every member that can still act, unless `--member`
 selects a subset. It reaches staged, active, paused and escalated members.
 It skips completed and cancelled members, as `campaign decide` refuses them.
+
 If `--member` names a completed or cancelled member, Foundry refuses the whole
 decision and records nothing. The refusal names each such member.
 If no member can still act, Foundry records the decision on the initiative only.
@@ -294,9 +297,52 @@ foundry initiative decide shared-contract \
 ```
 
 Foundry records the decision on the initiative and each applicable campaign.
-It closes the questions that decision answers for those members. Formation
+Without `--question`, the decision answers no questions. Formation
 that was running when the decision arrived discards its stale outcome and
 forms again from the current record. It does not overwrite the decision.
+
+### Answer a specific question
+
+Read `initiative show` to find the question ID.
+Use `--question` to select it explicitly:
+
+```bash
+foundry initiative show shared-contract
+foundry initiative decide shared-contract --question question_abc123 \
+  --decision "Use port 5001"
+```
+
+Repeat `--question` to answer several questions with one decision.
+Without `--member`, the answer applies to the selected questions' members.
+Use `--member` to answer for only some of those members.
+Other questions remain open, including questions for the same member.
+Their IDs and original ages stay unchanged.
+
+You can also answer deferred questions directly by ID.
+Foundry refuses unknown IDs or unrelated member selections without changing state.
+
+A member with another unanswered question stays blocked.
+A policy decision or budget grant alone does not answer its questions.
+Existing callers must supply question IDs when they intend to answer.
+Updated CLI decisions use `RecordInitiativeDecision` for both policy and answers.
+An older daemon refuses that RPC without changing state.
+The CLI never falls back to the older decision RPC.
+
+### Record a status note
+
+Use a note for an observation about work already done:
+
+```bash
+foundry initiative note shared-contract --text "Mac verification landed; CI passed"
+foundry initiative note shared-contract --text "Waiting for the current build" --json
+```
+
+Notes are durable observations, separate from binding owner decisions.
+They appear in `initiative show` and later assessment context.
+Recording a note does not answer questions, resume campaigns, release holds,
+change budgets, or request a steering pass.
+Notes do not invalidate an outcome proposal's policy evidence.
+Use the appropriate control command to change authority or work state.
 
 Use `--add-cycles N` with `initiative decide` to authorize more shared cycles.
 When the shared budget is spent, `initiative decide` without `--add-cycles` is

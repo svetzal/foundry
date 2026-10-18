@@ -248,6 +248,7 @@ fn derived_definition(
         providers: crate::gateway::StageProviders::default(),
         status: InitiativeStatus::Staged,
         owner_decisions: vec![],
+        status_notes: vec![],
         open_questions: vec![],
         deferred_questions: vec![],
         derive_source: None,

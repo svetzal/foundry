@@ -7,6 +7,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Initiative decisions answer only explicitly selected question IDs through
+  `decide --question <id>` and `RecordInitiativeDecision` with `question_ids`.
+  A policy decision without question IDs preserves every question. Answering one
+  question preserves unrelated questions, including those for the same member,
+  and members with unanswered questions stay blocked. Open and deferred IDs
+  appear in `initiative show`. Existing clients must pass IDs to answer.
+  Updated CLI decisions use a distinct RPC so older daemons reject them
+  without falling back to member-wide question clearing.
+
+### Added
+
+- `initiative note <name> --text "<status>"` and `RecordInitiativeStatus`
+  record durable observations separately from binding owner decisions.
+  Notes appear in reads and assessment context. They do not answer questions,
+  resume work, release holds, change budgets, or request steering.
+
 ## [0.53.1] - 2026-10-17
 
 ### Changed

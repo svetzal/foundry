@@ -2128,8 +2128,16 @@ async fn apply_unless_changed(
             ));
         }
     };
-    let context_changed = serde_json::to_value(&current_context).ok()
-        != serde_json::to_value(&record.initiative_context).ok();
+    // Observations do not change authority or invalidate an in-flight assessment.
+    let policy_context = |context: &Option<foundry_sdk::initiative::InitiativeContext>| {
+        let mut context = context.clone();
+        if let Some(context) = &mut context {
+            context.status_notes.clear();
+        }
+        serde_json::to_value(context).ok()
+    };
+    let context_changed =
+        policy_context(&current_context) != policy_context(&record.initiative_context);
     if context_changed {
         return Applied::Changed;
     }

@@ -27,9 +27,9 @@ impl CampaignStore {
                 events.push(attention_event(
                     format!("initiative-question-{}", question.id),
                     "initiative_question_overdue", now,
-                    format!("Initiative '{}' waits on its owner for {} hours: {} (members: {}). Answer with foundry initiative decide {} --decision '<answer>'{}",
+                    format!("Initiative '{}' waits on its owner for {} hours: {} (members: {}). Answer with foundry initiative decide {} --decision '<answer>' --question {}{}",
                         initiative.name, now.signed_duration_since(question.opened_at).num_hours(),
-                        question.question, question.members.join(", "), initiative.name,
+                        question.question, question.members.join(", "), initiative.name, question.id,
                         question.members.iter().fold(String::new(), |mut args, member| { let _ = write!(args, " --member {member}"); args })),
                 ));
             }
@@ -134,7 +134,8 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, "initiative_question_overdue");
         assert!(events[0].summary.as_ref().unwrap().contains("--member one --member two"));
-        store.decide_initiative("sample", "Use v1", &[], now).unwrap();
+        let id = store.initiative_view("sample").unwrap().open_questions[0].id.clone();
+        store.decide_initiative_answering("sample", "Use v1", &[], &[id], now).unwrap();
         assert!(
             store
                 .initiative_attention_events(&WorkItemStore::default(), now + Duration::days(2))

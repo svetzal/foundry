@@ -413,6 +413,7 @@ fn control_event(kind: &EventType) -> bool {
             | EventType::AgentSessionEnded
             | EventType::InitiativeAdded
             | EventType::InitiativeDecided
+            | EventType::InitiativeStatusRecorded
             | EventType::InitiativeCompleted
             | EventType::InitiativeCancelled
             | EventType::InitiativeSteered

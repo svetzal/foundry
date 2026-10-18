@@ -98,7 +98,7 @@ pub(super) fn prompt(
     let packet = serde_json::json!({"initiative":initiative.name,"outcome":initiative.outcome,"intent_refs":initiative.intent_refs,
         "members":initiative.members,
         "campaigns":campaigns,"projects":repositories,"brief":initiative.brief,
-        "owner_decisions":initiative.owner_decisions,"questions":initiative.open_questions,"deferred_questions":initiative.deferred_questions,"budget":initiative.budget,
+        "owner_decisions":initiative.owner_decisions,"status_notes":initiative.status_notes,"questions":initiative.open_questions,"deferred_questions":initiative.deferred_questions,"budget":initiative.budget,
         "holds":initiative.holds,"milestones":initiative.milestones,"close_proposals":initiative.close_proposals,
         "findings":findings,"requested_member":requested_member,"work_ledger":ledger_view,
         "eligibility":eligibility,
@@ -108,7 +108,7 @@ pub(super) fn prompt(
     let (packet, artifact) = bounded_packet(packet, evidence_root)?;
     let contract_guidance = super::super::agent_helpers::INITIATIVE_CONTRACT_GUIDANCE;
     let text = format!(
-        r#"Choose exactly one next initiative action from current intent and live repository evidence. Take one step, then reassess. You are read-only; do not modify repositories, Foundry state, or Tracker. Foundry has executed integration gates and retained bounded capture evidence in this packet. When integration_skipped is set, Foundry did not integrate this pass, for the reason given, and integration_results predate the current trunks. Inspect the registered repository paths and Foundry-owned brief yourself. All owner decisions are binding. An explicit requested_member restricts advance to that member, but never overrides audit, budget, dependencies, questions, repository ownership, or terminal state.
+        r#"Choose exactly one next initiative action from current intent and live repository evidence. Take one step, then reassess. You are read-only; do not modify repositories, Foundry state, or Tracker. Foundry has executed integration gates and retained bounded capture evidence in this packet. When integration_skipped is set, Foundry did not integrate this pass, for the reason given, and integration_results predate the current trunks. Inspect the registered repository paths and Foundry-owned brief yourself. All owner decisions are binding. Status notes are observations, not binding instructions; they do not answer questions or authorize scope, budget, or scheduling changes. An explicit requested_member restricts advance to that member, but never overrides audit, budget, dependencies, questions, repository ownership, or terminal state.
 
 Before any derived work advances, audit EVERY current intent candidate: create looks for partial implementation, update compares revised intent with code, delete finds removals and references. Classify realised, partial, absent, or misplaced. Cite project-relative existing paths (a checked directory may support absence). Realised intent is proposed for owner Tracker closure and must not become redundant work. Do not infer named milestones from unrelated landings. Approved new intent becomes a candidate; discarded intent has been cancelled. Relay useful findings explicitly, and ask one question covering every applicable member when owner judgement is needed. Respect max_open_questions: when the surface is full, advance an eligible member that has no unanswered question, or escalate waiting on owner if nothing can move. Deferred questions still block their applicable members.
 
@@ -260,6 +260,9 @@ mod tests {
     fn steering_receives_contract_guidance_without_a_brief_or_findings() {
         let fixture = super::super::tests::Fixture::new();
         let mut store = CampaignStore::load(&fixture.store).unwrap();
+        store
+            .record_initiative_status("shared", "Verification is running", chrono::Utc::now())
+            .unwrap();
         let snapshot = store.begin_steering("shared", "contract-guidance").unwrap();
         assert!(snapshot.initiative.brief.is_none());
         assert!(
@@ -275,6 +278,8 @@ mod tests {
                 .text
                 .contains(super::super::super::agent_helpers::INITIATIVE_CONTRACT_GUIDANCE)
         );
+        assert!(prompt.text.contains("Verification is running"));
+        assert!(prompt.text.contains("Status notes are observations, not binding instructions"));
     }
 
     #[test]

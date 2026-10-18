@@ -282,7 +282,20 @@ fn decision_on_a_spent_shared_budget_requires_more_cycles() {
     assert_eq!(serde_json::to_string(&store).unwrap(), before, "a refusal changes nothing");
 
     store
-        .decide_initiative_with_budget("shared", "Finish the migration", &[], 3, Utc::now())
+        .decide_initiative_answering_with_budget(
+            "shared",
+            "Finish the migration",
+            &[],
+            &store
+                .initiative_view("shared")
+                .unwrap()
+                .open_questions
+                .iter()
+                .map(|question| question.id.clone())
+                .collect::<Vec<_>>(),
+            3,
+            Utc::now(),
+        )
         .unwrap();
     assert_eq!(store.find("one").unwrap().status, CampaignStatus::Active);
     assert_eq!(store.find_initiative("shared").unwrap().owner_decisions.len(), 1);
@@ -542,7 +555,21 @@ fn configured_pairings_alternate_on_work_actions_and_preserve_legacy_inheritance
     )
     .unwrap();
     store.finish_steering_action("shared", "question").unwrap();
-    store.decide_initiative("shared", "Proceed", &[], Utc::now()).unwrap();
+    store
+        .decide_initiative_answering(
+            "shared",
+            "Proceed",
+            &[],
+            &store
+                .initiative_view("shared")
+                .unwrap()
+                .open_questions
+                .iter()
+                .map(|question| question.id.clone())
+                .collect::<Vec<_>>(),
+            Utc::now(),
+        )
+        .unwrap();
     let second = commit(
         &mut store,
         "second",
@@ -1183,4 +1210,28 @@ fn a_cancelled_work_item_releases_only_the_reservation_it_held() {
         "nothing left to release"
     );
     store.enforce_member_eligibility("shared", "one", &[]).unwrap();
+}
+
+#[test]
+fn a_status_note_does_not_invalidate_an_inflight_assessment_or_grant_authority() {
+    let mut store = store();
+    let snapshot = store.begin_steering("shared", "steer-note").unwrap();
+    store
+        .record_initiative_status("shared", "The verification worker is running", Utc::now())
+        .unwrap();
+    store.validate_steering(&snapshot).unwrap();
+    assert!(store.find_initiative("shared").unwrap().owner_decisions.is_empty());
+    store
+        .commit_steering(
+            &snapshot,
+            "steer-note",
+            SteeringDecision::Wait {
+                reason: "Await verification".into(),
+            },
+            vec![],
+            "Assessment retained".into(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(store.find_initiative("shared").unwrap().status_notes.len(), 1);
 }

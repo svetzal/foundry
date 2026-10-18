@@ -64,10 +64,29 @@ pub(super) fn to_proto(store: &CampaignStore, initiative: &Initiative) -> proto:
                 authorized_by: decision.authorized_by.clone(),
                 decided_at: decision.decided_at.to_rfc3339(),
                 members: decision.members.clone(),
+                question_ids: decision.question_ids.clone(),
             })
             .collect(),
         open_questions: initiative
             .open_questions
+            .iter()
+            .map(|question| proto::InitiativeQuestion {
+                id: question.id.clone(),
+                question: question.question.clone(),
+                members: question.members.clone(),
+                opened_at: question.opened_at.to_rfc3339(),
+            })
+            .collect(),
+        status_notes: initiative
+            .status_notes
+            .iter()
+            .map(|note| proto::InitiativeStatusNote {
+                text: note.text.clone(),
+                recorded_at: note.recorded_at.to_rfc3339(),
+            })
+            .collect(),
+        deferred_questions: initiative
+            .deferred_questions
             .iter()
             .map(|question| proto::InitiativeQuestion {
                 id: question.id.clone(),
@@ -429,12 +448,32 @@ pub(super) fn decide(
     decision: &str,
     members: &[String],
     add_cycles: u64,
+    question_ids: &[String],
 ) -> Result<proto::Initiative, Status> {
     let mut guard = lock(path)?;
     guard
         .store
-        .decide_initiative_with_budget(name, decision, members, add_cycles, Utc::now())
+        .decide_initiative_answering_with_budget(
+            name,
+            decision,
+            members,
+            question_ids,
+            add_cycles,
+            Utc::now(),
+        )
         .map_err(error)?;
+    guard.save().map_err(|error| Status::internal(error.to_string()))?;
+    let view = guard.store.initiative_view(name).map_err(error)?;
+    Ok(to_proto(&guard.store, &view))
+}
+
+pub(super) fn record_status(
+    path: &Path,
+    name: &str,
+    text: &str,
+) -> Result<proto::Initiative, Status> {
+    let mut guard = lock(path)?;
+    guard.store.record_initiative_status(name, text, Utc::now()).map_err(error)?;
     guard.save().map_err(|error| Status::internal(error.to_string()))?;
     let view = guard.store.initiative_view(name).map_err(error)?;
     Ok(to_proto(&guard.store, &view))
@@ -533,7 +572,7 @@ mod tests {
         let path = dir.path().join("campaigns.json");
         let result = add(&path, &["sample".into()], &definition()).unwrap();
         assert_eq!(result.name, "test");
-        let result = decide(&path, "test", "Use the current contract", &[], 0).unwrap();
+        let result = decide(&path, "test", "Use the current contract", &[], 0, &[]).unwrap();
         assert_eq!(result.owner_decisions[0].decision, "Use the current contract");
         assert_eq!(get(&path, "test").unwrap().owner_decisions, result.owner_decisions);
     }
@@ -582,7 +621,7 @@ mod tests {
         let before = std::fs::read(&path).unwrap();
         std::fs::create_dir(path.with_extension("json.tmp")).unwrap();
         assert_eq!(
-            decide(&path, "test", "Answer", &[], 0).unwrap_err().code(),
+            decide(&path, "test", "Answer", &[], 0, &[]).unwrap_err().code(),
             tonic::Code::Internal
         );
         assert_eq!(std::fs::read(&path).unwrap(), before);
@@ -599,7 +638,7 @@ mod tests {
             tonic::Code::AlreadyExists
         );
         assert_eq!(
-            decide(&path, "test", " ", &[], 0).unwrap_err().code(),
+            decide(&path, "test", " ", &[], 0, &[]).unwrap_err().code(),
             tonic::Code::InvalidArgument
         );
     }

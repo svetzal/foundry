@@ -10,6 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".foundry.InitiativeEvidence",
         ".foundry.InitiativeDecision",
         ".foundry.InitiativeQuestion",
+        ".foundry.InitiativeStatusNote",
         ".foundry.Initiative",
         ".foundry.FindingSource",
         ".foundry.FindingConsumption",

@@ -712,9 +712,17 @@ mod tests {
             );
         }
         let mut guard = foundry_sdk::campaign::CampaignStore::lock_exclusive(&campaigns).unwrap();
+        let question_id =
+            guard.store.initiative_view("attention").unwrap().open_questions[0].id.clone();
         guard
             .store
-            .decide_initiative("attention", "Use v1", &[], chrono::Utc::now())
+            .decide_initiative_answering(
+                "attention",
+                "Use v1",
+                &[],
+                &[question_id],
+                chrono::Utc::now(),
+            )
             .unwrap();
         guard.save().unwrap();
         drop(guard);

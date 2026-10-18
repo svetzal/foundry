@@ -378,3 +378,11 @@ work item `cancelled` with the guard's reason; only `failed` settles `failed`. A
 only successful owner-confirmed completion emits `InitiativeCompleted`.
 Tracker closure receipts are exposed by typed initiative reads and retained
 for retry after a partial failure.
+
+### Initiative status notes
+
+`initiative_status_recorded` records a durable, nonbinding observation.
+It carries the initiative name and the status note, with its text and time.
+It does not request steering or change questions, budgets, holds or campaigns.
+`initiative_decided` records binding policy and the explicit `question_ids`
+answered by that decision. An empty list means no questions were answered.

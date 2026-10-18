@@ -100,14 +100,20 @@ fn validates_projects_members_and_single_ownership_without_partial_changes() {
 }
 
 #[test]
-fn decision_fans_out_to_active_members_and_closes_only_applicable_questions() {
+fn explicit_answer_fans_out_and_closes_only_selected_members() {
     let mut store = store();
     store.find_mut("one").unwrap().status = CampaignStatus::Active;
     store
         .record_question("sample", "Which behavior first?", &["one".into(), "two".into()])
         .unwrap();
     store
-        .decide_initiative("sample", "One first", &["one".into()], chrono::Utc::now())
+        .decide_initiative_answering(
+            "sample",
+            "One first",
+            &["one".into()],
+            &question_ids(&store, "sample"),
+            chrono::Utc::now(),
+        )
         .unwrap();
     assert_eq!(store.find("one").unwrap().owner_decisions.len(), 1);
     assert!(
@@ -116,7 +122,15 @@ fn decision_fans_out_to_active_members_and_closes_only_applicable_questions() {
         store.find("two").unwrap().owner_decisions
     );
     assert_eq!(store.find_initiative("sample").unwrap().open_questions[0].members, ["two"]);
-    store.decide_initiative("sample", "Proceed", &[], chrono::Utc::now()).unwrap();
+    store
+        .decide_initiative_answering(
+            "sample",
+            "Proceed",
+            &[],
+            &question_ids(&store, "sample"),
+            chrono::Utc::now(),
+        )
+        .unwrap();
     assert!(
         store.find_initiative("sample").unwrap().open_questions.is_empty(),
         "expected `store.find_initiative(\"sample\").unwrap().open_questions` to be empty: {:?}",
@@ -180,7 +194,15 @@ fn question_deduplication_and_budget_are_enforced() {
     assert_eq!(store.find_initiative("sample").unwrap().open_questions.len(), 1);
     assert!(store.record_question("sample", "Another", &[]).is_err());
     assert!(store.enforce_can_advance("one", &[]).is_err());
-    store.decide_initiative("sample", "Proceed", &[], chrono::Utc::now()).unwrap();
+    store
+        .decide_initiative_answering(
+            "sample",
+            "Proceed",
+            &[],
+            &question_ids(&store, "sample"),
+            chrono::Utc::now(),
+        )
+        .unwrap();
     assert!(store.enforce_can_advance("one", &["one".into(), "two".into()]).is_ok());
     store.find_initiative_mut("sample").unwrap().budget.max_active_members = 1;
     assert!(store.enforce_can_advance("one", &["two".into()]).is_err());
@@ -415,7 +437,13 @@ fn shared_question_keeps_its_original_age_after_one_member_is_answered_and_resta
     store.refresh_questions("sample").unwrap();
     let question = store.find_initiative("sample").unwrap().open_questions[0].clone();
     store
-        .decide_initiative("sample", "Use v1", &["one".into()], Utc::now())
+        .decide_initiative_answering(
+            "sample",
+            "Use v1",
+            &["one".into()],
+            &question_ids(&store, "sample"),
+            Utc::now(),
+        )
         .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("campaigns.json");
@@ -476,7 +504,13 @@ fn required_task_question_waits_for_a_slot_and_still_blocks_its_member() {
     assert_eq!(store.initiative_view("sample").unwrap().deferred_questions[0], queued);
     assert!(store.enforce_can_form("two", &[]).is_err());
     store
-        .decide_initiative("sample", "One may proceed", &["one".into()], Utc::now())
+        .decide_initiative_answering(
+            "sample",
+            "One may proceed",
+            &["one".into()],
+            &question_ids(&store, "sample")[..1],
+            Utc::now(),
+        )
         .unwrap();
     let view = store.initiative_view("sample").unwrap();
     assert_eq!(view.open_questions, [queued]);
@@ -507,7 +541,13 @@ fn partial_answer_preserves_oldest_member_age_even_before_the_first_saved_refres
         });
     }
     store
-        .decide_initiative("sample", "One uses v1", &["one".into()], Utc::now())
+        .decide_initiative_answering(
+            "sample",
+            "One uses v1",
+            &["one".into()],
+            &question_ids(&store, "sample"),
+            Utc::now(),
+        )
         .unwrap();
     assert_eq!(store.initiative_view("sample").unwrap().open_questions[0].opened_at, oldest);
 }
@@ -519,7 +559,15 @@ fn fully_answered_question_reappears_with_a_new_age() {
     store.find_initiative_mut("sample").unwrap().open_questions[0].opened_at =
         Utc::now() - chrono::Duration::days(3);
     let original = store.initiative_view("sample").unwrap().open_questions[0].clone();
-    store.decide_initiative("sample", "Use v1", &[], Utc::now()).unwrap();
+    store
+        .decide_initiative_answering(
+            "sample",
+            "Use v1",
+            &[],
+            &question_ids(&store, "sample"),
+            Utc::now(),
+        )
+        .unwrap();
     let reopened = store.record_question("sample", "Which API?", &[]).unwrap();
     assert_eq!(reopened.id, original.id);
     assert!(reopened.opened_at > original.opened_at + chrono::Duration::days(2));
@@ -531,7 +579,15 @@ fn decision_fans_out_only_to_members_that_can_still_act() {
         let mut store = store();
         store.find_mut("two").unwrap().status = ended;
 
-        let record = store.decide_initiative("sample", "Proceed", &[], chrono::Utc::now()).unwrap();
+        let record = store
+            .decide_initiative_answering(
+                "sample",
+                "Proceed",
+                &[],
+                &question_ids(&store, "sample"),
+                chrono::Utc::now(),
+            )
+            .unwrap();
 
         assert_eq!(record.members, ["one"], "{ended:?}");
         assert_eq!(store.find("one").unwrap().owner_decisions.len(), 1);
@@ -588,4 +644,179 @@ fn a_decision_with_no_member_left_to_act_records_on_the_initiative_only() {
         budgets,
         "a terminal member's budget is left alone"
     );
+}
+
+fn question_ids(store: &CampaignStore, name: &str) -> Vec<String> {
+    let view = store.initiative_view(name).unwrap();
+    view.open_questions
+        .iter()
+        .chain(&view.deferred_questions)
+        .map(|question| question.id.clone())
+        .collect()
+}
+
+#[test]
+fn policy_decision_preserves_unrelated_questions_even_for_the_same_member() {
+    let mut store = store();
+    store.find_initiative_mut("sample").unwrap().budget.max_open_questions = 1;
+    let first = store.record_question("sample", "Which API?", &["one".into()]).unwrap();
+    let deferred = store
+        .record_required_question("sample", "Which retry policy?", &["one".into()])
+        .unwrap();
+    let before = store.initiative_view("sample").unwrap();
+    store
+        .decide_initiative("sample", "Keep the public API stable", &["one".into()], Utc::now())
+        .unwrap();
+    let policy = store.initiative_view("sample").unwrap();
+    assert_eq!(policy.open_questions, before.open_questions);
+    assert_eq!(policy.deferred_questions, before.deferred_questions);
+    assert!(policy.owner_decisions[0].question_ids.is_empty());
+    store
+        .decide_initiative_answering(
+            "sample",
+            "Use retry v2",
+            &[],
+            &[deferred.id.clone(), deferred.id],
+            Utc::now(),
+        )
+        .unwrap();
+    let answered = store.initiative_view("sample").unwrap();
+    assert_eq!(answered.open_questions, [first]);
+    assert!(answered.deferred_questions.is_empty());
+    assert_eq!(answered.owner_decisions[1].question_ids.len(), 1);
+    assert!(store.enforce_can_form("one", &[]).is_err());
+}
+
+#[test]
+fn answering_a_manual_question_never_clears_a_different_member_escalation() {
+    let mut store = store();
+    let manual = store.record_question("sample", "Which retry policy?", &["one".into()]).unwrap();
+    let at = Utc::now();
+    let member = store.find_mut("one").unwrap();
+    member.status = CampaignStatus::Escalated;
+    member.open_escalation = Some(crate::campaign::CampaignEscalation {
+        reason: "Choose API".into(),
+        question: Some("Which API?".into()),
+        escalated_at: at,
+        cycles_completed: 0,
+        cycles_landed: 0,
+        choices: vec![],
+        from_event_log: false,
+    });
+    let original = store.find("one").unwrap().open_escalation.clone();
+    store.decide_initiative("sample", "Preserve the public API", &[], at).unwrap();
+    assert_eq!(store.find("one").unwrap().status, CampaignStatus::Escalated);
+    assert_eq!(store.initiative_view("sample").unwrap().open_questions.len(), 2);
+    store
+        .decide_initiative_answering("sample", "Use retry v2", &[], &[manual.id], at)
+        .unwrap();
+    assert_eq!(store.find("one").unwrap().status, CampaignStatus::Escalated);
+    assert_eq!(
+        serde_json::to_value(&store.find("one").unwrap().open_escalation).unwrap(),
+        serde_json::to_value(original).unwrap()
+    );
+    let api = store.initiative_view("sample").unwrap().open_questions[0].clone();
+    assert_eq!(api.question, "Which API?");
+    store
+        .decide_initiative_answering("sample", "Use API v1", &[], &[api.id], at)
+        .unwrap();
+    assert_eq!(store.find("one").unwrap().status, CampaignStatus::Active);
+    assert!(store.initiative_view("sample").unwrap().open_questions.is_empty());
+}
+
+#[test]
+fn answering_escalation_keeps_other_questions_blocking_without_recreating_it() {
+    let mut store = store();
+    let manual = store.record_question("sample", "Which retry policy?", &["one".into()]).unwrap();
+    let at = Utc::now();
+    let member = store.find_mut("one").unwrap();
+    member.status = CampaignStatus::Escalated;
+    member.open_escalation = Some(crate::campaign::CampaignEscalation {
+        reason: "Choose API".into(),
+        question: Some("Which API?".into()),
+        escalated_at: at,
+        cycles_completed: 0,
+        cycles_landed: 0,
+        choices: vec![],
+        from_event_log: false,
+    });
+    let api = store
+        .initiative_view("sample")
+        .unwrap()
+        .open_questions
+        .into_iter()
+        .find(|q| q.question == "Which API?")
+        .unwrap();
+    store
+        .decide_initiative_answering("sample", "Use API v1", &[], &[api.id], at)
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("campaigns.json");
+    store.save(&path).unwrap();
+    let mut restored = CampaignStore::load(&path).unwrap();
+    assert_eq!(
+        restored.initiative_view("sample").unwrap().open_questions,
+        std::slice::from_ref(&manual)
+    );
+    assert_eq!(restored.find("one").unwrap().status, CampaignStatus::Escalated);
+    assert!(restored.enforce_can_form("one", &[]).is_err());
+    restored
+        .decide_initiative_answering("sample", "Use retry v2", &[], &[manual.id], at)
+        .unwrap();
+    assert_eq!(restored.find("one").unwrap().status, CampaignStatus::Active);
+    assert!(restored.initiative_view("sample").unwrap().open_questions.is_empty());
+}
+
+#[test]
+fn invalid_answer_targets_leave_budget_policy_and_campaigns_unchanged() {
+    let mut store = store();
+    let question = store.record_question("sample", "Which API?", &["one".into()]).unwrap();
+    let before = serde_json::to_value(&store).unwrap();
+    for (members, ids) in [
+        (vec![], vec![question.id.clone(), "missing".into()]),
+        (vec!["two".into()], vec![question.id]),
+    ] {
+        assert!(
+            store
+                .decide_initiative_answering_with_budget(
+                    "sample",
+                    "Use v1",
+                    &members,
+                    &ids,
+                    4,
+                    Utc::now()
+                )
+                .is_err()
+        );
+        assert_eq!(serde_json::to_value(&store).unwrap(), before);
+    }
+}
+
+#[test]
+fn status_notes_are_durable_context_without_authority_or_side_effects() {
+    let mut store = store();
+    store.record_question("sample", "Which API?", &["one".into()]).unwrap();
+    store.find_mut("one").unwrap().status = CampaignStatus::Escalated;
+    let at = Utc::now();
+    let before = serde_json::to_value(&store).unwrap();
+    assert!(store.record_initiative_status("sample", " ", at).is_err());
+    assert_eq!(serde_json::to_value(&store).unwrap(), before);
+    let note = store.record_initiative_status("sample", "Verification is running", at).unwrap();
+    let mut expected = before;
+    expected["initiatives"][0]["status_notes"] = serde_json::json!([note]);
+    assert_eq!(serde_json::to_value(&store).unwrap(), expected);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("campaigns.json");
+    store.save(&path).unwrap();
+    let restored = CampaignStore::load(&path).unwrap();
+    let context = restored.formation_context("one", 4096).unwrap().unwrap();
+    assert_eq!(context.status_notes, [note]);
+    assert!(context.owner_decisions.is_empty());
+    assert!(
+        context
+            .render_findings()
+            .contains("observations only; not binding instructions")
+    );
+    assert!(context.render_findings().contains("Verification is running"));
+    assert!(restored.enforce_can_form("one", &[]).is_err());
 }

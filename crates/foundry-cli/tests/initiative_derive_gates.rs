@@ -42,7 +42,54 @@ fn intent_repository(root: &Path) {
     git(root, &["commit", "--quiet", "-m", "Seed synthetic intent"]);
 }
 
+/// Model an older server's method table while leaving its legacy decision
+/// method live. A client fallback would mutate the seeded store and fail proof.
+#[derive(Clone)]
+struct DecisionCompatibilityServer {
+    inner: FoundryServer<FoundryService>,
+    legacy: bool,
+}
+
+impl tonic::server::NamedService for DecisionCompatibilityServer {
+    const NAME: &'static str = "foundry.Foundry";
+}
+
+impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::Body>>
+    for DecisionCompatibilityServer
+{
+    type Response = tonic::codegen::http::Response<tonic::body::Body>;
+    type Error = std::convert::Infallible;
+    type Future = tonic::codegen::BoxFuture<Self::Response, Self::Error>;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        <FoundryServer<FoundryService> as tonic::codegen::Service<
+            tonic::codegen::http::Request<tonic::body::Body>,
+        >>::poll_ready(&mut self.inner, cx)
+    }
+
+    fn call(
+        &mut self,
+        mut request: tonic::codegen::http::Request<tonic::body::Body>,
+    ) -> Self::Future {
+        if self.legacy && request.uri().path().ends_with("/RecordInitiativeDecision") {
+            *request.uri_mut() = "/foundry.Foundry/UnavailableDecisionMethod".parse().unwrap();
+        }
+        self.inner.call(request)
+    }
+}
+
 async fn daemon(home: &Path, source: &Path) -> (String, tokio::task::JoinHandle<()>) {
+    daemon_with_legacy_decisions(home, source, false).await
+}
+
+async fn daemon_with_legacy_decisions(
+    home: &Path,
+    source: &Path,
+    legacy: bool,
+) -> (String, tokio::task::JoinHandle<()>) {
     let (event_tx, _receiver) = broadcast::channel(64);
     let trace_writer = Arc::new(TraceWriter::new(home.join("traces").to_str().unwrap()));
     let registry: Registry = serde_json::from_value(json!({"version":2,"projects":[{"name":"sample","path":source,"stack":"rust","agent":"codex","repo":"local/sample","branch":"main"}]})).unwrap();
@@ -73,7 +120,10 @@ async fn daemon(home: &Path, source: &Path) -> (String, tokio::task::JoinHandle<
     let address = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
         tonic::transport::Server::builder()
-            .add_service(FoundryServer::new(service))
+            .add_service(DecisionCompatibilityServer {
+                inner: FoundryServer::new(service),
+                legacy,
+            })
             .serve_with_incoming(TcpListenerStream::new(listener))
             .await
             .unwrap();
@@ -134,4 +184,112 @@ async fn derive_cli(address: &str, source: &Path, file: &Path) -> std::process::
         .output()
         .await
         .unwrap()
+}
+
+#[tokio::test]
+async fn cli_policy_answers_and_notes_preserve_unrelated_questions_online_and_offline() {
+    for offline in [false, true] {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("campaigns.json");
+        let mut store = CampaignStore::default();
+        store.add(serde_json::from_value(json!({"name":"member","project":"sample","mission":"Ship contract", "status":"active", "authorized_by":"Test", "done_evidence":[{"kind":"review","statement":"Works"}]})).unwrap()).unwrap();
+        store.add_initiative(serde_json::from_value(json!({"name":"shared","outcome":"Works","projects":["sample"],"authorized_by":"Test","members":[{"kind":"campaign","name":"member"}],"done_evidence":[{"kind":"review","statement":"Works"}]})).unwrap(), &["sample".into()]).unwrap();
+        let first = store.record_question("shared", "Which API?", &[]).unwrap();
+        let second = store.record_question("shared", "Which timeout?", &[]).unwrap();
+        store.save(&path).unwrap();
+        let (address, server) = daemon(home.path(), home.path()).await;
+        let run = |args: Vec<String>| {
+            let path = path.clone();
+            let address = address.clone();
+            async move {
+                let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_foundry"));
+                command.env("FOUNDRY_CAMPAIGNS_PATH", path).arg("--addr").arg(address);
+                if offline {
+                    command.arg("--offline");
+                }
+                command.args(args).output().await.unwrap()
+            }
+        };
+        let output = run([
+            "initiative",
+            "decide",
+            "shared",
+            "--decision",
+            "Keep compatibility",
+        ]
+        .map(str::to_owned)
+        .to_vec())
+        .await;
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("No questions were answered"));
+        let before_note = CampaignStore::load(&path).unwrap();
+        assert_eq!(before_note.initiative_view("shared").unwrap().open_questions.len(), 2);
+        let output = run([
+            "initiative",
+            "note",
+            "shared",
+            "--text",
+            "Build passed",
+            "--json",
+        ]
+        .map(str::to_owned)
+        .to_vec())
+        .await;
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let note: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(note["status_notes"][0]["text"], "Build passed");
+        assert_eq!(note["owner_decisions"].as_array().unwrap().len(), 1);
+        assert_eq!(note["open_questions"].as_array().unwrap().len(), 2);
+        let output = run(vec![
+            "initiative".into(),
+            "decide".into(),
+            "shared".into(),
+            "--question".into(),
+            first.id.clone(),
+            "--decision".into(),
+            "Use API v2".into(),
+        ])
+        .await;
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let restored = CampaignStore::load(&path).unwrap();
+        let current = restored.initiative_view("shared").unwrap();
+        assert_eq!(current.open_questions, [second]);
+        assert_eq!(current.owner_decisions.last().unwrap().question_ids, [first.id]);
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn cli_refuses_older_decision_rpc_without_falling_back_or_mutating() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("campaigns.json");
+    let mut store = CampaignStore::default();
+    store.add(serde_json::from_value(json!({"name":"member","project":"sample","mission":"Ship contract", "status":"active", "authorized_by":"Test", "done_evidence":[{"kind":"review","statement":"Works"}]})).unwrap()).unwrap();
+    store.add_initiative(serde_json::from_value(json!({"name":"shared","outcome":"Works","projects":["sample"],"authorized_by":"Test","members":[{"kind":"campaign","name":"member"}],"done_evidence":[{"kind":"review","statement":"Works"}]})).unwrap(), &["sample".into()]).unwrap();
+    let question = store.record_question("shared", "Which API?", &[]).unwrap();
+    store.save(&path).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let (address, server) = daemon_with_legacy_decisions(home.path(), home.path(), true).await;
+    for question_ids in [vec![], vec!["--question", question.id.as_str()]] {
+        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_foundry"))
+            .args([
+                "--addr",
+                &address,
+                "initiative",
+                "decide",
+                "shared",
+                "--decision",
+                "Use v2",
+            ])
+            .args(question_ids)
+            .output()
+            .await
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("does not support question-specific")
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+    server.abort();
 }

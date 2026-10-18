@@ -562,7 +562,22 @@ can apply (outcome `skipped`). `wait` needs a reason and opens no question; use
 
 Queued formation, reserved admissions, running cycles and standalone tasks
 count toward `max_active_members`; a completed or cancelled member counts only
-while one of its cycles still runs. Shared cycles include initiative tasks. Use
+while one of its cycles still runs.
+
+Initiative decisions answer only explicit question IDs. Use
+`foundry initiative decide <name> --question <id> --decision "<answer>"`.
+Repeat `--question` for several questions. Without `--member`, answers reach
+only the selected questions' members; `--member` can select a subset.
+Other questions remain open, including questions for those same members.
+Without `--question`, `decide` records binding policy and answers no questions.
+Use `foundry initiative note <name> --text "<status>"` for observations.
+Notes are durable, nonbinding context. They do not answer questions, resume
+campaigns, release holds, change budgets, or request steering.
+`initiative show` exposes open and deferred question IDs.
+RPC clients must use `RecordInitiativeDecision` with explicit `question_ids`
+to answer questions. Updated CLI decisions refuse older daemons without mutation.
+
+Shared cycles include initiative tasks. Use
 `initiative decide --add-cycles N` to authorize more shared cycles. Once the
 shared budget is spent, `initiative decide` without `--add-cycles` is refused
 and records nothing. Member budget grants cannot exceed that total. Owner holds and shared questions block

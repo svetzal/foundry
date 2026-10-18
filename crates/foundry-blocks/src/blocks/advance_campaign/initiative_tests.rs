@@ -111,6 +111,7 @@ async fn simultaneous_member_advances_never_exceed_the_initiative_budget_or_acti
 }
 
 struct InitiativeDecisionDuringFormation {
+    status_only: bool,
     path: std::path::PathBuf,
     asked: std::sync::atomic::AtomicUsize,
     prompts: std::sync::Mutex<Vec<String>>,
@@ -122,7 +123,11 @@ impl crate::gateway::AgentGateway for InitiativeDecisionDuringFormation {
             self.prompts.lock().unwrap().push(request.prompt.clone());
             if self.asked.fetch_add(1,std::sync::atomic::Ordering::SeqCst)==0 {
                 let mut guard=CampaignStore::lock_exclusive(&self.path).unwrap();
-                guard.store.decide_initiative("both","Use port 5001",&[],chrono::Utc::now()).unwrap();
+                if self.status_only {
+                    guard.store.record_initiative_status("both", "Verification is running", chrono::Utc::now()).unwrap();
+                } else {
+                    guard.store.decide_initiative("both","Use port 5001",&[],chrono::Utc::now()).unwrap();
+                }
                 guard.save().unwrap();
             }
             Ok(AgentResponse::success(r#"{"decision":"advance","objective":"Use the agreed port","reason":"owner policy"}"#))
@@ -134,7 +139,7 @@ impl crate::gateway::AgentGateway for InitiativeDecisionDuringFormation {
 async fn initiative_decision_arriving_during_formation_is_kept_and_reformed() {
     let dir=tempfile::tempdir().unwrap();
     let (path,registry)=initiative_store(dir.path(),5,2);
-    let agent=std::sync::Arc::new(InitiativeDecisionDuringFormation {path:path.clone(),asked:std::sync::atomic::AtomicUsize::new(0),prompts:std::sync::Mutex::new(Vec::new())});
+    let agent=std::sync::Arc::new(InitiativeDecisionDuringFormation {status_only:false,path:path.clone(),asked:std::sync::atomic::AtomicUsize::new(0),prompts:std::sync::Mutex::new(Vec::new())});
     let block=advance_block(agent.clone(),FakeShellGateway::success(),registry,path.clone());
     let result=block.execute(&manual_advance_trigger()).await.unwrap();
     assert!(result.success,"{}",result.summary);
@@ -173,4 +178,23 @@ async fn automatic_diagnosis_names_the_exact_member_cycle_before_trace_fallback(
     assert_eq!(findings[0].from.id,"wi_exact");
     assert_eq!(findings[0].from.kind,"campaign_cycle");
     assert_eq!(findings[0].kind,foundry_sdk::initiative::FindingKind::Regression);
+}
+
+#[tokio::test]
+async fn initiative_status_arriving_during_formation_is_retained_without_reformation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, registry) = initiative_store(dir.path(), 5, 2);
+    let agent = std::sync::Arc::new(InitiativeDecisionDuringFormation {
+        status_only: true, path: path.clone(),
+        asked: std::sync::atomic::AtomicUsize::new(0), prompts: std::sync::Mutex::new(Vec::new()),
+    });
+    let block = advance_block(agent.clone(), FakeShellGateway::success(), registry, path.clone());
+    let result = block.execute(&manual_advance_trigger()).await.unwrap();
+    assert!(result.success, "{}", result.summary);
+    assert_eq!(agent.asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let store = CampaignStore::load(&path).unwrap();
+    assert_eq!(store.find_initiative("both").unwrap().status_notes.len(), 1);
+    assert!(store.find_initiative("both").unwrap().owner_decisions.is_empty());
+    assert!(store.find("c").unwrap().owner_decisions.is_empty());
+    assert_eq!(store.find("c").unwrap().cycles_completed, 1);
 }
