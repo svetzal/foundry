@@ -97,6 +97,11 @@ Every event carries these common fields:
 | `release` | string         | Release type (e.g. `"patch"`)               |
 | `new_tag` | string or null | Semver tag extracted from Claude CLI output |
 | `success` | bool           | Whether the Claude CLI invocation succeeded |
+| `left_uncommitted` | string array (optional) | Files a failed release left uncommitted in the registered checkout that were clean when it started, relative to the repository root. Absent on success and when it left none |
+
+A failed release does not clean the registered checkout. Its summary names
+the files it left uncommitted, the files that were already uncommitted
+before it started, and the local commits it did not push.
 
 **`release_pipeline_completed` payload**
 

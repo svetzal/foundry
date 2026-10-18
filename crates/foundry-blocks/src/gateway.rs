@@ -144,7 +144,9 @@ impl CliAgentAdapter for ClaudeAdapter {
             }
             request.prompt.clone()
         };
+        // CLAUDECODE="" prevents nested-session detection.
         let mut env = vec![("CLAUDECODE".to_string(), String::new())];
+        env.extend(claude_foreground_env(request.timeout));
         let run_files = if let Some(boundary) = boundary {
             args.extend([
                 "--permission-mode".into(),
@@ -161,7 +163,15 @@ impl CliAgentAdapter for ClaudeAdapter {
             env.push(("FOUNDRY_REVIEW_SCRATCH".into(), boundary.scratch.to_string_lossy().into()));
             Some(boundary.files)
         } else {
-            args.push("--dangerously-skip-permissions".to_string());
+            // The bounded path's `--tools` allowlist already excludes the
+            // deferred-work tools; full access must remove them explicitly.
+            // `--disallowedTools` is variadic, so the list is one argv element
+            // and the next element (`-p`) is a flag, never a positional.
+            args.extend([
+                "--dangerously-skip-permissions".to_string(),
+                "--disallowedTools".to_string(),
+                CLAUDE_DEFERRED_WORK_TOOLS.to_string(),
+            ]);
             None
         };
         // `-p` with no positional prompt: the CLI reads the prompt from stdin in
@@ -169,7 +179,6 @@ impl CliAgentAdapter for ClaudeAdapter {
         // element at MAX_ARG_STRLEN (131072 bytes), and a campaign prompt that
         // crosses it fails the spawn outright with E2BIG.
         args.push("-p".to_string());
-        // CLAUDECODE="" prevents nested-session detection.
         Ok(Invocation {
             args,
             env,
@@ -238,6 +247,48 @@ cli_agent_gateway! {
     ClaudeAgentGateway, ClaudeAdapter
 }
 
+/// Turns off every Claude Code background mechanism: `run_in_background` on
+/// Bash and subagents, and auto-backgrounding of slow commands.
+///
+/// A headless run is one turn. A backgrounded command holds `claude -p` open
+/// until Claude Code's own background time limit kills it, and the agent ends
+/// its turn waiting for a notification that never arrives. The mojentic-ex
+/// release on 2026-10-18 failed this way: its gates were killed at ten minutes
+/// and the session ran into Foundry's stream timeout.
+const CLAUDE_DISABLE_BACKGROUND_TASKS: &str = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS";
+
+/// The Bash timeout Claude Code applies when the agent names none (two minutes
+/// out of the box).
+///
+/// With backgrounding off, a command that reaches its timeout stops instead of
+/// moving to the background, so this and [`CLAUDE_BASH_MAX_TIMEOUT_MS`] are
+/// raised to the session's budget. Foundry's stream timeout still bounds the
+/// session as a whole.
+const CLAUDE_BASH_DEFAULT_TIMEOUT_MS: &str = "BASH_DEFAULT_TIMEOUT_MS";
+
+/// The ceiling on a Bash timeout the agent may request (ten minutes out of the
+/// box).
+const CLAUDE_BASH_MAX_TIMEOUT_MS: &str = "BASH_MAX_TIMEOUT_MS";
+
+/// Tools that schedule work for later and stay available with background tasks
+/// disabled. A headless turn has no later, so a full-access run removes them.
+const CLAUDE_DEFERRED_WORK_TOOLS: &str = "Monitor,ScheduleWakeup,CronCreate,CronDelete,CronList";
+
+/// Environment that keeps every command of a headless Claude run in the
+/// foreground, with the session's whole budget available to one command.
+///
+/// A zero `timeout` means the session is unbounded; Claude Code's own Bash
+/// timeouts then stay at their defaults.
+fn claude_foreground_env(timeout: Duration) -> Vec<(String, String)> {
+    let mut env = vec![(CLAUDE_DISABLE_BACKGROUND_TASKS.to_string(), "1".to_string())];
+    if !timeout.is_zero() {
+        let millis = timeout.as_millis().to_string();
+        env.push((CLAUDE_BASH_DEFAULT_TIMEOUT_MS.to_string(), millis.clone()));
+        env.push((CLAUDE_BASH_MAX_TIMEOUT_MS.to_string(), millis));
+    }
+    env
+}
+
 fn bounded_claude_prompt(request: &AgentRequest) -> Result<String> {
     let Some(path) = &request.agent_file else {
         return Ok(request.prompt.clone());
@@ -279,19 +330,17 @@ fn carries_json_object(output: &str) -> bool {
 /// read-only. The recovery prompt is short and rides in argv; the output is
 /// plain text rather than a stream-json transcript because nothing reads this
 /// second turn's transcript.
+///
+/// The prompt is the last element and follows `--output-format text`, never a
+/// carried flag: `--tools`, `--allowedTools` and `--disallowedTools` are
+/// variadic and would take a positional that follows them as one more value.
 fn claude_resume_args(original: &[String], session_id: &str, prompt: &str) -> Vec<String> {
-    let mut args = vec![
-        "--resume".to_string(),
-        session_id.to_string(),
-        "--print".to_string(),
-        "--output-format".to_string(),
-        "text".to_string(),
-    ];
+    let mut args = vec!["--resume".to_string(), session_id.to_string()];
     let mut index = 0;
     while index < original.len() {
         match original[index].as_str() {
-            flag @ ("--model" | "--effort" | "--agent" | "--allowedTools" | "--permission-mode"
-            | "--settings" | "--setting-sources" | "--tools") => {
+            flag @ ("--model" | "--effort" | "--agent" | "--allowedTools" | "--disallowedTools"
+            | "--permission-mode" | "--settings" | "--setting-sources" | "--tools") => {
                 if let Some(value) = original.get(index + 1) {
                     args.push(flag.to_string());
                     args.push(value.clone());
@@ -307,7 +356,12 @@ fn claude_resume_args(original: &[String], session_id: &str, prompt: &str) -> Ve
             _ => index += 1,
         }
     }
-    args.push(prompt.to_string());
+    args.extend([
+        "--print".to_string(),
+        "--output-format".to_string(),
+        "text".to_string(),
+        prompt.to_string(),
+    ]);
     args
 }
 
@@ -1196,6 +1250,185 @@ mod claude_json_recovery_tests {
     fn carries_json_object_rejects_prose_and_accepts_a_fenced_object() {
         assert!(!carries_json_object(WAITING_ANSWER));
         assert!(carries_json_object("```json\n{\"verdict\":\"complete\"}\n```"));
+    }
+
+    #[test]
+    fn resume_args_carry_disallowed_tools_and_keep_the_prompt_off_variadic_flags() {
+        let original = [
+            "--model",
+            "claude-opus-5",
+            "--dangerously-skip-permissions",
+            "--disallowedTools",
+            CLAUDE_DEFERRED_WORK_TOOLS,
+            "-p",
+        ]
+        .map(str::to_string);
+        let args = claude_resume_args(&original, "sess-1", "answer now");
+
+        let at = args.iter().position(|a| a == "--disallowedTools").expect("--disallowedTools");
+        assert_eq!(args[at + 1], CLAUDE_DEFERRED_WORK_TOOLS);
+        assert!(args[at + 2].starts_with('-'), "a flag must follow the variadic list: {args:?}");
+        assert_eq!(args.last().map(String::as_str), Some("answer now"));
+        let prompt_at = args.len() - 1;
+        assert_eq!(
+            args[prompt_at - 2..prompt_at],
+            ["--output-format", "text"],
+            "the prompt must follow a single-value flag: {args:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_recovery_turn_also_runs_in_the_foreground() {
+        let (tx, _rx) = broadcast::channel(16);
+        let shell = FakeShellGateway::always(recovered_json());
+        let gateway = ClaudeAgentGateway::new_with_streaming(
+            Arc::clone(&shell) as Arc<dyn ShellGateway>,
+            Arc::new(AnswerRunner::new(WAITING_ANSWER)),
+            test_support::tmp_dir("foundry-resume-foreground"),
+            tx,
+        );
+
+        gateway.invoke(&review_request(true)).await.expect("invoke ok");
+
+        let calls = shell.invocations();
+        assert_eq!(calls.len(), 1, "one recovery turn: {calls:?}");
+        let env = &calls[0].env;
+        assert!(env.contains(&(CLAUDE_DISABLE_BACKGROUND_TASKS.to_string(), "1".to_string())));
+        assert!(env.contains(&(CLAUDE_BASH_MAX_TIMEOUT_MS.to_string(), "30000".to_string())));
+    }
+}
+
+#[cfg(test)]
+mod claude_foreground_tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    fn request(access: AgentAccess, timeout: Duration) -> AgentRequest {
+        AgentRequest {
+            prompt: "release it".to_string(),
+            project: "demo-project".to_string(),
+            working_dir: PathBuf::from("/tmp"),
+            access,
+            tier: ModelTier::Balanced,
+            effort: ReasoningEffort::Medium,
+            agent_file: None,
+            provider: None,
+            env: Vec::new(),
+            timeout,
+            trace_id: None,
+            requires_json: false,
+        }
+    }
+
+    fn invocation(request: &AgentRequest) -> Invocation {
+        let session_id = uuid::Uuid::new_v4().to_string();
+        ClaudeAdapter
+            .build_invocation(
+                request,
+                "claude-opus-5",
+                "medium",
+                &session_id,
+                &test_support::tmp_dir("foundry-foreground"),
+            )
+            .expect("invocation builds")
+    }
+
+    fn env_value<'a>(inv: &'a Invocation, key: &str) -> Option<&'a str> {
+        inv.env.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn a_full_access_run_cannot_background_work_and_gets_the_session_budget_per_command() {
+        let inv = invocation(&request(AgentAccess::Full, Duration::from_secs(900)));
+
+        assert_eq!(env_value(&inv, CLAUDE_DISABLE_BACKGROUND_TASKS), Some("1"));
+        assert_eq!(env_value(&inv, CLAUDE_BASH_DEFAULT_TIMEOUT_MS), Some("900000"));
+        assert_eq!(env_value(&inv, CLAUDE_BASH_MAX_TIMEOUT_MS), Some("900000"));
+
+        let at = inv
+            .args
+            .iter()
+            .position(|a| a == "--disallowedTools")
+            .expect("--disallowedTools on a full-access run");
+        assert_eq!(
+            inv.args[at + 1],
+            "Monitor,ScheduleWakeup,CronCreate,CronDelete,CronList",
+            "the tool list must be one argv element"
+        );
+        assert!(
+            inv.args[at + 2].starts_with('-'),
+            "a flag must follow the variadic list: {:?}",
+            inv.args
+        );
+    }
+
+    #[test]
+    fn a_bounded_run_cannot_background_work_and_its_allowlist_has_no_deferred_work_tools() {
+        let inv = invocation(&request(AgentAccess::ReadOnly, Duration::from_secs(60)));
+
+        assert_eq!(env_value(&inv, CLAUDE_DISABLE_BACKGROUND_TASKS), Some("1"));
+        assert_eq!(env_value(&inv, CLAUDE_BASH_DEFAULT_TIMEOUT_MS), Some("60000"));
+        assert_eq!(env_value(&inv, CLAUDE_BASH_MAX_TIMEOUT_MS), Some("60000"));
+
+        assert!(!inv.args.iter().any(|a| a == "--disallowedTools"), "args: {:?}", inv.args);
+        let at = inv.args.iter().position(|a| a == "--tools").expect("--tools allowlist");
+        let allowed: Vec<&str> = inv.args[at + 1].split(',').collect();
+        for tool in CLAUDE_DEFERRED_WORK_TOOLS.split(',') {
+            assert!(!allowed.contains(&tool), "{tool} must not be allowed: {allowed:?}");
+        }
+    }
+
+    #[test]
+    fn an_unbounded_run_cannot_background_work_and_keeps_claude_bash_timeouts() {
+        let inv = invocation(&request(AgentAccess::Full, Duration::ZERO));
+
+        assert_eq!(env_value(&inv, CLAUDE_DISABLE_BACKGROUND_TASKS), Some("1"));
+        assert_eq!(env_value(&inv, CLAUDE_BASH_DEFAULT_TIMEOUT_MS), None);
+        assert_eq!(env_value(&inv, CLAUDE_BASH_MAX_TIMEOUT_MS), None);
+    }
+
+    /// Records the environment the CLI process would receive.
+    struct EnvRecorder {
+        env: std::sync::Mutex<Vec<(String, String)>>,
+    }
+
+    impl AgentStreamRunner for EnvRecorder {
+        fn run<'a>(
+            &'a self,
+            run: crate::agent_stream::StreamRun<'a>,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<AgentStreamOutcome>> + Send + 'a>>
+        {
+            *self.env.lock().expect("env") = run.env.map(<[_]>::to_vec).unwrap_or_default();
+            let log_path = run.log_path.to_path_buf();
+            Box::pin(async move {
+                tokio::fs::write(&log_path, "").await?;
+                Ok(test_support::ok_outcome())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_environment_still_overrides_the_foreground_environment() {
+        let recorder = Arc::new(EnvRecorder {
+            env: std::sync::Mutex::new(Vec::new()),
+        });
+        let (tx, _rx) = broadcast::channel(4);
+        let gateway = ClaudeAgentGateway::new_with_streaming(
+            fakes::FakeShellGateway::success(),
+            Arc::clone(&recorder) as Arc<dyn AgentStreamRunner>,
+            test_support::tmp_dir("foundry-foreground-override"),
+            tx,
+        );
+        let mut request = request(AgentAccess::Full, Duration::from_secs(900));
+        request.env = vec![(CLAUDE_BASH_MAX_TIMEOUT_MS.to_string(), "5000".to_string())];
+
+        gateway.invoke(&request).await.expect("invoke ok");
+
+        // The process applies pairs in order, so the last one for a key wins.
+        let env = recorder.env.lock().expect("env").clone();
+        let effective = env.iter().rev().find(|(k, _)| k == CLAUDE_BASH_MAX_TIMEOUT_MS);
+        assert_eq!(effective.map(|(_, v)| v.as_str()), Some("5000"), "env: {env:?}");
     }
 }
 

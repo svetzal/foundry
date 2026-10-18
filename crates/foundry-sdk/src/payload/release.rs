@@ -71,6 +71,28 @@ mod release_payload_tests {
         let p2: ReleaseTagAuditedPayload = serde_json::from_str(&json).expect("deserializable");
         assert_eq!(p2.scan_error.as_deref(), Some("boom"));
     }
+
+    #[test]
+    fn release_completed_payload_without_left_uncommitted_still_parses() {
+        let p: ReleaseCompletedPayload =
+            serde_json::from_str(r#"{"release":"manual","new_tag":null,"success":false}"#)
+                .expect("a payload written before the field existed parses");
+        assert!(p.left_uncommitted.is_empty());
+        let v = serde_json::to_value(&p).expect("serializable");
+        assert!(
+            !v.as_object().unwrap().contains_key("left_uncommitted"),
+            "left_uncommitted key must be absent when empty"
+        );
+    }
+
+    #[test]
+    fn release_completed_payload_left_uncommitted_round_trips() {
+        let p: ReleaseCompletedPayload = serde_json::from_str(
+            r#"{"release":"manual","success":false,"left_uncommitted":["mix.exs"]}"#,
+        )
+        .expect("deserializable");
+        assert_eq!(p.left_uncommitted, ["mix.exs"]);
+    }
 }
 
 /// Payload for `ReleaseRequested`.
@@ -98,6 +120,11 @@ pub struct ReleaseCompletedPayload {
     #[serde(default)]
     pub new_tag: Option<String>,
     pub success: bool,
+    /// Paths a failed release left uncommitted in the registered checkout that
+    /// were clean when it started, relative to the repository root. Absent on
+    /// success and when the release left nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub left_uncommitted: Vec<String>,
 }
 
 /// Payload for `ReleasePipelineCompleted`.

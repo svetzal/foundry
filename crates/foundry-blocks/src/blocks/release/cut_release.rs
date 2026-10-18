@@ -8,7 +8,10 @@ use foundry_sdk::task_block::{BlockFuture, BlockKind, TaskBlock, TaskBlockResult
 
 use crate::gateway::{AgentGateway, ProcessShellGateway, ShellGateway};
 
-use super::{ReleaseInput, SimulatedSuccess, release_completed_event, run_release};
+use super::{
+    FOREGROUND_INSTRUCTION, ReleaseInput, SimulatedSuccess, release_completed_event, run_release,
+    with_left_uncommitted,
+};
 
 #[derive(Debug, PartialEq)]
 enum CutDecision {
@@ -107,7 +110,8 @@ impl TaskBlock for CutRelease {
             let project_path = PathBuf::from(&entry.path);
             let prompt = format!(
                 "Cut a patch release for {project} fixing {cve}. \
-                 Create a changelog entry, bump the patch version, tag the release, and push."
+                 Create a changelog entry, bump the patch version, tag the release, and push. \
+                 {FOREGROUND_INSTRUCTION}"
             );
             tracing::info!(%project, %cve, "cutting patch release");
 
@@ -119,14 +123,17 @@ impl TaskBlock for CutRelease {
             };
             match run_release(agent.as_ref(), shell.as_ref(), input).await {
                 Ok(output) => {
-                    let event = release_completed_event(
-                        &project,
-                        throttle,
-                        "patch",
-                        output.new_tag.as_deref(),
-                        output.success,
-                        Some(&cve),
-                        None,
+                    let event = with_left_uncommitted(
+                        release_completed_event(
+                            &project,
+                            throttle,
+                            "patch",
+                            output.new_tag.as_deref(),
+                            output.success,
+                            Some(&cve),
+                            None,
+                        ),
+                        &output.left_uncommitted,
                     );
                     Ok(TaskBlockResult {
                         events: vec![event],
@@ -288,5 +295,42 @@ mod tests {
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].event_type, EventType::ReleaseCompleted);
         assert_eq!(result.events[0].payload["success"], false);
+    }
+
+    #[tokio::test]
+    async fn a_failed_patch_release_reports_what_it_left_in_the_checkout() {
+        use crate::gateway::fakes::FakeShellGateway;
+        use crate::shell::CommandResult;
+        let ok = |stdout: &str| CommandResult {
+            stdout: stdout.to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+            success: true,
+        };
+        let shell = FakeShellGateway::sequence(vec![
+            ok("/repo\n"),
+            ok(""),
+            ok("0\n"),
+            ok(" M Cargo.toml\0"),
+            ok("0\n"),
+        ]);
+        let (entry, _dir) = test_helpers::project_entry_with_agents_md("my-project", true);
+        let registry = test_helpers::registry_with_entry(entry);
+        let block = CutRelease::with_gateways(
+            FakeAgentGateway::failure("Claude CLI failed"),
+            registry,
+            shell,
+        );
+
+        let result = block.execute(&clean_trigger()).await.unwrap();
+
+        assert!(!result.success);
+        assert!(
+            result.summary.ends_with("Left uncommitted in /repo: Cargo.toml (1 file)."),
+            "summary: {}",
+            result.summary
+        );
+        assert_eq!(result.events[0].payload["left_uncommitted"], serde_json::json!(["Cargo.toml"]));
+        assert_eq!(result.events[0].payload["cve"], "CVE-2026-1234");
     }
 }

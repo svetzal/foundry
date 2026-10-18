@@ -7,6 +7,22 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Headless Claude runs can no longer start a command in the background and end
+  the turn waiting for it. The release of mojentic-ex on 2026-10-18 failed this
+  way: its gates were killed at Claude Code's ten-minute background limit and
+  the session ran into Foundry's 900-second stream timeout. Every Claude run
+  now sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, full-access runs also lose
+  `Monitor`, `ScheduleWakeup` and the cron tools, and a foreground command may
+  use the session's whole budget instead of Claude Code's two-minute default.
+  The JSON recovery turn keeps the same settings.
+- A failed release now names what it left in the registered checkout: the
+  files it left uncommitted (separately from files that were already
+  uncommitted before it started) and local commits it did not push. The
+  failure summary says so, and `release_completed` carries the files as
+  `left_uncommitted`. Foundry still does not clean the checkout.
+
 ## [0.54.0] - 2026-10-18
 
 ### Added

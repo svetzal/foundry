@@ -267,7 +267,7 @@ and `--offline`, and all three are read-only.
 | `ProjectMaintenanceCompleted` | `success`, `project`                                                                                                                            |
 | `MaintenanceCycleCompleted`   | `project_count`, `skipped_count`, `projects[]`, `root_event_id` (service-level fan-out only)                                                    |
 | `PipelineChecked`             | `passing`, `logs`                                                                                                                               |
-| `ReleaseCompleted`            | `release` ("patch"/"manual"), `new_tag`, `success`, `cve` (vuln path only)                                                                      |
+| `ReleaseCompleted`            | `release` ("patch"/"manual"), `new_tag`, `success`, `cve` (vuln path only), `left_uncommitted?` (failed release)                                |
 | `ReleasePipelineCompleted`    | `success`, `new_tag`                                                                                                                            |
 | `LocalInstallCompleted`       | `success`                                                                                                                                       |
 | `OpsObserved`                 | `proceed`, `new_event_count`, `anomaly_present`, `new_watermark?`, `events[{id, event_type, occurred_at, domain, urgency?, summary?, client?}]` |
