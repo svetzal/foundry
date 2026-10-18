@@ -391,11 +391,45 @@ Coding prompts request this command for verbose output. Codex also applies a
 2,000-token limit to tool output retained in conversation history. The native
 limit does not preserve a separate complete log; use `capture` for that.
 
+### Test design
+
+Formation, execution, review and initiative steering all receive the same
+test-design rule. Standalone tasks receive it too.
+
+- The boundary that a test proves is the project's public API, used the way a
+  caller uses it. It is not a real network.
+- Unit and library tests use in-process test doubles at the I/O boundary. Use
+  a stub transport (for example `URLProtocol`, a Req test adapter or plug, or a
+  mock HTTP client), a fake gateway, and an injected clock and sleeper.
+- These tests do not open real sockets or local servers. They do not call
+  external services, assert wall-clock thresholds or sleep for real time.
+- A test double at the gateway or transport boundary is valid proof. A mock of
+  library internals is not.
+- Objectives, evidence requirements and reviews must not demand real servers,
+  sockets, live services or wall-clock timing. The reviewer treats new or
+  changed tests that break these rules as a defect.
+
+The exception is a suite that the project's own guidance (its `AGENTS.md` or
+its gate file) designates as integration or end-to-end, for example a
+Playwright UAT repository. That suite keeps its real infrastructure. No other
+suite in the project gets the exception.
+
+Paired producer and consumer contract verification between running services
+does not change. See
+[Check the outcome across repositories](initiatives.md#check-the-outcome-across-repositories).
+
+This rule came from production evidence. Campaigns for the Mojentic library
+ports read "the real boundary" as "a real network". They built test suites on
+local HTTP servers with wall-clock assertions, and one port's CI then hung for
+up to six hours.
+
 ### Prove acceptance early
 
 Before broad fixture or documentation changes, the executor must exercise the
-hardest acceptance behavior through the real boundary. It must record the
-rejecting case and the corrected passing case in `.foundry/proof.json`:
+hardest acceptance behavior through the project's public API, with its I/O
+boundary stubbed by an in-process test double (see [Test design](#test-design)).
+It must record the rejecting case and the corrected passing case in
+`.foundry/proof.json`:
 
 ```json
 {
@@ -480,8 +514,11 @@ in a normal project path, such as `docs/` or the test tree.
 New campaign tasks fail with a typed defect if the record is
 missing, malformed, or refers to absent logs. This check spends no reviewer
 session. The independent reviewer checks the source, logs, ordering, and whether
-the probe proves the intended behavior. Schema checks alone cannot establish
-semantic correctness.
+the probe proves the intended behavior through the public API. A probe that
+opens real sockets or local servers, calls external services or asserts
+wall-clock thresholds is a defect, unless the project designates that suite as
+integration or end-to-end. Schema checks alone cannot establish semantic
+correctness.
 
 ### Report campaign efficiency
 

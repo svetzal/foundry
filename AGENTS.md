@@ -390,10 +390,20 @@ Without that setting, Foundry keeps the configured stage providers.
 Changed boundaries need producer and consumer verification of the same versioned
 executable contract set in their required gates. Keep contract identity, tested
 commits and both verification results in outcome evidence. Cover relevant errors,
-optional fields and supported versions. Independent mocks do not establish
-compatibility. Coordinate missing verification within authorized repositories.
+optional fields and supported versions. Mocks each side writes independently
+of the other do not establish that two services agree; cross-service doubles
+derive from the verified contract set. Coordinate missing verification within
+authorized repositories.
 Integration gates also check wiring and the user's full journey. The prompt
 reminder is guidance; no contract verifier or required evidence field is added.
+
+`TEST_DESIGN_GUIDANCE` in `crates/foundry-blocks/src/blocks/agent_helpers.rs`
+is the one statement of how agents design and judge tests. Formation
+(`advance_campaign::decision_prompt`), task execution
+(`execute_plan::task_prompt_suffix`), task review (`review_task`) and
+initiative steering (`steer_initiative/packet.rs`) all include it. The
+boundary is the project's public API, not a real network; unit and library
+tests stub I/O in process. Change the rule there, never by rewording one stage.
 
 Initiative integration gates use `done_evidence` entries of kind `gate`, with
 `command`, optional `host`, `required` and repository-relative `artifacts`.

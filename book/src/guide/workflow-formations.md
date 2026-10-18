@@ -144,7 +144,11 @@ Entry event: `execution_requested`
 A task executes one user-provided objective in an isolated Git worktree. It
 skips assessment and triage: the description is the plan. Unlike iterate and
 maintain, it never enters the generic retry loop. A separate reviewer produces a
-typed verdict before Foundry decides whether the work can land.
+typed verdict before Foundry decides whether the work can land. The executor
+and the reviewer both receive the shared
+[test-design rule](campaigns.md#test-design): tests prove behavior through the
+project's public API with in-process doubles at the I/O boundary, not through a
+real network.
 
 ```mermaid
 flowchart TD

@@ -136,6 +136,14 @@ provider is the
 initiative's formation provider, at balanced tier and medium effort.
 `initiative_steered` retains the exact prompt, provider and typed decision.
 
+The steering prompt has a limit of 65,536 bytes. Foundry puts the packet in
+the prompt when the complete prompt, fixed text included, fits that limit.
+When it does not fit, Foundry writes the packet to a file under
+`initiatives/steering-evidence/` beside the campaign store. The prompt then
+gives the file's path and SHA-256 hash. Foundry refuses the steer only when the
+prompt does not fit even with the file reference. It never truncates owner
+policy.
+
 ### Check eligibility before the agent runs
 
 Foundry computes the steering options in code before it asks the agent.
@@ -641,7 +649,11 @@ For a changed boundary, both sides must verify the same versioned executable
 contract set. Consumer tests state the behavior needed by the consumer.
 Provider verification checks that same contract against the implementation.
 Cover relevant errors, optional fields and supported old and new versions.
-Independent mocks or matching schemas alone do not establish compatibility.
+Matching schemas do not show that two services agree. Mocks that each side
+writes independently of the other do not show it either. Derive cross-service
+test doubles from the verified contract set.
+Inside one repository, a test double at the gateway or transport boundary is
+still valid proof (see [Test design](campaigns.md#test-design)).
 
 Run contract verification in each project's required gates.
 Include the contract version or hash, tested commits and both verification results
@@ -652,7 +664,8 @@ and missing work.
 
 Contract tests establish compatibility for their declared cases and versions.
 Integration gates also check wiring and the user's full journey.
-Foundry repeats a short contract reminder in initiative agent prompts.
+Foundry repeats a short contract reminder in initiative agent prompts,
+beside the shared test-design rule.
 This guidance does not add a contract verifier or a required evidence field.
 Declared gates and outcome reviews provide the completion checks.
 

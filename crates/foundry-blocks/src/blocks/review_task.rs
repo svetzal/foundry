@@ -112,13 +112,15 @@ fn render_review_prompt(objective: &str, gates: &str) -> String {
         "You are the skeptical reviewer for a one-shot engineering task. Inspect the actual source, diff, and tests in the current worktree; do not trust the executor's self-report.\n\n\
          OBJECTIVE (every acceptance/evidence phrase is binding):\n{objective}\n\n\
          MECHANICAL GATE RESULTS:\n{gates}\n\n\
-         Decide exactly one typed verdict. COMPLETE requires every objective and evidence requirement to be satisfied and all REQUIRED gates to pass. OPTIONAL gate failures are advisory and must not block COMPLETE unless the objective itself explicitly makes that result acceptance evidence. This review runs before Finalize Task: tracked modifications and untracked new files are both valid deliverable changes and Finalize Task commits them after a COMPLETE verdict, so do not reject work merely because it is untracked or uncommitted. Files under .foundry/ are Foundry scratch and never land, so a deliverable that cites .foundry/ paths as repository content, or that leaves durable project material only under .foundry/, is a defect. Tests that mask identifiers, compare only counts, inject around the real boundary, or otherwise cannot detect the stated defect do not count. When the objective requires proof through a real or generated boundary, at least one test must exercise that boundary itself and assert its observable request or response; a mock, fake, or stub installed above that boundary is insufficient. Use REMAINDER only for a finite list of missing work on a converging implementation. Use DEFECT for a faulty approach or regression. Use BLOCKED_ON_RECOVERY for a missing operational capability, access, environment or evidence, with a typed recovery kind and exact missing prerequisite. Use BLOCKED_ON_DECISION when reality exposes a genuine product/policy choice that makes the objective unsatisfiable as written.\n\n\
+         Decide exactly one typed verdict. COMPLETE requires every objective and evidence requirement to be satisfied and all REQUIRED gates to pass. OPTIONAL gate failures are advisory and must not block COMPLETE unless the objective itself explicitly makes that result acceptance evidence. This review runs before Finalize Task: tracked modifications and untracked new files are both valid deliverable changes and Finalize Task commits them after a COMPLETE verdict, so do not reject work merely because it is untracked or uncommitted. Files under .foundry/ are Foundry scratch and never land, so a deliverable that cites .foundry/ paths as repository content, or that leaves durable project material only under .foundry/, is a defect. Tests that mask identifiers, compare only counts, bypass the project's public API, or otherwise cannot detect the stated defect do not count. When the objective requires proof through a public or generated boundary, at least one test must drive that boundary the way a caller does and assert its observable request or response, with I/O stubbed in process at the transport or gateway; a double that replaces the code under test or mocks library internals is insufficient. Do not demand real servers, sockets, live services or wall-clock timing as proof. Use REMAINDER only for a finite list of missing work on a converging implementation. Use DEFECT for a faulty approach or regression. Use BLOCKED_ON_RECOVERY for a missing operational capability, access, environment or evidence, with a typed recovery kind and exact missing prerequisite. Use BLOCKED_ON_DECISION when reality exposes a genuine product/policy choice that makes the objective unsatisfiable as written.\n\n\
+         {test_design}\n\n\
          End with exactly one JSON object in a fenced json block, using one of these shapes:\n\
          {{\"verdict\":\"complete\"}}\n\
          {{\"verdict\":\"remainder\",\"gaps\":[\"specific gap\"]}}\n\
          {{\"verdict\":\"defect\",\"diagnosis\":\"specific diagnosis\"}}\n\
          {{\"verdict\":\"blocked_on_recovery\",\"kind\":\"capability_unavailable\",\"detail\":\"missing prerequisite\"}}\n\
-         {{\"verdict\":\"blocked_on_decision\",\"finding\":\"finding\",\"options\":[\"option\"]}}"
+         {{\"verdict\":\"blocked_on_decision\",\"finding\":\"finding\",\"options\":[\"option\"]}}",
+        test_design = super::agent_helpers::TEST_DESIGN_GUIDANCE,
     ))
 }
 
@@ -386,7 +388,7 @@ fn task_review_prompt(
 ) -> String {
     let mut prompt = build_review_prompt(objective, results);
     if campaign {
-        prompt.push_str("\nInspect .foundry/proof.json and its logs: verify the earliest acceptance probe exercised the hardest real boundary before broad expansion. Reject missing evidence, invented results, marker toggles, or failure cases unrelated to the objective. A documented non-behavioral objective may use a direct acceptance probe instead of red/green.");
+        prompt.push_str("\nInspect .foundry/proof.json and its logs: verify the earliest acceptance probe exercised the hardest acceptance behavior through the project's public API, with I/O stubbed in process, before broad expansion. A probe that opens real sockets or local servers, calls external services or asserts wall-clock thresholds is a defect unless the project's own guidance designates that suite as integration or end-to-end. Reject missing evidence, invented results, marker toggles, or failure cases unrelated to the objective. A documented non-behavioral objective may use a direct acceptance probe instead of red/green.");
     }
     prompt
 }
@@ -967,9 +969,45 @@ mod tests {
         assert!(prompt.contains("dialyzer [OPTIONAL]: FAIL"));
         assert!(prompt.contains("OPTIONAL gate failures are advisory"));
         assert!(prompt.contains("untracked new files are both valid deliverable changes"));
-        assert!(prompt.contains("test must exercise that boundary itself"));
+        assert!(prompt.contains("drive that boundary the way a caller does"));
+        assert!(prompt.contains("with I/O stubbed in process at the transport or gateway"));
+        assert!(prompt.contains(
+            "a double that replaces the code under test or mocks library internals is insufficient"
+        ));
         assert!(
-            prompt.contains("mock, fake, or stub installed above that boundary is insufficient")
+            prompt.contains(
+                "Do not demand real servers, sockets, live services or wall-clock timing"
+            )
+        );
+    }
+
+    /// "Real boundary" was read as "real network": reviewers rejected stubbed
+    /// transports and campaigns built suites on local HTTP servers. Every task
+    /// review, standalone or campaign, judges tests by the shared rule, and the
+    /// campaign proof check names the public API instead of a real boundary.
+    #[test]
+    fn every_task_review_judges_tests_by_the_shared_test_design_rule() {
+        let guidance = super::super::agent_helpers::TEST_DESIGN_GUIDANCE;
+        for campaign in [false, true] {
+            let prompt = super::task_review_prompt("ship the slice", &[], campaign);
+            assert!(prompt.contains(guidance), "{prompt}");
+            assert!(!prompt.contains("hardest real boundary"), "{prompt}");
+            assert!(!prompt.contains("inject around the real boundary"), "{prompt}");
+            assert!(!prompt.contains("stub installed above that boundary"), "{prompt}");
+        }
+
+        let campaign = super::task_review_prompt("ship the slice", &[], true);
+        assert!(
+            campaign.contains(
+                "exercised the hardest acceptance behavior through the project's public API, with I/O stubbed in process"
+            ),
+            "{campaign}"
+        );
+        assert!(
+            campaign.contains(
+                "opens real sockets or local servers, calls external services or asserts wall-clock thresholds is a defect"
+            ),
+            "{campaign}"
         );
     }
 

@@ -56,7 +56,19 @@ pub(crate) fn chain_stage_provider(
 
 /// Shared engineering guidance for initiative boundaries, used by steering,
 /// formation, execution and review without prescribing a test framework.
-pub(crate) const INITIATIVE_CONTRACT_GUIDANCE: &str = "CONTRACT TESTING: A library distributed through a package registry self-validates its readiness for distribution: its own tests consume it the way a user would, through its public API and packaged artifact, against its contract documents and fixtures, and a fresh consumer install verifies the release. Do not require dependents to build or verify against an unreleased library, and do not require one library to verify against another's executable snapshot; dependents verify when they adopt a released version, in their own work. For changed boundaries between running applications or services in different repositories, producer and consumer must verify the same identifiable, versioned executable contract set. Preserve supported old/new versions; test semantics, optional fields and error behavior. Report contract version or hash, tested commits and both verification commands and results. Matching schemas or independent mocks do not prove contract verification. Passing both sides establishes compatibility for the declared cases and versions; retain customer-outcome checks beyond the contract. Add or relay missing verification work. Write only in this task's authorized repository; coordinate other-side changes as separate initiative work.";
+pub(crate) const INITIATIVE_CONTRACT_GUIDANCE: &str = "CONTRACT TESTING: A library distributed through a package registry self-validates its readiness for distribution: its own tests consume it the way a user would, through its public API and packaged artifact, against its contract documents and fixtures, and a fresh consumer install verifies the release. Do not require dependents to build or verify against an unreleased library, and do not require one library to verify against another's executable snapshot; dependents verify when they adopt a released version, in their own work. For changed boundaries between running applications or services in different repositories, producer and consumer must verify the same identifiable, versioned executable contract set. Preserve supported old/new versions; test semantics, optional fields and error behavior. Report contract version or hash, tested commits and both verification commands and results. Matching schemas, or mocks each side writes independently of the other, do not prove that two services agree; derive cross-service test doubles from the verified contract set. Passing both sides establishes compatibility for the declared cases and versions; retain customer-outcome checks beyond the contract. Add or relay missing verification work. Write only in this task's authorized repository; coordinate other-side changes as separate initiative work.";
+
+/// Shared test-design rule for every stage that designs, writes or judges
+/// tests: campaign formation (standalone and initiative), task execution,
+/// task review and initiative steering.
+///
+/// "Real boundary" in earlier prompts was read as "real network": campaigns
+/// for the Mojentic ports built suites on hand-written local HTTP servers with
+/// wall-clock assertions, and their CI hung for hours. The boundary is the
+/// project's public API; I/O below it is stubbed in process. Paired
+/// service-to-service contract verification ([`INITIATIVE_CONTRACT_GUIDANCE`])
+/// is a separate rule and is not narrowed by this one.
+pub(crate) const TEST_DESIGN_GUIDANCE: &str = "TEST DESIGN: The real boundary is the project's public API, used the way a caller uses it; it is never a real network. Unit and library tests drive that API with in-process test doubles at the I/O boundary: a stub transport (for example URLProtocol, a Req test adapter or plug, or a mock HTTP client), a fake gateway, and an injected clock and sleeper. They do not open real sockets or local servers, call external services, assert wall-clock thresholds, or sleep for real time. A test double at the gateway or transport boundary is valid proof; mocking library internals is not. Objectives, evidence requirements and reviews must not demand real servers, sockets, live services or wall-clock timing. New or changed tests that break these rules are a defect, except in a suite the project's own guidance (AGENTS.md or its gate file) designates as integration or end-to-end, such as a Playwright UAT repository; that suite alone keeps real infrastructure. Paired producer/consumer contract verification between running services is unchanged.";
 
 /// Foundry-owned brief identity and findings carried by the chain. The
 /// formation bounds findings before dispatch, and executors see the same
@@ -519,6 +531,49 @@ mod tests {
         assert!(prompt.contains(INITIATIVE_CONTRACT_GUIDANCE));
         assert!(!prompt.contains("INITIATIVE BRIEF"));
         assert!(!prompt.contains("FINDINGS FROM THE INITIATIVE"));
+    }
+
+    /// "Matching schemas or independent mocks do not prove contract
+    /// verification" was read as "mocks don't count". The rule is about two
+    /// services agreeing; a boundary double inside one repository stays valid.
+    #[test]
+    fn contract_guidance_rejects_independent_cross_service_mocks_without_forbidding_boundary_doubles()
+     {
+        assert!(!INITIATIVE_CONTRACT_GUIDANCE.contains("independent mocks do not prove"));
+        assert!(INITIATIVE_CONTRACT_GUIDANCE.contains(
+            "mocks each side writes independently of the other, do not prove that two services agree"
+        ));
+        assert!(
+            INITIATIVE_CONTRACT_GUIDANCE
+                .contains("derive cross-service test doubles from the verified contract set")
+        );
+        // The library self-validation rule and paired service verification stay.
+        assert!(INITIATIVE_CONTRACT_GUIDANCE.contains(
+            "A library distributed through a package registry self-validates its readiness"
+        ));
+        assert!(INITIATIVE_CONTRACT_GUIDANCE.contains(
+            "producer and consumer must verify the same identifiable, versioned executable contract set"
+        ));
+        assert!(TEST_DESIGN_GUIDANCE.contains(
+            "A test double at the gateway or transport boundary is valid proof; mocking library internals is not"
+        ));
+    }
+
+    #[test]
+    fn test_design_guidance_defines_the_boundary_as_the_public_api_not_a_network() {
+        for rule in [
+            "The real boundary is the project's public API",
+            "it is never a real network",
+            "in-process test doubles at the I/O boundary",
+            "an injected clock and sleeper",
+            "do not open real sockets or local servers, call external services, assert wall-clock thresholds, or sleep for real time",
+            "must not demand real servers, sockets, live services or wall-clock timing",
+            "New or changed tests that break these rules are a defect",
+            "designates as integration or end-to-end",
+            "Paired producer/consumer contract verification between running services is unchanged",
+        ] {
+            assert!(TEST_DESIGN_GUIDANCE.contains(rule), "missing: {rule}");
+        }
     }
 
     #[test]
