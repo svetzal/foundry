@@ -1148,3 +1148,34 @@ foundry emit campaign_advance_requested \
   --payload '{"campaign":"parite-phase-2d"}' \
   --wait
 ```
+
+## Operational recovery
+
+Use typed recovery for missing capabilities, access, environment, evidence,
+prerequisites and runner failures. See
+[initiative recovery](initiatives.md#recover-an-operational-blocker).
+A genuine policy choice still uses `blocked_on_decision`.
+
+An executor can record an operational blocker in `.foundry/blocker.json`:
+
+```json
+{
+  "kind": "blocked",
+  "recovery_kind": "capability_unavailable",
+  "tried": "Checked the available runner capabilities",
+  "missing": "A runner with the required platform"
+}
+```
+
+`question` is optional for an operational blocker.
+An unknown `recovery_kind` is invalid; Foundry does not guess from prose.
+A legacy blocker without `recovery_kind` retains its owner-decision semantics.
+An explicit operational blocker also works for standalone tasks without
+making the campaign proof file mandatory for those tasks.
+Review preserves blocked work instead of calling missing proof a defect.
+
+Formation can return a typed recovery decision when it finds an operational
+prerequisite that it cannot correct within the campaign's authority.
+A recheck returns to full mission assessment and retains preserved work.
+It does not replay the old runner failure as a new failure.
+No recovery record authorizes more cycles, publishing or a contract change.

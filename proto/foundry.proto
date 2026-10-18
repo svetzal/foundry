@@ -361,6 +361,7 @@ message Campaign {
     CampaignEscalation open_escalation = 11;
     optional string initiative = 12;
     StageProviders providers = 13;
+    RecoveryState recovery = 14;
 }
 
 // Why an escalated campaign waits on its owner.
@@ -434,6 +435,7 @@ message CampaignDetail {
     CampaignEscalation open_escalation = 16;
     optional string initiative = 17;
     StageProviders providers = 18;
+    RecoveryState recovery = 19;
 }
 
 // Stage overrides inherit the campaign's agent_provider when omitted.
@@ -478,6 +480,29 @@ message InitiativeDecision {
     string decided_at = 3;
     repeated string members = 4;
     repeated string question_ids = 5;
+}
+// Operational prerequisites are separate from owner decisions.
+message RecoveryResolution {
+    repeated string evidence = 1;
+    string resolved_at = 2;
+}
+message RecoveryState {
+    string id = 1;
+    string kind = 2;
+    string detail = 3;
+    string recorded_at = 4;
+    RecoveryResolution resolution = 5;
+}
+message RecoverRequest {
+    string name = 1;
+    string recovery_id = 2;
+    repeated string evidence = 3;
+}
+message RecoverResponse {
+    RecoveryState recovery = 1;
+    string event_id = 2;
+    // Evidence recorded, but normal owner/pacing controls may still block work.
+    string waiting_reason = 3;
 }
 message InitiativeStatusNote {
     string text = 1;
@@ -527,6 +552,7 @@ message Initiative {
     uint64 deferred_question_count = 34;
     repeated InitiativeStatusNote status_notes = 35;
     repeated InitiativeQuestion deferred_questions = 36;
+    RecoveryState recovery = 37;
 }
 message InitiativeRepositoryIdentity {
     string project = 1;
@@ -1229,6 +1255,8 @@ service Foundry {
     // New clients must use this method so older daemons refuse safely.
     rpc RecordInitiativeDecision(DecideInitiativeRequest) returns (InitiativeResponse);
     rpc RecordInitiativeStatus(RecordInitiativeStatusRequest) returns (InitiativeResponse);
+    rpc RecoverInitiative(RecoverRequest) returns (RecoverResponse);
+    rpc RecoverCampaign(RecoverRequest) returns (RecoverResponse);
     rpc CompleteInitiative(EndInitiativeRequest) returns (InitiativeResponse);
     rpc CancelInitiative(EndInitiativeRequest) returns (InitiativeResponse);
     rpc SetInitiativeBrief(SetInitiativeBriefRequest) returns (InitiativeBriefResponse);

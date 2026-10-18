@@ -621,6 +621,7 @@ mod tests {
 
     fn campaign(status: CampaignStatus, authorized: bool) -> Campaign {
         Campaign {
+            recovery: None,
             name: "c".to_string(),
             project: "p".to_string(),
             mission: "ship".to_string(),

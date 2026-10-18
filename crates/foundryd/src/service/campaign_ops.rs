@@ -44,6 +44,7 @@ pub(super) fn campaign_to_proto(campaign: &foundry_sdk::campaign::Campaign) -> P
         open_escalation: campaign.open_escalation.as_ref().map(escalation_to_proto),
         initiative: campaign.initiative.clone(),
         providers: Some(super::initiative_ops::providers_to_proto(campaign.providers)),
+        recovery: campaign.recovery.as_ref().map(super::recovery_ops::to_proto),
     }
 }
 
@@ -178,6 +179,7 @@ fn campaign_to_detail(campaign: &foundry_sdk::campaign::Campaign) -> CampaignDet
         open_escalation: campaign.open_escalation.as_ref().map(escalation_to_proto),
         initiative: campaign.initiative.clone(),
         providers: Some(super::initiative_ops::providers_to_proto(campaign.providers)),
+        recovery: campaign.recovery.as_ref().map(super::recovery_ops::to_proto),
     }
 }
 
@@ -1131,6 +1133,7 @@ mod tests {
 
     fn sample_campaign(name: &str, project: &str) -> Campaign {
         Campaign {
+            recovery: None,
             initiative: None,
             providers: foundry_sdk::gateway::StageProviders::default(),
             name: name.to_string(),
@@ -1194,6 +1197,7 @@ mod tests {
     #[test]
     fn get_returns_full_detail_including_gate_and_review_evidence() {
         let campaign = Campaign {
+            recovery: None,
             initiative: None,
             providers: foundry_sdk::gateway::StageProviders::default(),
             name: "my-campaign".to_string(),

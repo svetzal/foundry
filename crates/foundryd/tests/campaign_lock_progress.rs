@@ -60,6 +60,7 @@ impl AgentGateway for ControlledAgent {
 
 fn active_campaign(name: &str) -> Campaign {
     Campaign {
+        recovery: None,
         initiative: None,
         providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),

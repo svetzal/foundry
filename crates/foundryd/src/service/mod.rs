@@ -41,6 +41,7 @@ mod initiative_completion;
 mod initiative_ops;
 mod pacing_ops;
 mod recovery;
+mod recovery_ops;
 mod registry_ops;
 mod sentinel_ops;
 mod session_recovery;
@@ -546,6 +547,36 @@ impl Foundry for FoundryService {
         Ok(Response::new(crate::proto::InitiativeResponse {
             initiative: Some(initiative),
         }))
+    }
+
+    async fn recover_campaign(
+        &self,
+        request: Request<crate::proto::RecoverRequest>,
+    ) -> Result<Response<crate::proto::RecoverResponse>, Status> {
+        let request = request.into_inner();
+        let recheck = self
+            .campaign_operation(move |path, _| recovery_ops::campaign(path, &request))
+            .await?;
+        spawn_workflow(recheck.fact, &self.ctx);
+        if let Some(event) = recheck.advance {
+            spawn_workflow(event, &self.ctx);
+        }
+        Ok(Response::new(recheck.response))
+    }
+
+    async fn recover_initiative(
+        &self,
+        request: Request<crate::proto::RecoverRequest>,
+    ) -> Result<Response<crate::proto::RecoverResponse>, Status> {
+        let request = request.into_inner();
+        let recheck = self
+            .campaign_operation(move |path, _| recovery_ops::initiative(path, &request))
+            .await?;
+        spawn_workflow(recheck.fact, &self.ctx);
+        if let Some(event) = recheck.advance {
+            spawn_workflow(event, &self.ctx);
+        }
+        Ok(Response::new(recheck.response))
     }
 
     async fn complete_initiative(
@@ -2017,6 +2048,7 @@ mod tests {
         // Gate and a Review done-evidence entry.
         let tmp = tempfile::NamedTempFile::new().expect("tempfile");
         let campaign = Campaign {
+            recovery: None,
             initiative: None,
             providers: foundry_sdk::gateway::StageProviders::default(),
             name: "service-campaign".to_string(),
@@ -2108,6 +2140,7 @@ mod tests {
             initiatives: vec![],
             version: 1,
             campaigns: vec![Campaign {
+                recovery: None,
                 initiative: None,
                 providers: foundry_sdk::gateway::StageProviders::default(),
                 name: "present".to_string(),

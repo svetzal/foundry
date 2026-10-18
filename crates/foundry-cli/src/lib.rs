@@ -12,6 +12,7 @@ pub mod event_commands;
 pub mod initiative_commands;
 pub mod origin;
 pub mod queue_commands;
+pub mod recovery_commands;
 pub mod registry_commands;
 pub mod render;
 pub mod workflow_commands;

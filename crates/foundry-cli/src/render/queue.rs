@@ -1306,6 +1306,7 @@ mod tests {
 
     fn escalated_campaign(name: &str, reason: Option<&str>) -> Campaign {
         Campaign {
+            recovery: None,
             initiative: None,
             providers: None,
             name: name.to_string(),

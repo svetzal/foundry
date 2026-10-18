@@ -18,3 +18,5 @@ pub mod trace_tree;
 pub mod workflow;
 
 pub mod initiative;
+
+pub mod recovery;

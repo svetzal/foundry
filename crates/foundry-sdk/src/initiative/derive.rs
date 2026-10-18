@@ -234,6 +234,7 @@ fn derived_definition(
     done_evidence: Vec<DoneEvidence>,
 ) -> Initiative {
     Initiative {
+        recovery: None,
         name: name.into(),
         outcome,
         created_at: None,

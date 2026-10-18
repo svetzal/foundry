@@ -224,6 +224,8 @@ impl Drop for CampaignStoreGuard {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Campaign {
+    #[serde(default)]
+    pub recovery: Option<crate::recovery::RecoveryState>,
     pub name: String,
     pub project: String,
     pub mission: String,
@@ -684,6 +686,7 @@ mod tests {
         assert!(store.campaigns.is_empty());
         store
             .add(Campaign {
+                recovery: None,
                 name: "one".to_string(),
                 project: "p".to_string(),
                 mission: "ship one thing".to_string(),
@@ -764,6 +767,7 @@ mod tests {
 
     fn campaign_with_gate(command: &str, required: bool) -> Campaign {
         Campaign {
+            recovery: None,
             name: "c".to_string(),
             project: "p".to_string(),
             mission: "ship".to_string(),
@@ -1066,6 +1070,7 @@ mod tests {
     #[test]
     fn owner_decisions_round_trip_as_rfc3339_strings() {
         let campaign = Campaign {
+            recovery: None,
             name: "one".to_string(),
             project: "p".to_string(),
             mission: "ship one thing".to_string(),

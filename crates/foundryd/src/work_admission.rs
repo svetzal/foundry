@@ -414,6 +414,10 @@ fn control_event(kind: &EventType) -> bool {
             | EventType::InitiativeAdded
             | EventType::InitiativeDecided
             | EventType::InitiativeStatusRecorded
+            | EventType::CampaignRecoveryRecorded
+            | EventType::InitiativeRecoveryRecorded
+            | EventType::CampaignRecoveryRechecked
+            | EventType::InitiativeRecoveryRechecked
             | EventType::InitiativeCompleted
             | EventType::InitiativeCancelled
             | EventType::InitiativeSteered

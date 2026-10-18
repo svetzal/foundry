@@ -48,6 +48,7 @@ const OFFLINE_COMPLETION_REASON: &str = "Production evidence confirms the missio
 
 fn make_campaign(name: &str, status: CampaignStatus) -> Campaign {
     Campaign {
+        recovery: None,
         initiative: None,
         providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),

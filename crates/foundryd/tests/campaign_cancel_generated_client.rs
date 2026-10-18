@@ -104,6 +104,7 @@ fn seed_campaign(tmp: &NamedTempFile, campaign: Campaign) {
 
 fn campaign(name: &str, status: CampaignStatus, authorized: bool) -> Campaign {
     Campaign {
+        recovery: None,
         initiative: None,
         providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),

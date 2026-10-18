@@ -7,7 +7,31 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Typed operational recovery on campaigns and initiatives, with exact recovery
+  IDs, causes, blocker details and evidence-backed rechecks. `campaign recover`
+  and `initiative recover` request reassessment without recording owner policy,
+  changing budgets, clearing questions or releasing owner controls. New RPCs
+  refuse older daemons without unsafe fallbacks.
+- `blocked_on_recovery` task verdicts and explicit `recovery_kind` in executor
+  blocker files distinguish missing capabilities, access, environment,
+  evidence and prerequisites from genuine owner decisions. Blocked work stays
+  preserved. Legacy blocker files retain their decision semantics.
+
+- `initiative note <name> --text "<status>"` and `RecordInitiativeStatus`
+  record durable observations separately from binding owner decisions.
+  Notes appear in reads and assessment context. They do not answer questions,
+  resume work, release holds, change budgets, or request steering.
+
 ### Fixed
+
+- Runner failures no longer masquerade as owner decisions. Campaign recovery
+  retains the failed result and preserved work without replaying that failure
+  on an evidence-backed recheck.
+- Rejected initiative completion records exact unmet prerequisites instead of
+  creating a generic owner question. Independent eligible members can continue;
+  fresh passing completion checks can resolve evidence/precondition recovery.
 
 - Initiative decisions answer only explicitly selected question IDs through
   `decide --question <id>` and `RecordInitiativeDecision` with `question_ids`.
@@ -17,13 +41,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
   appear in `initiative show`. Existing clients must pass IDs to answer.
   Updated CLI decisions use a distinct RPC so older daemons reject them
   without falling back to member-wide question clearing.
-
-### Added
-
-- `initiative note <name> --text "<status>"` and `RecordInitiativeStatus`
-  record durable observations separately from binding owner decisions.
-  Notes appear in reads and assessment context. They do not answer questions,
-  resume work, release holds, change budgets, or request steering.
 
 ## [0.53.1] - 2026-10-17
 

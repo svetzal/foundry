@@ -153,6 +153,7 @@ fn seed_campaign(tmp: &NamedTempFile, campaign: Campaign) {
 
 fn paused_campaign(name: &str, max_cycles: u64, cycles_completed: u64) -> Campaign {
     Campaign {
+        recovery: None,
         initiative: None,
         providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),
@@ -184,6 +185,7 @@ fn paused_campaign(name: &str, max_cycles: u64, cycles_completed: u64) -> Campai
 
 fn escalated_campaign_with_pending_result(name: &str) -> Campaign {
     Campaign {
+        recovery: None,
         initiative: None,
         providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),

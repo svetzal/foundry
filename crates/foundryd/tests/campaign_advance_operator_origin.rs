@@ -148,6 +148,7 @@ fn make_harness() -> Harness {
 
 fn active_campaign() -> Campaign {
     Campaign {
+        recovery: None,
         initiative: None,
         providers: foundry_sdk::gateway::StageProviders::default(),
         name: "tidy-cli".to_string(),

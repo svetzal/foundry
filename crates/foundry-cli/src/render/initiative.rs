@@ -50,6 +50,9 @@ pub fn detail(initiative: &Initiative) -> String {
         "Initiative '{}' ({})\nOutcome: {}\n",
         initiative.name, initiative.status, initiative.outcome
     );
+    if let Some(recovery) = &initiative.recovery {
+        out.push_str(&super::recovery::detail("initiative", &initiative.name, recovery));
+    }
     if !initiative.intent_refs.is_empty() {
         let _ = writeln!(out, "Intent: {}", initiative.intent_refs.join(", "));
     }

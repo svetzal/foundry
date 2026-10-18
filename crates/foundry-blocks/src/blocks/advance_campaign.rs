@@ -24,8 +24,8 @@ use foundry_sdk::work_item::{WorkItemKind, WorkItemState, WorkItemStore};
 use foundry_sdk::work_source::WorkSource;
 
 use crate::gateway::{
-    AgentAccess, AgentFailureKind, AgentFailureMetadata, AgentGateway, AgentOutcome, AgentProvider,
-    ModelTier, ReasoningEffort, ShellGateway,
+    AgentAccess, AgentFailureMetadata, AgentGateway, AgentOutcome, AgentProvider, ModelTier,
+    ReasoningEffort, ShellGateway,
 };
 
 use super::{AgentBlockSpec, SimulatedSuccess, invoke_agent};
@@ -387,6 +387,7 @@ fn outcome_label(outcome: Option<&CycleOutcome>) -> String {
         }
         TaskVerdict::Defect { diagnosis } => format!("defect, {landing}; {diagnosis}"),
         TaskVerdict::BlockedOnDecision { finding, .. } => format!("blocked on decision; {finding}"),
+        TaskVerdict::BlockedOnRecovery { kind, detail } => format!("recovery {kind:?}; {detail}"),
         TaskVerdict::RunnerError { detail } => format!("runner error; {detail}"),
     };
     condense(&detail)
@@ -539,15 +540,16 @@ fn decision_prompt(
     );
     let history = objective_history(campaign);
     super::with_single_turn_discipline(&format!(
-        "You are advancing a durable engineering campaign. Inspect the repository yourself; descriptive metadata is never current state. Decide exactly one of done, advance, or escalate. You return a decision; the daemon dispatches it. Never invoke foundry task/campaign, probe localhost, or infer daemon availability from this sandbox. WRITABLE REPOSITORY: this project only; sibling repositories are read-only.\n\n\
+        "You are advancing a durable engineering campaign. Inspect the repository yourself; descriptive metadata is never current state. Decide exactly one of done, advance, recover, or escalate. You return a decision; the daemon dispatches it. Never invoke foundry task/campaign, probe localhost, or infer daemon availability from this sandbox. WRITABLE REPOSITORY: this project only; sibling repositories are read-only.\n\n\
          CAMPAIGN: {}\nMISSION: {}\nINTENT REFS: {}\nCYCLES: {} completed / {} landed / {} max\nESCALATION RULES:\n- {}\n\n\
          OWNER DECISIONS (binding policy for this and future advances):\n{}\n\nREQUIRED REVIEW EVIDENCE:\n{}\n\nMECHANICAL DONE-GATE RESULTS (run here at formation, against the delivered trunk — the task does NOT run these):\n{}\n\nOBJECTIVE HISTORY (what this campaign has already asked for, oldest first, with the typed verdict each returned):\n{}\n\nLAST TYPED RUN RESULT:\n{}\n\nLIVE REPO SNAPSHOT (delivered trunk state):\n{}\n\nACCUMULATED UNMERGED WORK:\n{}\n\nCONTEXT ARTIFACTS (wording is binding and must be threaded into acceptance criteria):\n{}\n\n\
          TWO TREES. The live snapshot is the delivered trunk state. The accumulated section describes a preserved branch carrying earlier cycles of THIS campaign that did not land; the next cycle starts from that ref, not from the trunk. Its work is real and already written—it is invisible to a trunk-only inspection, and any tool you run in the working directory sees the trunk, not it.\n\n\
          READ-ONLY SANDBOX. Do not run builds, tests, linters, or anything else that writes target/, caches or lock files: they cannot run here and prove nothing. Test and gate evidence comes from MECHANICAL DONE-GATE RESULTS, which the daemon ran against the delivered trunk, and from LAST TYPED RUN RESULT: a run with landed: true reached trunk only after every required gate in the project's gate file passed in its worktree, re-run after any rebase onto trunk. Judge review statements about passing tests from that evidence and the code you read. Being unable to run a command here is never a reason to escalate.\n\n\
-         DONE only when every required gate passes and every review statement is true against the delivered trunk state. Accumulated unmerged work does not make a campaign done. ADVANCE must cut exactly ONE objective from mission minus current state, where current state is the trunk PLUS the accumulated work. Never re-cut an objective the accumulated commits already satisfy; if the accumulated work appears to carry the mission but has not landed, the objective is to reconcile and land it—finish the remaining gaps, get the required gates green on that branch—not to rebuild it from scratch. NO RESTATEMENT. Check the objective you are about to cut against OBJECTIVE HISTORY before you commit to it. If it substantially restates an entry there, do not re-dispatch it; decide which of exactly two things is true. Either that earlier work exists and you are reading the wrong tree—re-read the accumulated section, and the objective becomes reconcile-and-land, not rebuild. Or the earlier cycle returned `remainder` and its gaps are genuinely still open on a tree you can see, in which case asking for the same thing has already failed once and repeating it is not the correction: name the single sub-gap that blocked it, change the approach, or escalate for an owner decision. A third identical objective is never the answer. Constraints, change licenses, scope guards, and forbidden moves are gates—not co-equal objectives. DO NOT RESTATE THE MECHANICAL DONE-GATE COMMANDS AS TASK EVIDENCE. Those run here, at formation, against the delivered trunk; the task runs the project's own discovered gates in an isolated worktree and cannot produce a result for a command it is never given. Asking it to prove one creates a gap it cannot close no matter what it does. Require only evidence the task itself can produce in its worktree. State concrete proof capable of rejecting masked IDs, count-only checks, or tests that bypass the real boundary. Do not prescribe implementation mechanism. Before removal/refactor packets, perform cheap live structural probes for callers and cross-module coupling and encode discoveries as scope guards. For migrations, name each licensed behavior change with its intent ref; all other characterized behavior is frozen. Build characterization before migration. ESCALATE on a human judgment, fired escalation rule, unusable provider, or invalidated campaign assumption.\n\n\
+         DONE only when every required gate passes and every review statement is true against the delivered trunk state. Accumulated unmerged work does not make a campaign done. ADVANCE must cut exactly ONE objective from mission minus current state, where current state is the trunk PLUS the accumulated work. Never re-cut an objective the accumulated commits already satisfy; if the accumulated work appears to carry the mission but has not landed, the objective is to reconcile and land it—finish the remaining gaps, get the required gates green on that branch—not to rebuild it from scratch. NO RESTATEMENT. Check the objective you are about to cut against OBJECTIVE HISTORY before you commit to it. If it substantially restates an entry there, do not re-dispatch it; decide which of exactly two things is true. Either that earlier work exists and you are reading the wrong tree—re-read the accumulated section, and the objective becomes reconcile-and-land, not rebuild. Or the earlier cycle returned `remainder` and its gaps are genuinely still open on a tree you can see, in which case asking for the same thing has already failed once and repeating it is not the correction: name the single sub-gap that blocked it, change the approach, or escalate for an owner decision. A third identical objective is never the answer. Constraints, change licenses, scope guards, and forbidden moves are gates—not co-equal objectives. DO NOT RESTATE THE MECHANICAL DONE-GATE COMMANDS AS TASK EVIDENCE. Those run here, at formation, against the delivered trunk; the task runs the project's own discovered gates in an isolated worktree and cannot produce a result for a command it is never given. Asking it to prove one creates a gap it cannot close no matter what it does. Require only evidence the task itself can produce in its worktree. State concrete proof capable of rejecting masked IDs, count-only checks, or tests that bypass the real boundary. Do not prescribe implementation mechanism. Before removal/refactor packets, perform cheap live structural probes for callers and cross-module coupling and encode discoveries as scope guards. For migrations, name each licensed behavior change with its intent ref; all other characterized behavior is frozen. Build characterization before migration. RECOVER on a missing operational capability, access, environment or evidence. State the exact prerequisite and its typed kind; this records recovery without owner judgement or extra cycles. ESCALATE only on a human judgment, fired escalation rule requiring owner authority, or a policy choice that invalidates a campaign assumption.\n\n\
          End with exactly one fenced JSON object:\n\
          {{\"decision\":\"done\",\"reason\":\"evidence\"}}\n\
          {{\"decision\":\"advance\",\"objective\":\"single objective plus forbidden moves and task-producible evidence\",\"reason\":\"gap from mission minus state\"}}\n\
+         {{\"decision\":\"recover\",\"kind\":\"capability_unavailable\",\"detail\":\"exact operational prerequisite\"}}\n\
          {{\"decision\":\"escalate\",\"reason\":\"owner decision required\"}}",
         campaign.name,
         campaign.mission,
@@ -604,6 +606,9 @@ fn parse_decision(output: &str) -> anyhow::Result<CampaignDecision> {
         .map_err(|e| anyhow::anyhow!("campaign agent returned no valid decision: {e}"))?;
 
     match &decision {
+        CampaignDecision::Recover { detail, .. } if detail.trim().is_empty() => {
+            anyhow::bail!("campaign recovery requires an exact prerequisite");
+        }
         CampaignDecision::Done { reason } | CampaignDecision::Escalate { reason }
             if reason.trim().is_empty() =>
         {
@@ -638,17 +643,13 @@ const DECISION_ATTEMPTS: u32 = 3;
 /// spread.
 const DECISION_RETRY_DELAY: Duration = Duration::from_secs(5);
 
-/// What an advance concluded, once provider outages are separated from the
-/// decisions the campaign can act on.
-///
-/// `Pause` deliberately has no [`CampaignDecision`] counterpart: pausing is a
-/// status transition the owner clears with `campaign resume`, not an outcome
-/// the campaign dispatches or dies on.
+/// Separate operational recovery from campaign decisions and owner questions.
 enum AdvanceOutcome {
-    Decided(CampaignDecision),
-    Pause {
-        reason: String,
+    Recovery {
+        kind: foundry_sdk::recovery::RecoveryKind,
+        detail: String,
     },
+    Decided(CampaignDecision),
     /// A task stopped with `blocked_on_decision`. It escalates like any other
     /// escalation, but keeps the agent's question and choices apart so the
     /// campaign record can show them to the owner as they were asked.
@@ -659,13 +660,12 @@ enum AdvanceOutcome {
 }
 
 impl AdvanceOutcome {
-    /// Apply a rule that only makes sense for a real decision, leaving a pause
-    /// untouched — the campaign never chose to pause, so no decision rule
-    /// governs it.
+    /// Apply formation rules to policy decisions, preserving operational
+    /// recovery and the exact question from a blocked task.
     fn map_decision(self, rule: impl FnOnce(CampaignDecision) -> CampaignDecision) -> Self {
         match self {
             Self::Decided(decision) => Self::Decided(rule(decision)),
-            Self::Pause { .. } | Self::OwnerQuestion { .. } => self,
+            Self::Recovery { .. } | Self::OwnerQuestion { .. } => self,
         }
     }
 }
@@ -727,31 +727,12 @@ fn provider_outage_reason(failure: Option<&AgentFailureMetadata>) -> Option<Stri
         .map(AgentFailureMetadata::execution_summary)
 }
 
-/// Whether a `RunnerError` detail describes a provider outage rather than a
-/// fault in the run.
-///
-/// The structured [`AgentFailureMetadata`] does not survive into the typed
-/// verdict, so the labels the SDK itself stamps onto the detail string are the
-/// only signal left. Sourcing them from [`AgentFailureKind`] keeps this
-/// matching the SDK's wording rather than a private copy of it.
-fn is_provider_outage_detail(detail: &str) -> bool {
-    const BREAKER_MARKER: &str = "circuit breaker open";
-    detail.contains(BREAKER_MARKER)
-        || [
-            AgentFailureKind::AccountLimit,
-            AgentFailureKind::AccountDisabled,
-            AgentFailureKind::Authentication,
-        ]
-        .iter()
-        .any(|kind| detail.contains(kind.summary_label()))
-}
-
 /// Ask the decision agent, retrying a transport failure before giving up.
 ///
 /// Only failures to *get* an answer are retried. A malformed decision is the
 /// agent answering badly rather than failing to answer, so it propagates on the
 /// first attempt — re-asking would burn identical invocations. A terminal
-/// provider failure short-circuits to a pause for the same reason.
+/// provider failure records recovery immediately for the same reason.
 async fn ask_decision_agent(
     agent: &dyn AgentGateway,
     request: &DecisionRequest,
@@ -763,11 +744,19 @@ async fn ask_decision_agent(
         let spec = request.spec();
         let (context, detail) = match invoke_agent(agent, spec, "campaign advance", project).await {
             AgentOutcome::Success { stdout } => {
-                return Ok(AdvanceOutcome::Decided(parse_decision(&stdout)?));
+                return Ok(match parse_decision(&stdout)? {
+                    CampaignDecision::Recover { kind, detail } => {
+                        AdvanceOutcome::Recovery { kind, detail }
+                    }
+                    decision => AdvanceOutcome::Decided(decision),
+                });
             }
             AgentOutcome::AgentFailed { stderr, failure } => {
                 if let Some(reason) = provider_outage_reason(failure.as_ref()) {
-                    return Ok(AdvanceOutcome::Pause { reason });
+                    return Ok(AdvanceOutcome::Recovery {
+                        kind: foundry_sdk::recovery::RecoveryKind::RunnerUnavailable,
+                        detail: reason,
+                    });
                 }
                 let detail = failure
                     .as_ref()
@@ -776,9 +765,10 @@ async fn ask_decision_agent(
                     .cloned()
                     .unwrap_or(stderr);
                 if detail.to_ascii_lowercase().contains("model is not supported") {
-                    return Ok(AdvanceOutcome::Decided(CampaignDecision::Escalate {
-                        reason: format!("campaign model configuration rejected: {detail}"),
-                    }));
+                    return Ok(AdvanceOutcome::Recovery {
+                        kind: foundry_sdk::recovery::RecoveryKind::EnvironmentUnavailable,
+                        detail: format!("campaign model configuration rejected: {detail}"),
+                    });
                 }
                 ("failed", detail)
             }
@@ -798,12 +788,13 @@ async fn ask_decision_agent(
     }
     // Every attempt is reported, so an escalation can never be reasoned about
     // from a single empty stderr the way the observed ones had to be.
-    Ok(AdvanceOutcome::Decided(CampaignDecision::Escalate {
-        reason: format!(
+    Ok(AdvanceOutcome::Recovery {
+        kind: foundry_sdk::recovery::RecoveryKind::RunnerUnavailable,
+        detail: format!(
             "campaign decision agent did not answer in {DECISION_ATTEMPTS} attempts ({})",
             diagnostics.join("; ")
         ),
-    }))
+    })
 }
 
 fn completed_event(
@@ -1097,7 +1088,20 @@ fn update_run_and_forced_outcome(
             reason: REESCALATION_REASON.to_string(),
         }));
     }
-    if let Some(result) = &request.run_result {
+    if let Some(recovery) = campaign.recovery.as_ref().filter(|recovery| recovery.is_pending()) {
+        return Some(AdvanceOutcome::Recovery {
+            kind: recovery.kind,
+            detail: recovery.detail.clone(),
+        });
+    }
+    let recovered_run = campaign.recovery.as_ref().is_some_and(|recovery| {
+        !recovery.is_pending()
+            && request
+                .run_event_id
+                .as_ref()
+                .is_some_and(|event| recovery.id.starts_with(&format!("recovery_{event}_")))
+    });
+    if let Some(result) = request.run_result.as_ref().filter(|_| !recovered_run) {
         match &result.verdict {
             TaskVerdict::BlockedOnDecision { finding, options } => {
                 return Some(AdvanceOutcome::OwnerQuestion {
@@ -1105,22 +1109,18 @@ fn update_run_and_forced_outcome(
                     options: options.clone(),
                 });
             }
-            // The same tripped breaker that stops a decision agent also arrives
-            // here, as the executor's typed verdict. Both paths must wait it out
-            // rather than spend the campaign on it.
-            TaskVerdict::RunnerError { detail } if is_provider_outage_detail(detail) => {
-                return Some(AdvanceOutcome::Pause {
-                    reason: format!("provider unusable: {detail}"),
+            TaskVerdict::BlockedOnRecovery { kind, detail } => {
+                return Some(AdvanceOutcome::Recovery {
+                    kind: *kind,
+                    detail: detail.clone(),
                 });
             }
-            // A refused continuation ran no agent and is not a runner fault:
-            // its preserved work conflicts with trunk. Formation decides what
-            // to do about that, from trunk, with the refusal in front of it.
             TaskVerdict::RunnerError { .. } if continuation_refused(request) => {}
             TaskVerdict::RunnerError { detail } => {
-                return Some(AdvanceOutcome::Decided(CampaignDecision::Escalate {
-                    reason: format!("runner/provider unavailable: {detail}"),
-                }));
+                return Some(AdvanceOutcome::Recovery {
+                    kind: foundry_sdk::recovery::RecoveryKind::RunnerUnavailable,
+                    detail: detail.clone(),
+                });
             }
             TaskVerdict::Complete | TaskVerdict::Remainder { .. } | TaskVerdict::Defect { .. } => {}
         }
@@ -1319,6 +1319,45 @@ async fn derive_advance_outcome(
     ))
 }
 
+fn record_recovery_outcome(
+    campaign: &mut Campaign,
+    request: &CampaignAdvanceRequestedPayload,
+    throttle: foundry_sdk::throttle::Throttle,
+    kind: foundry_sdk::recovery::RecoveryKind,
+    detail: String,
+    record: &FormationRecord,
+) -> Vec<Event> {
+    let decision = CampaignDecision::Recover {
+        kind,
+        detail: detail.clone(),
+    };
+    if !campaign
+        .recovery
+        .as_ref()
+        .is_some_and(foundry_sdk::recovery::RecoveryState::is_pending)
+    {
+        campaign.recovery = Some(foundry_sdk::recovery::RecoveryState {
+            id: request.run_event_id.as_ref().map_or_else(
+                || format!("recovery_{}", uuid::Uuid::new_v4()),
+                |event| format!("recovery_{event}_{}", uuid::Uuid::new_v4()),
+            ),
+            kind,
+            detail,
+            recorded_at: chrono::Utc::now(),
+            resolution: None,
+        });
+    }
+    vec![
+        completed_event(campaign, throttle, decision, record),
+        super::event_from_infallible_payload(
+            EventType::CampaignRecoveryRecorded,
+            &campaign.project,
+            throttle,
+            &serde_json::json!({"campaign":campaign.name,"recovery":campaign.recovery}),
+        ),
+    ]
+}
+
 fn apply_advance_outcome(
     campaign: &mut Campaign,
     request: &CampaignAdvanceRequestedPayload,
@@ -1327,6 +1366,9 @@ fn apply_advance_outcome(
     record: &FormationRecord,
 ) -> Vec<Event> {
     let (decision, question) = match outcome {
+        AdvanceOutcome::Recovery { kind, detail } => {
+            return record_recovery_outcome(campaign, request, throttle, kind, detail, record);
+        }
         AdvanceOutcome::Decided(decision) => (decision, None),
         AdvanceOutcome::OwnerQuestion { finding, options } => (
             CampaignDecision::Escalate {
@@ -1334,31 +1376,11 @@ fn apply_advance_outcome(
             },
             Some((finding, options)),
         ),
-        // `CampaignPaused` is deliberately not a terminal event — it does not
-        // end the campaign, and the pending run result is left intact so the
-        // advance after `campaign resume` forms from it and the executor
-        // continues from preserved work. It is emitted purely so the stop is
-        // observable: an operator-issued pause needs no event because the
-        // operator already knows, but this one stops the campaign with nobody
-        // watching, and silence here is indistinguishable from progress.
-        AdvanceOutcome::Pause { reason } => {
-            campaign.status = CampaignStatus::Paused;
-            campaign.open_escalation = None;
-            tracing::warn!(
-                campaign = %campaign.name,
-                project = %campaign.project,
-                %reason,
-                "campaign paused instead of escalated: provider unusable"
-            );
-            return vec![terminal_event(
-                EventType::CampaignPaused,
-                campaign,
-                throttle,
-                reason,
-            )];
-        }
     };
     match decision {
+        CampaignDecision::Recover { kind, detail } => {
+            record_recovery_outcome(campaign, request, throttle, kind, detail, record)
+        }
         CampaignDecision::Done { reason } => {
             campaign.status = CampaignStatus::Completed;
             campaign.open_escalation = None;
@@ -1457,9 +1479,10 @@ async fn choose_advance_outcome(
         Ok(entry) => entry,
         Err(error) => {
             return (
-                AdvanceOutcome::Decided(CampaignDecision::Escalate {
-                    reason: format!("campaign formation failed: {error}"),
-                }),
+                AdvanceOutcome::Recovery {
+                    kind: foundry_sdk::recovery::RecoveryKind::RunnerUnavailable,
+                    detail: format!("campaign formation failed: {error}"),
+                },
                 FormationRecord::default(),
             );
         }
@@ -1468,9 +1491,10 @@ async fn choose_advance_outcome(
         .await
         .unwrap_or_else(|error| {
             (
-                AdvanceOutcome::Decided(CampaignDecision::Escalate {
-                    reason: format!("campaign formation failed: {error}"),
-                }),
+                AdvanceOutcome::Recovery {
+                    kind: foundry_sdk::recovery::RecoveryKind::RunnerUnavailable,
+                    detail: format!("campaign formation failed: {error}"),
+                },
                 FormationRecord::default(),
             )
         })
@@ -1536,14 +1560,15 @@ async fn release_settled_base(
 
 /// The block summary for a formed outcome.
 ///
-/// A pause emits no event, so its reason would otherwise be invisible; the
-/// block summary is what carries it into the run trace.
+/// Operational recovery carries its exact prerequisite into the run trace.
 fn outcome_summary(campaign: &str, outcome: &AdvanceOutcome) -> String {
     match outcome {
         AdvanceOutcome::Decided(_) | AdvanceOutcome::OwnerQuestion { .. } => {
             format!("campaign '{campaign}' advanced")
         }
-        AdvanceOutcome::Pause { reason } => format!("campaign '{campaign}' paused: {reason}"),
+        AdvanceOutcome::Recovery { detail, .. } => {
+            format!("campaign '{campaign}' awaiting recovery: {detail}")
+        }
     }
 }
 
@@ -2398,9 +2423,9 @@ mod tests {
     use crate::gateway::{AgentFailureKind, AgentProvider, AgentResponse};
 
     use super::{
-        AdvanceCampaign, DECISION_ATTEMPTS, Recheck, enforce_campaign_budget,
+        AdvanceCampaign, AdvanceOutcome, DECISION_ATTEMPTS, Recheck, enforce_campaign_budget,
         enforce_done_gate_truth, formation_gate_results, outcome_label, parse_decision, recheck,
-        run_done_gates, settled_base,
+        run_done_gates, settled_base, update_run_and_forced_outcome,
     };
     use foundry_sdk::work_item::WorkItemStore;
 
@@ -2529,7 +2554,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejected_model_escalates_once_with_the_provider_diagnostic() {
+    async fn rejected_model_records_environment_recovery_once() {
         let dir = tempfile::tempdir().unwrap();
         let (store_path, registry) = staged_active_campaign(dir.path());
         let message = "The 'configured-model' model is not supported when using Codex with a ChatGPT account.";
@@ -2541,7 +2566,7 @@ mod tests {
         let block = advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path);
         let result = block.execute(&manual_advance_trigger()).await.unwrap();
         assert_eq!(agent.invocations().len(), 1);
-        assert!(terminal_reason(&result, &EventType::CampaignEscalated).contains(message));
+        assert!(terminal_reason(&result, &EventType::CampaignRecoveryRecorded).contains(message));
     }
 
     /// The decision agent must read an unlanded complete as preserved work
@@ -2591,6 +2616,7 @@ mod tests {
 
     fn campaign_at_budget() -> Campaign {
         Campaign {
+            recovery: None,
             name: "c".to_string(),
             project: "p".to_string(),
             mission: "ship".to_string(),
@@ -2691,6 +2717,7 @@ mod tests {
         let mut store = CampaignStore::default();
         store
             .add(Campaign {
+                recovery: None,
                 name: "c".to_string(),
                 project: "p".to_string(),
                 mission: "ship".to_string(),
@@ -2802,6 +2829,7 @@ mod tests {
         let mut store = CampaignStore::default();
         store
             .add(Campaign {
+                recovery: None,
                 name: "c".to_string(),
                 project: "p".to_string(),
                 mission: "ship".to_string(),
@@ -2892,6 +2920,7 @@ mod tests {
         let mut store = CampaignStore::default();
         store
             .add(Campaign {
+                recovery: None,
                 name: "c".to_string(),
                 project: "p".to_string(),
                 mission: "ship".to_string(),
@@ -2974,6 +3003,7 @@ mod tests {
         let mut store = CampaignStore::default();
         store
             .add(Campaign {
+                recovery: None,
                 name: "c".to_string(),
                 project: "p".to_string(),
                 mission: "ship".to_string(),
@@ -3047,6 +3077,7 @@ mod tests {
 
     fn campaign_for_accumulation_test() -> Campaign {
         Campaign {
+            recovery: None,
             name: "c".to_string(),
             project: "p".to_string(),
             mission: "ship".to_string(),
@@ -3312,6 +3343,7 @@ mod tests {
         let mut store = CampaignStore::default();
         store
             .add(Campaign {
+                recovery: None,
                 name: "c".to_string(),
                 project: "p".to_string(),
                 mission: "ship".to_string(),
@@ -4051,6 +4083,54 @@ mod tests {
         }
     }
 
+    #[test]
+    fn rechecked_failed_run_is_not_replayed_as_another_recovery() {
+        use foundry_sdk::recovery::{RecoveryKind, RecoveryResolution, RecoveryState};
+        let mut campaign = campaign_for_accumulation_test();
+        campaign.authorized_by = Some("owner".into());
+        let request = CampaignAdvanceRequestedPayload {
+            campaign: campaign.name.clone(),
+            run_event_id: Some("failed-run".into()),
+            run_result: Some(run_result_with(TaskVerdict::RunnerError {
+                detail: "runner unavailable".into(),
+            })),
+            operator_origin: None,
+            providers: foundry_sdk::gateway::StageProviders::default(),
+        };
+        assert!(matches!(
+            update_run_and_forced_outcome(&mut campaign, &request),
+            Some(AdvanceOutcome::Recovery { .. })
+        ));
+        let preserved = campaign.pending_run_result.clone();
+        campaign.recovery = Some(RecoveryState {
+            id: "recovery_failed-run_unique".into(),
+            kind: RecoveryKind::RunnerUnavailable,
+            detail: "runner unavailable".into(),
+            recorded_at: chrono::Utc::now(),
+            resolution: Some(RecoveryResolution {
+                evidence: vec!["runner probe passed".into()],
+                resolved_at: chrono::Utc::now(),
+            }),
+        });
+        assert!(
+            update_run_and_forced_outcome(&mut campaign, &request).is_none(),
+            "formation must now reassess the objective"
+        );
+        assert_eq!(
+            campaign.pending_run_result, preserved,
+            "preserved work remains available to formation"
+        );
+        let mut new_failure = request.clone();
+        new_failure.run_event_id = Some("another-run".into());
+        assert!(
+            matches!(
+                update_run_and_forced_outcome(&mut campaign, &new_failure),
+                Some(AdvanceOutcome::Recovery { .. })
+            ),
+            "a recheck cannot exempt a new failure"
+        );
+    }
+
     /// A decision agent that answers `advance`, and on its first ask edits
     /// the campaign it is forming, as an owner would mid-formation.
     struct EditsOnFirstAsk {
@@ -4225,7 +4305,11 @@ mod tests {
             .events
             .iter()
             .find(|event| event.event_type == *ty)
-            .and_then(|event| event.payload.get("reason"))
+            .and_then(|event| {
+                event.payload.get("reason").or_else(|| {
+                    event.payload.get("recovery").and_then(|recovery| recovery.get("detail"))
+                })
+            })
             .and_then(serde_json::Value::as_str)
             .unwrap_or_else(|| panic!("no {ty} event in {:?}", result.events))
             .to_string()
@@ -4264,7 +4348,7 @@ mod tests {
     /// The observed escalations carried an empty reason, so nobody could tell
     /// what had failed. Every attempt now appears in the escalation.
     #[tokio::test(start_paused = true)]
-    async fn exhausted_decision_agent_retries_escalate_with_every_attempt_reported() {
+    async fn exhausted_decision_agent_retries_record_recovery_with_every_attempt() {
         let dir = tempfile::tempdir().unwrap();
         let (store_path, registry) = staged_active_campaign(dir.path());
         let agent = FakeAgentGateway::failure("");
@@ -4274,7 +4358,7 @@ mod tests {
         let result = block.execute(&manual_advance_trigger()).await.unwrap();
 
         assert_eq!(agent.invocations().len(), DECISION_ATTEMPTS as usize);
-        let reason = terminal_reason(&result, &EventType::CampaignEscalated);
+        let reason = terminal_reason(&result, &EventType::CampaignRecoveryRecorded);
         assert!(reason.contains("3 attempts"), "reason omits the attempt count: {reason}");
         for attempt in 1..=DECISION_ATTEMPTS {
             assert!(
@@ -4285,14 +4369,14 @@ mod tests {
         assert!(reason.contains("no diagnostic output"), "empty stderr left no trace: {reason}");
         assert_eq!(
             CampaignStore::load(&store_path).unwrap().find("c").unwrap().status,
-            CampaignStatus::Escalated
+            CampaignStatus::Active
         );
     }
 
     /// Re-asking an agent that already answered only burns identical
     /// invocations — the answer will be malformed again.
     #[tokio::test(start_paused = true)]
-    async fn malformed_decision_escalates_without_burning_retries() {
+    async fn malformed_decision_records_recovery_without_burning_retries() {
         let dir = tempfile::tempdir().unwrap();
         let (store_path, registry) = staged_active_campaign(dir.path());
         let agent = FakeAgentGateway::success_with("I think we should keep going.");
@@ -4303,7 +4387,7 @@ mod tests {
 
         assert_eq!(agent.invocations().len(), 1, "a permanent failure must not be retried");
         assert!(
-            terminal_reason(&result, &EventType::CampaignEscalated)
+            terminal_reason(&result, &EventType::CampaignRecoveryRecorded)
                 .contains("campaign formation failed")
         );
     }
@@ -4314,7 +4398,7 @@ mod tests {
     /// done any work. The breaker stays open, so retrying is pointless and
     /// escalating spends the campaign on something outside its own work.
     #[tokio::test(start_paused = true)]
-    async fn open_provider_circuit_breaker_pauses_the_campaign_without_retrying() {
+    async fn open_provider_circuit_breaker_records_recovery_without_retrying() {
         let dir = tempfile::tempdir().unwrap();
         let (store_path, registry) = staged_active_campaign(dir.path());
         let agent = FakeAgentGateway::always(AgentResponse::terminal_failure(
@@ -4328,33 +4412,35 @@ mod tests {
         let result = block.execute(&manual_advance_trigger()).await.unwrap();
 
         assert_eq!(agent.invocations().len(), 1, "an open breaker returns the same refusal");
-        // Observable, but not terminal: an automatic pause has no operator
-        // watching it, so it must reach the event stream — while leaving no
-        // escalation or completion to resurrect from.
+        // Formation settles while the campaign waits for recovery evidence.
+        // No owner escalation or campaign completion is emitted.
         assert_eq!(
             result.events.iter().map(|event| &event.event_type).collect::<Vec<_>>(),
-            vec![&EventType::CampaignPaused],
-            "an automatic pause must be visible in the stream and nothing more: {:?}",
+            vec![
+                &EventType::CampaignAdvanceCompleted,
+                &EventType::CampaignRecoveryRecorded
+            ],
+            "formation settlement and operational recovery must both be visible: {:?}",
             result.events
         );
         assert!(
-            result.events[0].payload["reason"]
+            result.events[1].payload["recovery"]["detail"]
                 .as_str()
                 .is_some_and(|reason| reason.contains("monthly spend limit")),
-            "pause event must explain itself: {:?}",
-            result.events[0].payload
+            "recovery event must explain itself: {:?}",
+            result.events[1].payload
         );
-        assert!(result.summary.contains("paused"), "pause reason lost: {}", result.summary);
+        assert!(result.summary.contains("recovery"), "recovery reason lost: {}", result.summary);
         assert!(result.summary.contains("monthly spend limit"));
         let stored = CampaignStore::load(&store_path).unwrap();
         let campaign = stored.find("c").unwrap();
-        assert_eq!(campaign.status, CampaignStatus::Paused);
-        assert_eq!(campaign.cycles_completed, 2, "a pause must not consume a cycle");
+        assert_eq!(campaign.status, CampaignStatus::Active);
+        assert_eq!(campaign.cycles_completed, 2, "recovery must not consume a cycle");
     }
 
     /// The same breaker text also arrives as the executor's typed verdict.
     #[tokio::test(start_paused = true)]
-    async fn runner_error_from_an_open_breaker_pauses_and_keeps_the_run_pending() {
+    async fn runner_error_records_recovery_and_keeps_preserved_work() {
         let dir = tempfile::tempdir().unwrap();
         let (store_path, registry) = staged_active_campaign(dir.path());
         let agent = FakeAgentGateway::success();
@@ -4383,13 +4469,16 @@ mod tests {
         assert!(agent.invocations().is_empty());
         assert_eq!(
             result.events.iter().map(|event| &event.event_type).collect::<Vec<_>>(),
-            vec![&EventType::CampaignPaused],
+            vec![
+                &EventType::CampaignAdvanceCompleted,
+                &EventType::CampaignRecoveryRecorded
+            ],
             "the verdict path must be as observable as the decision path: {:?}",
             result.events
         );
         let stored = CampaignStore::load(&store_path).unwrap();
         let campaign = stored.find("c").unwrap();
-        assert_eq!(campaign.status, CampaignStatus::Paused);
+        assert_eq!(campaign.status, CampaignStatus::Active);
         assert_eq!(
             campaign
                 .pending_run_result
@@ -4401,7 +4490,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn runner_error_unrelated_to_the_provider_still_escalates() {
+    async fn runner_error_unrelated_to_provider_records_recovery() {
         let dir = tempfile::tempdir().unwrap();
         let (store_path, registry) = staged_active_campaign(dir.path());
         let block = advance_block(
@@ -4429,12 +4518,12 @@ mod tests {
         let result = block.execute(&trigger).await.unwrap();
 
         assert!(
-            terminal_reason(&result, &EventType::CampaignEscalated)
-                .contains("runner/provider unavailable")
+            terminal_reason(&result, &EventType::CampaignRecoveryRecorded)
+                .contains("task review missing isolated worktree")
         );
         assert_eq!(
             CampaignStore::load(&store_path).unwrap().find("c").unwrap().status,
-            CampaignStatus::Escalated
+            CampaignStatus::Active
         );
     }
 
@@ -4983,7 +5072,9 @@ mod tests {
         let block = advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path);
         let result = block.execute(&manual_advance_trigger()).await.unwrap();
         assert!(agent.invocations().is_empty());
-        assert!(terminal_reason(&result, &EventType::CampaignEscalated).contains("stage budget"));
+        assert!(
+            terminal_reason(&result, &EventType::CampaignRecoveryRecorded).contains("stage budget")
+        );
     }
     #[tokio::test]
     async fn exhausted_campaign_retains_result_through_extension_and_resume() {

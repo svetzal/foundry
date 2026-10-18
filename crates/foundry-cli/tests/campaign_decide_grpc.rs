@@ -81,6 +81,7 @@ fn make_service() -> (FoundryService, NamedTempFile, TempDir) {
 
 fn escalated_campaign(name: &str) -> Campaign {
     Campaign {
+        recovery: None,
         initiative: None,
         providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),

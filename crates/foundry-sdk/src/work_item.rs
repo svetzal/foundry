@@ -556,6 +556,9 @@ impl WorkItem {
             TaskVerdict::BlockedOnDecision { finding, .. } => {
                 (WorkItemState::NeedsDecision, finding.clone())
             }
+            TaskVerdict::BlockedOnRecovery { detail, .. } => {
+                (WorkItemState::Preserved, detail.clone())
+            }
             TaskVerdict::RunnerError { detail } => (WorkItemState::Failed, detail.clone()),
         };
         self.state = state;
@@ -1422,6 +1425,25 @@ mod tests {
             }
         );
         assert_eq!(item.disposition.unwrap().verdict.as_deref(), Some("blocked_on_decision"));
+    }
+
+    #[test]
+    fn operational_blocker_preserves_work_without_owner_decision() {
+        let mut item = WorkItem::dispatched(spec(), now());
+        let verdict = TaskVerdict::BlockedOnRecovery {
+            kind: crate::recovery::RecoveryKind::CapabilityUnavailable,
+            detail: "macOS runner missing".into(),
+        };
+        item.settle_from_task_run(&run_result(verdict, false), Some(true), now());
+        assert_eq!(item.state, WorkItemState::Preserved);
+        assert_eq!(
+            item.disposition.as_ref().unwrap().verdict.as_deref(),
+            Some("blocked_on_recovery")
+        );
+        assert_eq!(
+            item.disposition.as_ref().unwrap().preservation_ref.as_deref(),
+            Some("ref-or-commit")
+        );
     }
 
     #[test]

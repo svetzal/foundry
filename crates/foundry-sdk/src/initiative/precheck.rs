@@ -102,11 +102,17 @@ impl CampaignStore {
                 continue;
             }
             let campaign = self.find(&member.name);
-            let reason = if let Some(status) = campaign.map(|campaign| campaign.status)
+            let reason = if let Some(recovery) = campaign
+                .and_then(|campaign| campaign.recovery.as_ref())
+                .filter(|recovery| recovery.is_pending())
+            {
+                Some(format!("recovery '{}' pending: {}", recovery.id, recovery.detail))
+            } else if let Some(status) = campaign.map(|campaign| campaign.status)
                 && matches!(
                     status,
                     CampaignStatus::Completed | CampaignStatus::Cancelled | CampaignStatus::Paused
-                ) {
+                )
+            {
                 Some(format!("campaign is {status}"))
             } else if occupied.contains(&member.name) {
                 Some("has work in flight".into())

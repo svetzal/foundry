@@ -115,6 +115,7 @@ fn save_campaign(path: &std::path::Path, repo: &std::path::Path, context_paths: 
     let mut store = CampaignStore::default();
     store
         .add(Campaign {
+            recovery: None,
             initiative: None,
             providers: foundry_sdk::gateway::StageProviders::default(),
             name: "campaign-test".to_string(),
@@ -386,7 +387,7 @@ async fn campaign_dry_run_completes_one_simulated_task_without_looping() {
 }
 
 #[tokio::test]
-async fn campaign_formation_error_emits_terminal_escalation() {
+async fn campaign_formation_error_records_operational_recovery() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
     std::fs::create_dir(&repo).unwrap();
@@ -415,13 +416,22 @@ async fn campaign_formation_error_emits_terminal_escalation() {
         result
             .events
             .iter()
+            .any(|event| event.event_type == EventType::CampaignRecoveryRecorded)
+    );
+    assert!(
+        !result
+            .events
+            .iter()
             .any(|event| event.event_type == EventType::CampaignEscalated)
     );
     assert!(agent.invocations().is_empty());
-    assert_eq!(
-        CampaignStore::load(&store_path).unwrap().find("campaign-test").unwrap().status,
-        CampaignStatus::Escalated
-    );
+    let stored = CampaignStore::load(&store_path).unwrap();
+    let campaign = stored.find("campaign-test").unwrap();
+    assert_eq!(campaign.status, CampaignStatus::Active);
+    assert!(campaign.open_escalation.is_none());
+    let recovery = campaign.recovery.as_ref().unwrap();
+    assert_eq!(recovery.kind, foundry_sdk::recovery::RecoveryKind::RunnerUnavailable);
+    assert!(recovery.is_pending());
 }
 
 #[tokio::test]

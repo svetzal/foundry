@@ -56,6 +56,7 @@ pub(super) fn to_proto(store: &CampaignStore, initiative: &Initiative) -> proto:
         authorized_by: initiative.authorized_by.clone(),
         providers: Some(providers_to_proto(initiative.providers)),
         status: initiative.status.to_string(),
+        recovery: initiative.recovery.as_ref().map(super::recovery_ops::to_proto),
         owner_decisions: initiative
             .owner_decisions
             .iter()

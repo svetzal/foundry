@@ -111,6 +111,7 @@ fn seed_campaign(tmp: &NamedTempFile, campaign: Campaign) {
 /// distinguishable from defaults.
 fn active_campaign(name: &str) -> Campaign {
     Campaign {
+        recovery: None,
         initiative: None,
         providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),

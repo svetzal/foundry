@@ -38,6 +38,8 @@ type Result<T> = std::result::Result<T, InitiativeError>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Initiative {
+    #[serde(default)]
+    pub recovery: Option<crate::recovery::RecoveryState>,
     pub name: String,
     pub outcome: String,
     /// Known creation time; legacy records have no inferred age.

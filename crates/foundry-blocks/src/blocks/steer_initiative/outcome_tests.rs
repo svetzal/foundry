@@ -365,3 +365,132 @@ async fn a_steer_started_beside_member_work_skips_integration_and_records_why() 
     assert_eq!(initiative.steering_history[0].integration_skipped.as_deref(), Some(reason));
     assert!(agent.invocations()[0].prompt.contains(reason));
 }
+
+#[tokio::test]
+async fn premature_done_without_eligible_repairs_records_recovery_and_no_owner_question() {
+    let fixture = Fixture::new();
+    repository(&fixture);
+    gate(&fixture, None);
+    let mut store = CampaignStore::load(&fixture.store).unwrap();
+    for campaign in &mut store.campaigns {
+        campaign.status = foundry_sdk::campaign::CampaignStatus::Completed;
+    }
+    store
+        .record_initiative_recovery(
+            "shared",
+            "old-worker-wait",
+            foundry_sdk::recovery::RecoveryKind::UnmetPrecondition,
+            "member work was in flight",
+            chrono::Utc::now(),
+        )
+        .unwrap();
+    store.save(&fixture.store).unwrap();
+    let agent = FakeAgentGateway::success_with(
+        r#"{"action":{"decision":"done","reviews":[{"statement":"works","affirmed":true,"evidence":["sample/contract.rs"]}]},"audits":[]}"#,
+    );
+    let mut settled_trigger = fixture.trigger_holding_trunks();
+    settled_trigger.payload["trigger_id"] = serde_json::json!("worker-settled");
+    let result = fixture
+        .steer(agent, GateShell::new(false, "contract probe failed"))
+        .execute(&settled_trigger)
+        .await
+        .unwrap();
+    assert!(result.success, "{}", result.summary);
+    let action = result
+        .events
+        .iter()
+        .find(|event| event.event_type == EventType::InitiativeActionRequested)
+        .unwrap();
+    let applied = super::action::ApplyInitiativeAction::new(
+        fixture.registry.clone(),
+        fixture.store.clone(),
+        fixture.ledger.clone(),
+    )
+    .execute(action)
+    .await
+    .unwrap();
+    assert!(applied.success, "{}", applied.summary);
+    assert!(
+        applied
+            .events
+            .iter()
+            .any(|event| event.event_type == EventType::InitiativeRecoveryRecorded)
+    );
+    assert!(
+        !applied
+            .events
+            .iter()
+            .any(|event| event.event_type == EventType::InitiativeAdvanceRequested),
+        "recovery must not spin itself"
+    );
+    let store = CampaignStore::load(&fixture.store).unwrap();
+    let initiative = store.initiative_view("shared").unwrap();
+    assert!(initiative.open_questions.is_empty());
+    assert!(initiative.owner_decisions.is_empty());
+    let recovery = initiative.recovery.as_ref().unwrap();
+    assert_ne!(
+        recovery.id, "old-worker-wait",
+        "fresh failed evidence must supersede the earlier settled-work wait"
+    );
+    assert!(recovery.is_pending(), "replacement is still a wait, never readiness");
+    assert_eq!(recovery.kind, foundry_sdk::recovery::RecoveryKind::UnmetPrecondition);
+    assert!(recovery.detail.contains("gate 0"), "{}", recovery.detail);
+    assert!(initiative.completion_proposal.is_none());
+}
+
+#[tokio::test]
+async fn fresh_done_evidence_rechecks_a_previous_completion_precondition_without_owner_policy() {
+    let fixture = Fixture::new();
+    repository(&fixture);
+    gate(&fixture, None);
+    let mut store = CampaignStore::load(&fixture.store).unwrap();
+    store
+        .record_initiative_recovery(
+            "shared",
+            "old-gate",
+            foundry_sdk::recovery::RecoveryKind::UnmetPrecondition,
+            "required initiative gate 0 has no current passing evidence",
+            chrono::Utc::now(),
+        )
+        .unwrap();
+    store.save(&fixture.store).unwrap();
+    let agent = FakeAgentGateway::success_with(
+        r#"{"action":{"decision":"done","reviews":[{"statement":"works","affirmed":true,"evidence":["sample/contract.rs"]}]},"audits":[]}"#,
+    );
+    let result = fixture
+        .steer(agent, GateShell::new(true, "current gate capture passes"))
+        .execute(&fixture.trigger_holding_trunks())
+        .await
+        .unwrap();
+    assert!(result.success, "{}", result.summary);
+    let action = result
+        .events
+        .iter()
+        .find(|event| event.event_type == EventType::InitiativeActionRequested)
+        .unwrap();
+    let applied = ApplyInitiativeAction::new(
+        fixture.registry.clone(),
+        fixture.store.clone(),
+        fixture.ledger.clone(),
+    )
+    .execute(action)
+    .await
+    .unwrap();
+    assert!(applied.success, "{}", applied.summary);
+    assert!(
+        applied
+            .events
+            .iter()
+            .any(|event| event.event_type == EventType::InitiativeRecoveryRechecked)
+    );
+    let initiative =
+        CampaignStore::load(&fixture.store).unwrap().initiative_view("shared").unwrap();
+    assert!(initiative.completion_proposal.is_some());
+    assert!(!initiative.recovery.unwrap().is_pending());
+    assert!(initiative.owner_decisions.is_empty());
+    assert!(initiative.open_questions.is_empty());
+    assert!(
+        !initiative.status.is_terminal(),
+        "owner completion confirmation is still required"
+    );
+}

@@ -14,6 +14,7 @@ mod initiative_commands;
 mod origin;
 mod pacing_commands;
 mod queue_commands;
+mod recovery_commands;
 mod registry_commands;
 mod render;
 mod sentinel_commands;
@@ -450,6 +451,17 @@ enum CampaignCommands {
         /// (requires --now)
         #[arg(long)]
         discard_work: bool,
+    },
+    /// Reassess an operational blocker from new evidence \[mutates\]
+    /// (example: `foundry campaign recover atlas --recovery recovery_123 --evidence "Toolchain installed"`)
+    Recover {
+        name: String,
+        #[arg(long = "recovery")]
+        recovery_id: String,
+        #[arg(long, required = true)]
+        evidence: Vec<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// Resume an authorized paused or escalated campaign
     Resume {
@@ -1007,6 +1019,25 @@ async fn handle_campaign_command(
                 discard_work,
             )
             .await
+        }
+        CampaignCommands::Recover {
+            name,
+            recovery_id,
+            evidence,
+            json,
+        } => {
+            let output = recovery_commands::recover(
+                addr,
+                offline,
+                recovery_commands::Scope::Campaign,
+                &name,
+                &recovery_id,
+                evidence,
+                json,
+            )
+            .await?;
+            print!("{output}");
+            Ok(())
         }
         CampaignCommands::Resume { name, add_cycles } => {
             campaign_commands::resume(campaigns_path, addr, offline, &name, add_cycles).await

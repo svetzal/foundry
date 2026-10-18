@@ -121,11 +121,7 @@ impl SteerInitiative {
             guard.store.steering_precheck(&initiative.name, &active, &busy)?
         };
         guard.save()?;
-        // An owner's explicit request, pinned or not, is always assessed.
-        if request.trigger_id.is_some()
-            && request.member.is_none()
-            && let Some(reason) = precheck.skip_reason()
-        {
+        if let Some(reason) = steering_wait_reason(request, &initiative, &precheck) {
             return Ok(Preparation::Skip { reason, events });
         }
         let mut snapshot = guard.store.begin_steering(&initiative.name, &trigger.id)?;
@@ -533,18 +529,17 @@ impl SteerInitiative {
                 return Ok(decision);
             }
         }
-        if prepared.snapshot.initiative.open_questions.len()
-            >= prepared.snapshot.initiative.budget.max_open_questions
-        {
+        if reason == "open question budget exhausted" {
             return Ok(foundry_sdk::initiative::SteeringDecision::Escalate {
                 reason: "waiting on owner; open question budget exhausted".into(),
             });
         }
-        Ok(foundry_sdk::initiative::SteeringDecision::Ask {
-            question: format!("Outcome completion lacks evidence: {reason}"),
-            members: vec![],
+        Ok(foundry_sdk::initiative::SteeringDecision::Recover {
+            kind: foundry_sdk::recovery::RecoveryKind::UnmetPrecondition,
+            detail: reason.into(),
         })
     }
+
     fn enforce_question_budget(
         &self,
         prepared: &Prepared,
@@ -867,6 +862,29 @@ fn committed_outcome(
         SteeringCommit::Wait { reason } => (SteeringOutcome::Waited, reason, None),
         SteeringCommit::NoOp { reason } => (SteeringOutcome::NoOp, reason, None),
     }
+}
+
+/// Avoid reassessing an unchanged wait, while allowing new facts and independent work.
+fn steering_wait_reason(
+    request: &InitiativeAdvanceRequestedPayload,
+    initiative: &foundry_sdk::initiative::Initiative,
+    precheck: &foundry_sdk::initiative::SteeringPrecheck,
+) -> Option<String> {
+    if request.member.is_some() {
+        return None;
+    }
+    if request.trigger_id.is_none()
+        && precheck.eligible.is_empty()
+        && let Some(recovery) =
+            initiative.recovery.as_ref().filter(|recovery| recovery.is_pending())
+    {
+        return Some(format!(
+            "recovery '{}' awaits new evidence: {}",
+            recovery.id, recovery.detail
+        ));
+    }
+    // An explicit request is assessed unless it repeats an unresolved recovery.
+    request.trigger_id.as_ref().and_then(|_| precheck.skip_reason())
 }
 
 /// Work, staging and completion actions are admitted against the repository,
