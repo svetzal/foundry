@@ -379,6 +379,10 @@ pub enum EventType {
     /// without this the campaign would go quiet with nothing in the stream to
     /// explain why.
     CampaignPaused,
+    CampaignRecoveryRecorded,
+    CampaignRecoveryRechecked,
+    InitiativeRecoveryRechecked,
+    InitiativeRecoveryRecorded,
     CampaignCompleted,
     /// An operator stopped a campaign before its done-evidence was met. Unlike
     /// a pause — which the operator can see the effect of on the next advance —
@@ -611,11 +615,13 @@ impl EventType {
     /// [`EventType::Custom`] is always `false`; custom third-party workflow
     /// root events can register as span openers at runtime via
     /// `Engine::with_span_openers`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep every event explicitly classified in one exhaustive match"
+    )]
     pub fn is_span_opener(&self) -> bool {
         match self {
-            // Span openers — cycle roots, workflow triggers, and explicit
-            // lifecycle-start events that open a logically distinct unit of
-            // work whose internal events should be grouped together.
+            // Cycle roots and lifecycle starts open a distinct unit of work.
             EventType::MaintenanceCycleStarted
             | EventType::ProjectRunStarted
             | EventType::ProjectIterationRequested
@@ -639,9 +645,7 @@ impl EventType {
             | EventType::OpsDigestStarted
             | EventType::SupplyChainScanStarted
             | EventType::DependencyReviewRequested => true,
-
-            // Non-openers — domain facts, lifecycle ends, and intermediate
-            // steps that belong to an already-open span.
+            // Facts and intermediate steps belong to an existing span.
             EventType::ScanRequested
             | EventType::VulnerabilityDetected
             | EventType::MainBranchAudited
@@ -659,6 +663,10 @@ impl EventType {
             | EventType::TaskRunCompleted
             | EventType::CampaignAdvanceCompleted
             | EventType::CampaignEscalated
+            | EventType::CampaignRecoveryRechecked
+            | EventType::InitiativeRecoveryRechecked
+            | EventType::CampaignRecoveryRecorded
+            | EventType::InitiativeRecoveryRecorded
             | EventType::CampaignPaused
             | EventType::CampaignCompleted
             | EventType::CampaignCancelled

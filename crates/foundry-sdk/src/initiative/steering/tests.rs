@@ -1235,3 +1235,28 @@ fn a_status_note_does_not_invalidate_an_inflight_assessment_or_grant_authority()
         .unwrap();
     assert_eq!(store.find_initiative("shared").unwrap().status_notes.len(), 1);
 }
+
+#[test]
+fn recovering_campaign_blocks_only_its_member_and_decisions_cannot_clear_it() {
+    use crate::recovery::RecoveryKind;
+    let mut store = store();
+    store.find_mut("one").unwrap().status = CampaignStatus::Active;
+    store
+        .record_campaign_recovery(
+            "one",
+            "missing-macos",
+            RecoveryKind::CapabilityUnavailable,
+            "macOS runner missing",
+            Utc::now(),
+        )
+        .unwrap();
+    assert!(store.enforce_member_eligibility("shared", "one", &[]).is_err());
+    store.enforce_member_eligibility("shared", "two", &[]).unwrap();
+    store
+        .find_mut("one")
+        .unwrap()
+        .record_owner_decision("Keep current scope".into(), Utc::now(), 0)
+        .unwrap();
+    assert!(store.find("one").unwrap().recovery.as_ref().unwrap().is_pending());
+    assert!(store.enforce_member_eligibility("shared", "one", &[]).is_err());
+}

@@ -1687,3 +1687,173 @@ async fn status_notes_are_durable_observations_and_save_failure_is_atomic_throug
     assert_eq!(std::fs::read(&path).unwrap(), before);
     server.abort();
 }
+
+#[tokio::test]
+async fn typed_campaign_recheck_preserves_owner_controls_and_refuses_stale_or_empty_evidence() {
+    use foundry_sdk::recovery::RecoveryKind;
+    let home = tempfile::tempdir().unwrap();
+    seed(home.path());
+    let path = home.path().join("campaigns.json");
+    let mut store = CampaignStore::load(&path).unwrap();
+    store
+        .add_initiative(serde_json::from_str(&definition()).unwrap(), &["sample".into()])
+        .unwrap();
+    store.record_question("shared", "Which API?", &["first".into()]).unwrap();
+    store.hold_member("shared", "first", "Owner checks the release").unwrap();
+    store.find_mut("first").unwrap().status = foundry_sdk::campaign::CampaignStatus::Paused;
+    store
+        .record_campaign_recovery(
+            "first",
+            "recovery_environment",
+            RecoveryKind::EnvironmentUnavailable,
+            "Required toolchain is missing",
+            chrono::Utc::now(),
+        )
+        .unwrap();
+    store.save(&path).unwrap();
+    let (mut client, server) = client(home.path()).await;
+    let before = std::fs::read(&path).unwrap();
+    for (id, evidence) in [
+        ("old_recovery", vec!["Toolchain installed".into()]),
+        ("recovery_environment", vec![]),
+    ] {
+        assert!(
+            client
+                .recover_campaign(proto::RecoverRequest {
+                    name: "first".into(),
+                    recovery_id: id.into(),
+                    evidence
+                })
+                .await
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+    let response = client
+        .recover_campaign(proto::RecoverRequest {
+            name: "first".into(),
+            recovery_id: "recovery_environment".into(),
+            evidence: vec!["Toolchain installed and version checked".into()],
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(
+        response.event_id.is_empty(),
+        "an owner pause must prevent reassessment dispatch"
+    );
+    assert!(response.waiting_reason.contains("paused"));
+    assert_eq!(response.recovery.unwrap().kind, "environment_unavailable");
+    let mut restored = CampaignStore::load(&path).unwrap();
+    let resolution = restored
+        .find_mut("first")
+        .unwrap()
+        .recovery
+        .as_mut()
+        .unwrap()
+        .resolution
+        .take()
+        .unwrap();
+    assert_eq!(resolution.evidence, ["Toolchain installed and version checked"]);
+    assert_eq!(
+        serde_json::to_value(restored).unwrap(),
+        serde_json::to_value(store).unwrap(),
+        "recheck changes only recovery resolution, never authority"
+    );
+    let before = std::fs::read(&path).unwrap();
+    assert_eq!(
+        client
+            .recover_campaign(proto::RecoverRequest {
+                name: "first".into(),
+                recovery_id: "recovery_environment".into(),
+                evidence: vec!["Retry duplicate".into()]
+            })
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::FailedPrecondition
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    server.abort();
+}
+
+#[tokio::test]
+async fn typed_initiative_recheck_retains_questions_holds_budgets_and_records_no_policy() {
+    use foundry_sdk::recovery::RecoveryKind;
+    let home = tempfile::tempdir().unwrap();
+    seed(home.path());
+    let path = home.path().join("campaigns.json");
+    let mut store = CampaignStore::load(&path).unwrap();
+    store
+        .add_initiative(serde_json::from_str(&definition()).unwrap(), &["sample".into()])
+        .unwrap();
+    store.record_question("shared", "Which API?", &["first".into()]).unwrap();
+    store.hold_member("shared", "second", "Keep publication hold").unwrap();
+    store
+        .record_initiative_recovery(
+            "shared",
+            "recovery_evidence",
+            RecoveryKind::MissingEvidence,
+            "Required integration gate has no current passing evidence",
+            chrono::Utc::now(),
+        )
+        .unwrap();
+    store.save(&path).unwrap();
+    let (mut client, server) = client(home.path()).await;
+    let response = client
+        .recover_initiative(proto::RecoverRequest {
+            name: "shared".into(),
+            recovery_id: "recovery_evidence".into(),
+            evidence: vec!["Integration fixture corrected; request fresh verification".into()],
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!response.event_id.is_empty());
+    assert_eq!(response.recovery.unwrap().kind, "missing_evidence");
+    let mut restored = CampaignStore::load(&path).unwrap();
+    restored
+        .find_initiative_mut("shared")
+        .unwrap()
+        .recovery
+        .as_mut()
+        .unwrap()
+        .resolution = None;
+    assert_eq!(serde_json::to_value(restored).unwrap(), serde_json::to_value(store).unwrap());
+    server.abort();
+}
+
+#[tokio::test]
+async fn failed_recovery_write_changes_no_state_or_events() {
+    use foundry_sdk::recovery::RecoveryKind;
+    let home = tempfile::tempdir().unwrap();
+    seed(home.path());
+    let path = home.path().join("campaigns.json");
+    let mut store = CampaignStore::load(&path).unwrap();
+    store
+        .record_campaign_recovery(
+            "first",
+            "recovery_runner",
+            RecoveryKind::RunnerUnavailable,
+            "Provider transport is unavailable",
+            chrono::Utc::now(),
+        )
+        .unwrap();
+    store.save(&path).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    std::fs::create_dir(path.with_extension("json.tmp")).unwrap();
+    let (mut client, server) = client(home.path()).await;
+    let error = client
+        .recover_campaign(proto::RecoverRequest {
+            name: "first".into(),
+            recovery_id: "recovery_runner".into(),
+            evidence: vec!["Provider reachable again".into()],
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::Internal);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    tokio::task::yield_now().await;
+    assert!(!home.path().join("events").exists());
+    server.abort();
+}

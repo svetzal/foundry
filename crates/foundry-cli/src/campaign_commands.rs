@@ -176,6 +176,7 @@ pub struct ShowPaths<'a> {
 pub(crate) fn summary_to_proto(campaign: &Campaign) -> crate::proto::Campaign {
     crate::proto::Campaign {
         initiative: campaign.initiative.clone(),
+        recovery: campaign.recovery.as_ref().map(render::recovery::to_proto),
         providers: Some(crate::proto::StageProviders {
             formation: campaign.providers.formation.map(|p| p.to_string()),
             execution: campaign.providers.execution.map(|p| p.to_string()),
@@ -203,6 +204,7 @@ pub(crate) fn summary_to_proto(campaign: &Campaign) -> crate::proto::Campaign {
 pub(crate) fn detail_to_proto(campaign: &Campaign) -> crate::proto::CampaignDetail {
     crate::proto::CampaignDetail {
         initiative: campaign.initiative.clone(),
+        recovery: campaign.recovery.as_ref().map(render::recovery::to_proto),
         providers: Some(crate::proto::StageProviders {
             formation: campaign.providers.formation.map(|p| p.to_string()),
             execution: campaign.providers.execution.map(|p| p.to_string()),
@@ -1032,6 +1034,7 @@ mod tests {
         let mut store = CampaignStore::default();
         store
             .add(Campaign {
+                recovery: None,
                 initiative: None,
                 providers: foundry_sdk::gateway::StageProviders::default(),
                 name: "c".to_string(),
@@ -1491,6 +1494,7 @@ mod tests {
     /// decide tests seed it.
     fn escalated_campaign_for_offline_decide() -> Campaign {
         Campaign {
+            recovery: None,
             initiative: None,
             providers: foundry_sdk::gateway::StageProviders::default(),
             name: "c".to_string(),

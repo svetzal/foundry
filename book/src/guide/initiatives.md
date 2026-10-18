@@ -353,6 +353,63 @@ and its message names the initiative that owns the budget. An active or paused
 member records a `campaign decide` without cycles, as any campaign does. Member grants stay within that total. Raising an individual campaign budget
 cannot authorize an initiative to exceed its shared budget.
 
+### Recover an operational blocker
+
+Operational recovery is separate from an owner decision.
+A recovery record has an ID, a typed cause, the exact blocker and its time.
+It does not grant authority or create an owner question.
+Campaign and initiative reads expose the record in human and JSON output.
+
+| Cause | What needs attention |
+| --- | --- |
+| `capability_unavailable` | A required platform or capability is missing |
+| `access_unavailable` | Required access is unavailable |
+| `environment_unavailable` | The execution environment cannot support the work |
+| `missing_evidence` | Required proof is absent or not current |
+| `unmet_precondition` | A named prerequisite has not been met |
+| `runner_unavailable` | The runner or provider failed before useful assessment |
+
+Inspect the blocker before requesting a recheck:
+
+```bash
+foundry campaign show port-upgrade --json
+foundry campaign recover port-upgrade --recovery recovery_123 \
+  --evidence "Required toolchain installed; version check passed"
+foundry initiative recover shared-contract --recovery recovery_456 \
+  --evidence "Integration fixture repaired; request fresh verification" --json
+```
+
+Use the exact current recovery ID.
+Repeat `--evidence` to name several observations.
+A recheck records evidence and requests fresh assessment under the existing
+limits.
+It does not mark the mission complete or turn failed gates green.
+The same missing prerequisite can produce another recovery record.
+A stale ID, an empty observation, or a terminal target changes nothing.
+Recovery requires the daemon; it has no offline or decision fallback.
+Older daemons refuse the new RPCs without mutation.
+
+An agent can request this recheck after correcting an operational problem
+within its existing authority. No new owner decision is needed for that step.
+Recovery preserves owner questions, publication holds and cycle budgets.
+It also preserves an explicit campaign pause.
+A paused campaign records the evidence without dispatching an assessment.
+
+A recovering campaign member cannot start another cycle until rechecked.
+Other eligible initiative members can continue.
+A completion attempt with unmet prerequisites records their exact reasons.
+It does not open an "Outcome completion lacks evidence" question.
+New settlement evidence can trigger another assessment.
+Only fresh successful completion checks resolve missing-evidence or
+precondition recovery automatically.
+Capability and access blockers need evidence-backed rechecks.
+
+Standalone task blockers retain their typed verdict and preserved work.
+After correcting the prerequisite, use `queue resume <id>` to continue
+that task.
+Each task keeps its own blocker; concurrent task blockers do not overwrite
+an initiative's outcome-recovery record.
+
 ### Keep owner attention bounded
 
 `max_open_questions` limits the shared question list. The default is three.

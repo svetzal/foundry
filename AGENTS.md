@@ -318,6 +318,20 @@ campaigns, release holds, change budgets, or request steering.
 RPC clients must use `RecordInitiativeDecision` with explicit `question_ids`
 to answer questions. Updated CLI decisions refuse older daemons without mutation.
 
+Operational blockers use typed recovery, not owner questions. Campaign and
+initiative `show` expose `recovery` with its ID, cause and exact detail.
+Use `campaign recover <name> --recovery <id> --evidence "<what changed>"` or
+`initiative recover <name> --recovery <id> --evidence "<what changed>"`.
+An agent can request a recheck after an authorized operational correction.
+The daemon reassesses under existing gates, questions, holds and budgets;
+recovery records no owner decision and adds no cycles. A campaign pause stays.
+New RPCs refuse older daemons without a decision or resume fallback.
+Standalone operational blockers preserve work; use `queue resume <id>` after
+correcting their prerequisite. `.foundry/blocker.json` can set `recovery_kind`
+to `capability_unavailable`, `access_unavailable`, `environment_unavailable`,
+`missing_evidence`, `unmet_precondition` or `runner_unavailable`.
+Without that field, legacy blockers still represent owner decisions.
+
 Shared cycles include initiative tasks. Use
 `initiative decide --add-cycles N` to authorize more shared cycles. Once the
 shared budget is spent, `initiative decide` without `--add-cycles` is refused

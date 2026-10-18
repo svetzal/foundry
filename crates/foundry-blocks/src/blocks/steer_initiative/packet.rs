@@ -104,7 +104,7 @@ pub(super) fn prompt(
         "eligibility":eligibility,
         "done_evidence":initiative.done_evidence,"integration_results":integration_results,
         "integration_skipped":snapshot.integration_skipped,
-        "completion_proposal":initiative.completion_proposal});
+        "recovery":initiative.recovery,"completion_proposal":initiative.completion_proposal});
     let (packet, artifact) = bounded_packet(packet, evidence_root)?;
     let contract_guidance = super::super::agent_helpers::INITIATIVE_CONTRACT_GUIDANCE;
     let text = format!(
@@ -123,10 +123,11 @@ hold: {{"decision":"hold","member":"member","until":["prerequisite:landed"],"rea
 relay: {{"decision":"relay","finding":{{full finding record from packet}},"to":["member"]}}
 ask: {{"decision":"ask","question":"one question","members":["member"]}}
 escalate: {{"decision":"escalate","reason":"reason"}}
+recover: {{"decision":"recover","kind":"capability_unavailable|access_unavailable|environment_unavailable|missing_evidence|unmet_precondition|runner_unavailable","detail":"exact operational prerequisite"}}
 wait: {{"decision":"wait","reason":"what the initiative waits for"}}
 stage: {STAGE_ACTION_EXAMPLE}
 done: {{"decision":"done","reviews":[{{"statement":"exact initiative review statement","affirmed":true,"evidence":["checked project-relative path or gate result id"]}}]}}
-Assign a project on advance only to activate an existing intent candidate as a campaign; set dispatch.member only to activate an existing candidate as a task. Stage adds one campaign when uncovered outcome work requires it, and starts no execution. Done requires every required gate to have passed on current trunk identities and every initiative review statement affirmed from checked evidence. A done decision proposes completion for the owner's initiative complete confirmation; it never completes the initiative or closes Tracker itself. If evidence is missing, choose work, stage it, or ask the owner. Use existing exact finding records for relay. Audits are records {{"intent_ref":"et:interaction:id","classification":"realised|partial|absent|misplaced","project":"registered project","paths":["relative/path"],"explanation":"checked evidence"}}.
+Assign a project on advance only to activate an existing intent candidate as a campaign; set dispatch.member only to activate an existing candidate as a task. Stage adds one campaign when uncovered outcome work requires it, and starts no execution. Done requires every required gate to have passed on current trunk identities and every initiative review statement affirmed from checked evidence. A done decision proposes completion for the owner's initiative complete confirmation; it never completes the initiative or closes Tracker itself. If evidence is missing, choose work, stage it, or record typed recovery with the exact prerequisite. Use recover for operational prerequisites that need rechecking, never ask the owner merely because a worker or prerequisite has not settled. Recover records no policy, grants no authority and does not rerun itself. Use existing exact finding records for relay. Audits are records {{"intent_ref":"et:interaction:id","classification":"realised|partial|absent|misplaced","project":"registered project","paths":["relative/path"],"explanation":"checked evidence"}}.
 
 The stage example shows the complete allowed campaign declaration. Optional fields may be omitted: intent_refs, after, context_paths, writable_repositories, budget, providers and agent_provider. Provider stages omitted or null inherit initiative policy. Set the cycle limit ONLY at campaign.budget.max_cycles, with any stage limits inside campaign.budget.stages. Do not flatten max_cycles into campaign, and do not return execution state such as cycles_completed, cycles_landed, status or history. The declaration rejects unknown fields. Choose review evidence, gate evidence, or both as appropriate. A campaign gate has command, required and artifacts; it runs inside its one repository and has no host field. The campaign declaration's after names prerequisite initiative members. To stage an existing intent candidate, set action.member to its exact name; otherwise leave member null.
 

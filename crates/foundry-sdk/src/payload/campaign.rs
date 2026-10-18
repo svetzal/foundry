@@ -26,9 +26,20 @@ pub struct CampaignAdvanceRequestedPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "decision", rename_all = "snake_case")]
 pub enum CampaignDecision {
-    Done { reason: String },
-    Advance { objective: String, reason: String },
-    Escalate { reason: String },
+    Recover {
+        kind: crate::recovery::RecoveryKind,
+        detail: String,
+    },
+    Done {
+        reason: String,
+    },
+    Advance {
+        objective: String,
+        reason: String,
+    },
+    Escalate {
+        reason: String,
+    },
 }
 
 /// What one campaign advance concluded.

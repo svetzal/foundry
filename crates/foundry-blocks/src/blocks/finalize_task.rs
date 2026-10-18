@@ -540,6 +540,7 @@ fn may_land(verdict: &TaskVerdict, gate_results: &[GateResult]) -> bool {
             required.peek().is_some() && required.all(|gate| gate.passed)
         }
         TaskVerdict::Defect { .. }
+        | TaskVerdict::BlockedOnRecovery { .. }
         | TaskVerdict::BlockedOnDecision { .. }
         | TaskVerdict::RunnerError { .. } => false,
     }

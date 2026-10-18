@@ -112,11 +112,12 @@ fn render_review_prompt(objective: &str, gates: &str) -> String {
         "You are the skeptical reviewer for a one-shot engineering task. Inspect the actual source, diff, and tests in the current worktree; do not trust the executor's self-report.\n\n\
          OBJECTIVE (every acceptance/evidence phrase is binding):\n{objective}\n\n\
          MECHANICAL GATE RESULTS:\n{gates}\n\n\
-         Decide exactly one typed verdict. COMPLETE requires every objective and evidence requirement to be satisfied and all REQUIRED gates to pass. OPTIONAL gate failures are advisory and must not block COMPLETE unless the objective itself explicitly makes that result acceptance evidence. This review runs before Finalize Task: tracked modifications and untracked new files are both valid deliverable changes and Finalize Task commits them after a COMPLETE verdict, so do not reject work merely because it is untracked or uncommitted. Files under .foundry/ are Foundry scratch and never land, so a deliverable that cites .foundry/ paths as repository content, or that leaves durable project material only under .foundry/, is a defect. Tests that mask identifiers, compare only counts, inject around the real boundary, or otherwise cannot detect the stated defect do not count. When the objective requires proof through a real or generated boundary, at least one test must exercise that boundary itself and assert its observable request or response; a mock, fake, or stub installed above that boundary is insufficient. Use REMAINDER only for a finite list of missing work on a converging implementation. Use DEFECT for a faulty approach or regression. Use BLOCKED_ON_DECISION when reality exposes a genuine product/policy choice that makes the objective unsatisfiable as written.\n\n\
+         Decide exactly one typed verdict. COMPLETE requires every objective and evidence requirement to be satisfied and all REQUIRED gates to pass. OPTIONAL gate failures are advisory and must not block COMPLETE unless the objective itself explicitly makes that result acceptance evidence. This review runs before Finalize Task: tracked modifications and untracked new files are both valid deliverable changes and Finalize Task commits them after a COMPLETE verdict, so do not reject work merely because it is untracked or uncommitted. Files under .foundry/ are Foundry scratch and never land, so a deliverable that cites .foundry/ paths as repository content, or that leaves durable project material only under .foundry/, is a defect. Tests that mask identifiers, compare only counts, inject around the real boundary, or otherwise cannot detect the stated defect do not count. When the objective requires proof through a real or generated boundary, at least one test must exercise that boundary itself and assert its observable request or response; a mock, fake, or stub installed above that boundary is insufficient. Use REMAINDER only for a finite list of missing work on a converging implementation. Use DEFECT for a faulty approach or regression. Use BLOCKED_ON_RECOVERY for a missing operational capability, access, environment or evidence, with a typed recovery kind and exact missing prerequisite. Use BLOCKED_ON_DECISION when reality exposes a genuine product/policy choice that makes the objective unsatisfiable as written.\n\n\
          End with exactly one JSON object in a fenced json block, using one of these shapes:\n\
          {{\"verdict\":\"complete\"}}\n\
          {{\"verdict\":\"remainder\",\"gaps\":[\"specific gap\"]}}\n\
          {{\"verdict\":\"defect\",\"diagnosis\":\"specific diagnosis\"}}\n\
+         {{\"verdict\":\"blocked_on_recovery\",\"kind\":\"capability_unavailable\",\"detail\":\"missing prerequisite\"}}\n\
          {{\"verdict\":\"blocked_on_decision\",\"finding\":\"finding\",\"options\":[\"option\"]}}"
     ))
 }
@@ -184,6 +185,7 @@ fn review_objective(context: &LoopContext) -> String {
 /// The executor's own account of why it could not reach the acceptance
 /// boundary, read from [`BLOCKER_FILE`].
 struct Blocker {
+    recovery_kind: Option<foundry_sdk::recovery::RecoveryKind>,
     tried: String,
     missing: String,
     question: String,
@@ -201,10 +203,20 @@ impl Blocker {
     /// as the question the owner answers; what is missing and what was tried
     /// follow in the executor's own words.
     fn finding(&self) -> String {
-        format!("{} (missing: {}; tried: {})", self.question, self.missing, self.tried)
+        if self.question.is_empty() {
+            format!("missing: {}; tried: {}", self.missing, self.tried)
+        } else {
+            format!("{} (missing: {}; tried: {})", self.question, self.missing, self.tried)
+        }
     }
 
     fn into_verdict(self, finding: String) -> TaskVerdict {
+        if let Some(kind) = self.recovery_kind {
+            return TaskVerdict::BlockedOnRecovery {
+                kind,
+                detail: finding,
+            };
+        }
         let options = if self.options.is_empty() {
             DEFAULT_BLOCKER_OPTIONS.iter().map(ToString::to_string).collect()
         } else {
@@ -250,10 +262,19 @@ fn read_blocker(repo: &std::path::Path) -> Option<Result<Blocker, String>> {
                 .collect::<anyhow::Result<_>>()?,
             other => anyhow::bail!("options must be an array, found {}", json_type(other)),
         };
+        let recovery_kind = value
+            .get("recovery_kind")
+            .map(|kind| serde_json::from_value(kind.clone()))
+            .transpose()?;
         Ok(Blocker {
+            recovery_kind,
             tried: text("tried")?,
             missing: text("missing")?,
-            question: text("question")?,
+            question: if recovery_kind.is_some() && value.get("question").is_none() {
+                String::new()
+            } else {
+                text("question")?
+            },
             options,
         })
     };
@@ -378,10 +399,24 @@ fn campaign_proof_review(
     project: &str,
     results: &[foundry_sdk::gates::GateResult],
 ) -> Option<TaskReviewedPayload> {
-    if context.campaign_limits.is_none() || throttle == Throttle::DryRun {
+    if throttle == Throttle::DryRun {
         return None;
     }
-    let (verdict, review) = early_evidence_verdict(directory)?;
+    let (verdict, review) = if context.campaign_limits.is_some() {
+        early_evidence_verdict(directory)?
+    } else {
+        match read_blocker(directory) {
+            Some(Ok(blocker)) if blocker.recovery_kind.is_some() => {
+                let detail = blocker.finding();
+                (
+                    blocker.into_verdict(detail.clone()),
+                    format!("execution blocked before the acceptance boundary: {detail}"),
+                )
+            }
+            Some(Err(reason)) => defect(reason),
+            _ => return None,
+        }
+    };
     Some(early_review_payload(
         project,
         objective.into(),
@@ -599,7 +634,7 @@ fn needs_review_verdict(reason: String) -> TaskVerdict {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_review_prompt, parse_verdict};
+    use super::{LoopContext, Throttle, build_review_prompt, campaign_proof_review, parse_verdict};
 
     #[tokio::test]
     async fn reviewer_receives_its_provider_and_shared_brief_identity() {
@@ -707,6 +742,60 @@ mod tests {
             "question": "Can you provide a macOS runner for the Swift timeout diagnosis?",
             "options": ["Register a macOS runner", "Drop Darwin timeouts from this objective"]
         })
+    }
+
+    #[tokio::test]
+    async fn explicitly_typed_operational_blocker_requires_recovery_instead_of_owner_judgement() {
+        let mut blocker = darwin_blocker();
+        blocker["recovery_kind"] = serde_json::json!("capability_unavailable");
+        blocker.as_object_mut().unwrap().remove("question");
+        let (payload, asked) =
+            review_campaign_worktree(&[(".foundry/blocker.json", blocker.to_string())]).await;
+        assert_eq!(asked, 0);
+        assert_eq!(payload["verdict"], "blocked_on_recovery");
+        assert_eq!(payload["kind"], "capability_unavailable");
+        assert!(payload["detail"].as_str().unwrap().contains("macOS host"));
+        assert!(payload.get("options").is_none());
+        blocker["recovery_kind"] = serde_json::json!("anything_goes");
+        let (invalid, _) =
+            review_campaign_worktree(&[(".foundry/blocker.json", blocker.to_string())]).await;
+        assert_eq!(
+            invalid["verdict"], "defect",
+            "unknown operational kinds cannot silently become owner choices"
+        );
+    }
+
+    #[test]
+    fn standalone_operational_blocker_is_checked_without_requiring_campaign_proof() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join(".foundry")).unwrap();
+        let mut blocker = darwin_blocker();
+        blocker["recovery_kind"] = serde_json::json!("capability_unavailable");
+        blocker.as_object_mut().unwrap().remove("question");
+        std::fs::write(directory.path().join(".foundry/blocker.json"), blocker.to_string())
+            .unwrap();
+        let result = campaign_proof_review(
+            directory.path(),
+            Throttle::Full,
+            &LoopContext::default(),
+            "diagnose timeout",
+            "p",
+            &[],
+        )
+        .unwrap();
+        assert!(matches!(result.verdict, TaskVerdict::BlockedOnRecovery { .. }));
+        std::fs::remove_file(directory.path().join(".foundry/blocker.json")).unwrap();
+        assert!(
+            campaign_proof_review(
+                directory.path(),
+                Throttle::Full,
+                &LoopContext::default(),
+                "ordinary task",
+                "p",
+                &[]
+            )
+            .is_none()
+        );
     }
 
     // Production, 2026-10-17 (campaign mojentic-3-0-sw): an executor that

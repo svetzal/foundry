@@ -274,10 +274,24 @@ fn apply_idle(
         guard
             .store
             .propose_completion(&initiative.name, &action.id, snapshot, reviews.clone())?;
+        if let Some(recovery) =
+            initiative.recovery.as_ref().filter(|recovery| recovery.is_pending())
+            && matches!(
+                recovery.kind,
+                foundry_sdk::recovery::RecoveryKind::UnmetPrecondition
+                    | foundry_sdk::recovery::RecoveryKind::MissingEvidence
+            )
+        {
+            guard.store.recover_initiative(&initiative.name, &recovery.id,
+                &[format!("outcome gates, reviews, settled members and current trunks verified by steering {}", action.id)], chrono::Utc::now())?;
+        }
     }
     guard.store.finish_steering_action(&initiative.name, &action.id)?;
     guard.save()?;
-    let facts = if let SteeringDecision::Relay { finding, .. } = &action.decision {
+    let facts = if matches!(action.decision, SteeringDecision::Recover { .. }) {
+        vec![trigger.with_payload(EventType::InitiativeRecoveryRecorded,
+            &serde_json::json!({"initiative":initiative.name,"recovery":guard.store.initiative_view(&initiative.name)?.recovery}))?]
+    } else if let SteeringDecision::Relay { finding, .. } = &action.decision {
         let current = guard
             .store
             .find_finding(&finding.id)
@@ -297,6 +311,18 @@ fn apply_idle(
         vec![]
     };
     let mut events = facts;
+    if initiative
+        .recovery
+        .as_ref()
+        .is_some_and(foundry_sdk::recovery::RecoveryState::is_pending)
+        && let Some(recovery) = guard.store.initiative_view(&initiative.name)?.recovery
+        && !recovery.is_pending()
+    {
+        events.push(trigger.with_payload(
+            EventType::InitiativeRecoveryRechecked,
+            &serde_json::json!({"initiative":initiative.name,"recovery":recovery}),
+        )?);
+    }
     if action.decision.changes_state_without_dispatch() {
         events.extend(follow_up_request(
             trigger,

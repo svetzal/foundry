@@ -70,6 +70,7 @@ fn cycle(id: &str, number: u64, state: WorkItemState, minutes: i64) -> WorkItem 
 
 fn campaign(status: CampaignStatus) -> Campaign {
     Campaign {
+        recovery: None,
         initiative: None,
         providers: foundry_sdk::gateway::StageProviders::default(),
         name: CAMPAIGN.into(),

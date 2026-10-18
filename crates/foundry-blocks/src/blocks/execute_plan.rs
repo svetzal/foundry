@@ -49,7 +49,8 @@ BLOCKED: if you cannot reach the acceptance boundary because a capability, acces
   "question": "the one question for the owner",
   "options": ["...", "..."]
 }
-tried, missing and question are non-empty strings. options is optional; when present it is an array of non-empty strings, each a concrete choice for the owner. Foundry asks the owner your question and does not run this objective again until the owner answers.
+For an operational prerequisite, add "recovery_kind" with one of "capability_unavailable", "access_unavailable", "environment_unavailable", "missing_evidence", "unmet_precondition" or "runner_unavailable". Foundry records a recovery and rechecks after recovery evidence; this does not request owner judgement. Omit recovery_kind only for a real choice that needs owner authority.
+tried and missing are non-empty strings. For typed operational recovery, question and options may be omitted. Otherwise question is required and non-empty; options is optional and holds non-empty concrete owner choices. Only an untyped owner-decision blocker asks the owner a question and waits for their answer.
 WRITABLE REPOSITORY: this isolated worktree only; do not edit sibling checkouts, dispatch nested Foundry work, commit, or push.
 "#;
 

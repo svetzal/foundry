@@ -185,6 +185,7 @@ fn seed_campaign(path: &Path, status: CampaignStatus) {
         initiatives: vec![],
         version: 1,
         campaigns: vec![Campaign {
+            recovery: None,
             initiative: None,
             providers: foundry_sdk::gateway::StageProviders::default(),
             name: CAMPAIGN.to_string(),

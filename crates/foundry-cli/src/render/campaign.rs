@@ -10,6 +10,9 @@ use serde::Serialize;
 /// code path do not need to re-read the campaign store after a successful RPC.
 pub fn campaign_detail_proto(detail: &crate::proto::CampaignDetail) -> String {
     let mut out = String::new();
+    if let Some(recovery) = &detail.recovery {
+        out.push_str(&super::recovery::detail("campaign", &detail.name, recovery));
+    }
     let _ = writeln!(out, "Name:       {}", detail.name);
     let _ = writeln!(out, "Project:    {}", detail.project);
     let _ = writeln!(out, "Status:     {}", detail.status);
@@ -292,6 +295,8 @@ struct JsonCampaignShow<'a> {
     owner_decisions: Vec<JsonOwnerDecision<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     open_escalation: Option<JsonEscalation<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery: Option<&'a crate::proto::RecoveryState>,
     owner_options: Vec<OwnerOption>,
     cycles: Vec<super::queue::JsonItem<'a>>,
 }
@@ -308,6 +313,7 @@ pub fn campaign_show_json(
     items: &[crate::proto::WorkItem],
 ) -> String {
     let show = JsonCampaignShow {
+        recovery: detail.recovery.as_ref(),
         name: &detail.name,
         project: &detail.project,
         mission: &detail.mission,
@@ -723,6 +729,7 @@ mod tests {
 
     fn campaign_fixture() -> Campaign {
         Campaign {
+            recovery: None,
             name: "harden-auth".to_string(),
             project: "widgetco".to_string(),
             mission: "Harden the auth module".to_string(),
@@ -754,6 +761,7 @@ mod tests {
 
     fn proto_detail_fixture() -> crate::proto::CampaignDetail {
         crate::proto::CampaignDetail {
+            recovery: None,
             name: "harden-auth".to_string(),
             project: "widgetco".to_string(),
             mission: "Harden the auth module".to_string(),

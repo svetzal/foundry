@@ -142,6 +142,10 @@ pub struct SteeringFollowUp {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "decision", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SteeringDecision {
+    Recover {
+        kind: crate::recovery::RecoveryKind,
+        detail: String,
+    },
     Advance {
         member: String,
         #[serde(default)]
@@ -230,6 +234,7 @@ impl SteeringDecision {
     #[must_use]
     pub fn tag(&self) -> &'static str {
         match self {
+            Self::Recover { .. } => "recover",
             Self::Advance { .. } => "advance",
             Self::Dispatch { .. } => "dispatch",
             Self::Hold { .. } => "hold",
@@ -553,6 +558,15 @@ impl CampaignStore {
     ) -> Result<Option<String>> {
         let initiative = self.require_initiative(name)?;
         Ok(match decision {
+            SteeringDecision::Recover { kind, detail } => initiative
+                .recovery
+                .as_ref()
+                .filter(|recovery| {
+                    recovery.is_pending() && recovery.kind == *kind && recovery.detail == *detail
+                })
+                .map(|recovery| {
+                    format!("recovery '{}' already records this prerequisite", recovery.id)
+                }),
             SteeringDecision::Hold { member, until, .. } => {
                 initiative.holds.iter().find(|hold| hold.member == *member).and_then(|hold| {
                     if hold.owner {
@@ -856,6 +870,9 @@ impl CampaignStore {
             }
             SteeringDecision::Stage { campaign, member } => {
                 self.stage_initiative_campaign(name, campaign, member.as_deref())?;
+            }
+            SteeringDecision::Recover { kind, detail } => {
+                self.record_initiative_recovery(name, id, *kind, detail, Utc::now())?;
             }
             SteeringDecision::Done { reviews } => self.validate_outcome_reviews(name, reviews)?,
             SteeringDecision::Wait { .. } => {
@@ -1390,6 +1407,16 @@ impl CampaignStore {
             .iter()
             .find(|definition| definition.name == member)
             .ok_or_else(|| InitiativeError::NotFound(format!("member '{member}' not found")))?;
+        if let Some(recovery) = self
+            .find(member)
+            .and_then(|campaign| campaign.recovery.as_ref())
+            .filter(|recovery| recovery.is_pending())
+        {
+            return Err(InitiativeError::Precondition(format!(
+                "member '{member}' waits on recovery '{}': {}",
+                recovery.id, recovery.detail
+            )));
+        }
         if definition
             .intent_state
             .as_deref()

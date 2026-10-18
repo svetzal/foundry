@@ -77,6 +77,7 @@ impl RecordInitiativeTaskResult {
             }
             TaskVerdict::Defect { diagnosis } => vec![(FindingKind::Regression, diagnosis)],
             TaskVerdict::BlockedOnDecision { finding, .. } => vec![(FindingKind::Blocker, finding)],
+            TaskVerdict::BlockedOnRecovery { detail, .. } => vec![(FindingKind::Blocker, detail)],
             _ => vec![],
         };
         for (index, (kind, text)) in learned.into_iter().enumerate() {

@@ -244,19 +244,64 @@ impl CampaignStore {
 
     fn require_settled_outcome(&self, name: &str) -> Result<()> {
         let initiative = self.require_initiative(name)?;
-        if initiative.status.is_terminal()
-            || initiative.authorized_by.as_ref().is_none_or(|owner| owner.trim().is_empty())
-            || !initiative.open_questions.is_empty()
-            || !initiative.reservations.is_empty()
-            || self.campaigns.iter().any(|campaign| {
-                campaign.initiative.as_deref() == Some(name)
-                    && (campaign.status == CampaignStatus::Escalated
-                        || campaign.has_cycle_in_flight())
-            })
+        let mut unmet = Vec::new();
+        if let Some(recovery) =
+            initiative.recovery.as_ref().filter(|recovery| recovery.is_pending())
+            && !matches!(
+                recovery.kind,
+                crate::recovery::RecoveryKind::UnmetPrecondition
+                    | crate::recovery::RecoveryKind::MissingEvidence
+            )
         {
-            return Err(InitiativeError::Precondition(
-                "outcome requires settled member work and no open owner questions".into(),
+            unmet.push(format!(
+                "operational recovery '{}' remains pending: {}",
+                recovery.id, recovery.detail
             ));
+        }
+
+        if initiative.status.is_terminal() {
+            unmet.push(format!("initiative is {}", initiative.status));
+        }
+        if initiative.authorized_by.as_ref().is_none_or(|owner| owner.trim().is_empty()) {
+            unmet.push("initiative has no owner authorization".into());
+        }
+        if !initiative.open_questions.is_empty() {
+            unmet.push(format!(
+                "owner questions remain open: {}",
+                initiative
+                    .open_questions
+                    .iter()
+                    .map(|question| question.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        for reservation in &initiative.reservations {
+            unmet.push(format!(
+                "member '{}' has reservation '{}'",
+                reservation.member, reservation.operation_id
+            ));
+        }
+        for campaign in self
+            .campaigns
+            .iter()
+            .filter(|campaign| campaign.initiative.as_deref() == Some(name))
+        {
+            if campaign.status == CampaignStatus::Escalated {
+                unmet.push(format!(
+                    "campaign '{}' has an unresolved owner escalation",
+                    campaign.name
+                ));
+            }
+            if campaign.has_cycle_in_flight() {
+                unmet.push(format!("campaign '{}' has a cycle in flight", campaign.name));
+            }
+        }
+        if !unmet.is_empty() {
+            return Err(InitiativeError::Precondition(format!(
+                "outcome cannot complete: {}",
+                unmet.join("; ")
+            )));
         }
         Ok(())
     }

@@ -78,6 +78,7 @@ fn make_service() -> (FoundryService, NamedTempFile, TempDir) {
 
 fn sample_campaign(name: &str, project: &str) -> Campaign {
     Campaign {
+        recovery: None,
         initiative: None,
         providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),

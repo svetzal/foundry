@@ -61,6 +61,17 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Reassess an operational blocker from new evidence \[mutates\]
+    /// (example: `foundry initiative recover shared --recovery recovery_123 --evidence "Worker settled"`)
+    Recover {
+        name: String,
+        #[arg(long = "recovery")]
+        recovery_id: String,
+        #[arg(long, required = true)]
+        evidence: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Hold a member until an owner release or named milestones \[mutates\]
     Hold {
         name: String,
@@ -261,6 +272,24 @@ pub async fn run_and_render(
     addr: &str,
     offline: bool,
 ) -> Result<String> {
+    if let Commands::Recover {
+        name,
+        recovery_id,
+        evidence,
+        json,
+    } = command
+    {
+        return crate::recovery_commands::recover(
+            addr,
+            offline,
+            crate::recovery_commands::Scope::Initiative,
+            &name,
+            &recovery_id,
+            evidence,
+            json,
+        )
+        .await;
+    }
     if offline {
         return run_offline(command, store_path, registry_path);
     }
@@ -399,6 +428,7 @@ async fn run_online(command: Commands, addr: &str) -> Result<String> {
             Ok(format!("Cancelled initiative '{name}'.\n"))
         }
         Commands::Brief(_) => unreachable!("brief handled before other online commands"),
+        Commands::Recover { .. } => unreachable!("recovery handled before transport selection"),
         command @ (Commands::Advance { .. } | Commands::Derive { .. }) => {
             steering_command_online(command, &mut client).await
         }

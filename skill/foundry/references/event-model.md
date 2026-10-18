@@ -386,3 +386,13 @@ It carries the initiative name and the status note, with its text and time.
 It does not request steering or change questions, budgets, holds or campaigns.
 `initiative_decided` records binding policy and the explicit `question_ids`
 answered by that decision. An empty list means no questions were answered.
+
+### Operational recovery
+
+`campaign_recovery_recorded` and `initiative_recovery_recorded` retain typed
+operational blockers separately from owner questions.
+`campaign_recovery_rechecked` and `initiative_recovery_rechecked` retain
+recheck evidence. They do not create owner policy.
+A successful recheck can emit the existing campaign or initiative assessment
+request. Existing admission, pacing and execution guards still apply.
+Task verdict `blocked_on_recovery` preserves work and carries the typed cause.

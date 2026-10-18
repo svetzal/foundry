@@ -125,6 +125,7 @@ fn make_service_with_campaigns_path(
 
 fn escalated_campaign(name: &str) -> Campaign {
     Campaign {
+        recovery: None,
         initiative: None,
         providers: foundry_sdk::gateway::StageProviders::default(),
         name: name.to_string(),

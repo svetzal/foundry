@@ -21,6 +21,10 @@ pub enum TaskVerdict {
         finding: String,
         options: Vec<String>,
     },
+    BlockedOnRecovery {
+        kind: crate::recovery::RecoveryKind,
+        detail: String,
+    },
     RunnerError {
         detail: String,
     },
@@ -63,6 +67,7 @@ impl TaskVerdict {
             Self::Remainder { .. } => "remainder",
             Self::Defect { .. } => "defect",
             Self::BlockedOnDecision { .. } => "blocked_on_decision",
+            Self::BlockedOnRecovery { .. } => "blocked_on_recovery",
             Self::RunnerError { .. } => "runner_error",
         }
     }
@@ -209,6 +214,10 @@ mod tests {
             TaskVerdict::BlockedOnDecision {
                 finding: String::new(),
                 options: vec![],
+            },
+            TaskVerdict::BlockedOnRecovery {
+                kind: crate::recovery::RecoveryKind::CapabilityUnavailable,
+                detail: String::new(),
             },
             TaskVerdict::RunnerError {
                 detail: String::new(),

@@ -198,6 +198,7 @@ pub(crate) fn blocking_reason(
             let verdict = match &done.verdict {
                 TaskVerdict::Remainder { .. } => "remainder",
                 TaskVerdict::Defect { .. } => "defect",
+                TaskVerdict::BlockedOnRecovery { .. } => "blocked-on-recovery",
                 TaskVerdict::BlockedOnDecision { .. } => "blocked-on-decision",
                 // Accepted by review but kept off trunk (trunk moved under it,
                 // say): the upgrade is done, just not integrated yet.

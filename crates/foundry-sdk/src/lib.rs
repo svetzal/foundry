@@ -13,6 +13,7 @@ pub mod loop_context;
 pub mod pacing;
 pub mod paths;
 pub mod payload;
+pub mod recovery;
 pub mod registry;
 pub mod scatter;
 pub mod sentinel;

@@ -74,7 +74,12 @@ impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::Body>>
         &mut self,
         mut request: tonic::codegen::http::Request<tonic::body::Body>,
     ) -> Self::Future {
-        if self.legacy && request.uri().path().ends_with("/RecordInitiativeDecision") {
+        if self.legacy
+            && matches!(
+                request.uri().path().rsplit('/').next(),
+                Some("RecordInitiativeDecision" | "RecoverCampaign" | "RecoverInitiative")
+            )
+        {
             *request.uri_mut() = "/foundry.Foundry/UnavailableDecisionMethod".parse().unwrap();
         }
         self.inner.call(request)
@@ -290,6 +295,119 @@ async fn cli_refuses_older_decision_rpc_without_falling_back_or_mutating() {
             String::from_utf8_lossy(&output.stderr).contains("does not support question-specific")
         );
         assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+    server.abort();
+}
+
+fn recovery_fixture(home: &Path) {
+    use foundry_sdk::recovery::RecoveryKind;
+    let mut store = CampaignStore::default();
+    store.add(serde_json::from_value(json!({"name":"member","project":"sample","mission":"Ship contract", "status":"paused", "authorized_by":"Test", "done_evidence":[{"kind":"review","statement":"Works"}]})).unwrap()).unwrap();
+    store.add_initiative(serde_json::from_value(json!({"name":"shared","outcome":"Works","projects":["sample"],"authorized_by":"Test","members":[{"kind":"campaign","name":"member"}],"done_evidence":[{"kind":"review","statement":"Works"}]})).unwrap(), &["sample".into()]).unwrap();
+    store
+        .record_campaign_recovery(
+            "member",
+            "recovery_runner",
+            RecoveryKind::RunnerUnavailable,
+            "Runner transport unavailable",
+            chrono::Utc::now(),
+        )
+        .unwrap();
+    store
+        .record_initiative_recovery(
+            "shared",
+            "recovery_evidence",
+            RecoveryKind::MissingEvidence,
+            "Current integration proof is missing",
+            chrono::Utc::now(),
+        )
+        .unwrap();
+    store.save(&home.join("campaigns.json")).unwrap();
+}
+
+#[tokio::test]
+async fn recovery_cli_reads_typed_state_and_preserves_pause_questions_and_policy() {
+    let home = tempfile::tempdir().unwrap();
+    recovery_fixture(home.path());
+    let path = home.path().join("campaigns.json");
+    let before = CampaignStore::load(&path).unwrap();
+    let (address, server) = daemon(home.path(), home.path()).await;
+    let show = tokio::process::Command::new(env!("CARGO_BIN_EXE_foundry"))
+        .args(["--addr", &address, "campaign", "show", "member", "--json"])
+        .output()
+        .await
+        .unwrap();
+    assert!(show.status.success(), "{}", String::from_utf8_lossy(&show.stderr));
+    let shown: serde_json::Value = serde_json::from_slice(&show.stdout).unwrap();
+    assert_eq!(shown["recovery"]["kind"], "runner_unavailable");
+    let recovered = tokio::process::Command::new(env!("CARGO_BIN_EXE_foundry"))
+        .args([
+            "--addr",
+            &address,
+            "campaign",
+            "recover",
+            "member",
+            "--recovery",
+            "recovery_runner",
+            "--evidence",
+            "Provider reachable again",
+            "--json",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(recovered.status.success(), "{}", String::from_utf8_lossy(&recovered.stderr));
+    let response: serde_json::Value = serde_json::from_slice(&recovered.stdout).unwrap();
+    assert_eq!(response["event_id"], "");
+    assert!(response["waiting_reason"].as_str().unwrap().contains("paused"));
+    let mut after = CampaignStore::load(&path).unwrap();
+    after.find_mut("member").unwrap().recovery.as_mut().unwrap().resolution = None;
+    assert_eq!(serde_json::to_value(before).unwrap(), serde_json::to_value(after).unwrap());
+    server.abort();
+}
+
+#[tokio::test]
+async fn recovery_cli_refuses_offline_and_older_daemons_without_decision_or_resume_fallback() {
+    let home = tempfile::tempdir().unwrap();
+    recovery_fixture(home.path());
+    let path = home.path().join("campaigns.json");
+    let before = std::fs::read(&path).unwrap();
+    let (address, server) = daemon_with_legacy_decisions(home.path(), home.path(), true).await;
+    for (scope, name, id) in [
+        ("campaign", "member", "recovery_runner"),
+        ("initiative", "shared", "recovery_evidence"),
+    ] {
+        for offline in [false, true] {
+            let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_foundry"));
+            command.env("FOUNDRY_CAMPAIGNS_PATH", &path).args(["--addr", &address]);
+            if offline {
+                command.arg("--offline");
+            }
+            let output = command
+                .args([
+                    scope,
+                    "recover",
+                    name,
+                    "--recovery",
+                    id,
+                    "--evidence",
+                    "Prerequisite corrected",
+                ])
+                .output()
+                .await
+                .unwrap();
+            assert!(!output.status.success());
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                if offline {
+                    error.contains("remove --offline")
+                } else {
+                    error.contains("does not support typed recovery")
+                },
+                "{error}"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
     }
     server.abort();
 }

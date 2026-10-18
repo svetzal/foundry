@@ -490,3 +490,23 @@ fn current_audit_receipts_do_not_invalidate_gate_evidence_for_unchanged_intent()
         assert!(changed.validate_completion("test", &changed_snapshot).is_err());
     }
 }
+
+#[test]
+fn unmet_completion_preconditions_identify_the_exact_waiting_work() {
+    use crate::initiative::{MemberReservation, ReservationKind};
+    let mut store = store();
+    store.record_required_question("test", "Which public contract?", &[]).unwrap();
+    let question_id = store.find_initiative("test").unwrap().open_questions[0].id.clone();
+    store.find_initiative_mut("test").unwrap().reservations.push(MemberReservation {
+        member: "swift".into(),
+        operation_id: "swift-probe".into(),
+        kind: ReservationKind::Task,
+    });
+    let error = store.require_settled_outcome("test").unwrap_err().to_string();
+    assert!(error.contains(&question_id), "{error}");
+    assert!(error.contains("member 'swift' has reservation 'swift-probe'"), "{error}");
+    assert!(
+        !error.contains("requires settled member work"),
+        "a generic error conceals the recovery action"
+    );
+}
