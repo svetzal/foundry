@@ -26,6 +26,25 @@ pub fn owner_action(name: &str, event_id: &str) -> String {
     }
 }
 
+pub fn decision_recorded(initiative: &Initiative) -> String {
+    let count = initiative.owner_decisions.last().map_or(0, |record| record.question_ids.len());
+    if count == 0 {
+        format!(
+            "Recorded policy for initiative '{}'. No questions were answered.\n",
+            initiative.name
+        )
+    } else {
+        format!(
+            "Recorded decision for initiative '{}', answering {count} selected question(s). Other questions are unchanged.\n",
+            initiative.name
+        )
+    }
+}
+
+pub fn status_recorded(name: &str) -> String {
+    format!("Recorded status note for initiative '{name}'. Questions and policy are unchanged.\n")
+}
+
 pub fn detail(initiative: &Initiative) -> String {
     let mut out = format!(
         "Initiative '{}' ({})\nOutcome: {}\n",
@@ -107,6 +126,12 @@ pub fn detail(initiative: &Initiative) -> String {
                 decision.decision,
                 decision.members.join(", ")
             );
+        }
+    }
+    if !initiative.status_notes.is_empty() {
+        out.push_str("\nStatus notes (observations, not policy):\n");
+        for note in &initiative.status_notes {
+            let _ = writeln!(out, "{}: {}", note.recorded_at, note.text);
         }
     }
     out
@@ -238,22 +263,23 @@ fn render_questions(out: &mut String, initiative: &Initiative) {
     if initiative.deferred_question_count > 0 {
         let _ = writeln!(
             out,
-            "{} further unanswered question(s) wait for room. Answer a listed question to see the next.",
+            "{} further unanswered question(s) wait for room on the shared question list.",
             initiative.deferred_question_count
         );
     }
-    for question in &initiative.open_questions {
+    for question in initiative.open_questions.iter().chain(&initiative.deferred_questions) {
         let _ = writeln!(
             out,
-            "{} (members: {}; opened {})",
+            "{}: {} (members: {}; opened {})",
+            question.id,
             question.question,
             question.members.join(", "),
             question.opened_at
         );
         let _ = write!(
             out,
-            "  next: foundry initiative decide {} --decision '<answer>'",
-            initiative.name
+            "  next: foundry initiative decide {} --question {} --decision '<answer>'",
+            initiative.name, question.id
         );
         for member in &question.members {
             let _ = write!(out, " --member {member}");
@@ -316,6 +342,7 @@ mod tests {
             name: "shared".into(),
             outcome: "A shared result".into(),
             open_questions: vec![crate::proto::InitiativeQuestion {
+                id: "question_contract".into(),
                 question: "Which contract?".into(),
                 members: vec!["a".into(), "b".into()],
                 ..Default::default()
@@ -326,7 +353,7 @@ mod tests {
         assert_eq!(rendered.matches("Which contract?").count(), 1);
         assert!(
             rendered
-                .contains("initiative decide shared --decision '<answer>' --member a --member b")
+                .contains("initiative decide shared --question question_contract --decision '<answer>' --member a --member b")
         );
     }
 

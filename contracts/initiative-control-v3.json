@@ -3265,7 +3265,14 @@
           "request": {
             "name": "shared",
             "decision": "Spend three more cycles",
-            "addCycles": "3"
+            "addCycles": "3",
+            "questionIds": [
+              "question_280a306ae385f97fb1652ecdb504f39883318d3d2a708e57c489a8aace2d4fc1"
+            ],
+            "members": [
+              "first",
+              "second"
+            ]
           },
           "response": {
             "initiative": {

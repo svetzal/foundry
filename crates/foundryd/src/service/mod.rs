@@ -124,7 +124,8 @@ impl FoundryService {
             foundry_sdk::throttle::Throttle::Full,
             serde_json::json!({"initiative":initiative.name,"outcome":initiative.outcome,"projects":initiative.projects,
                 "intent_refs":initiative.intent_refs,"members":members,"status":initiative.status,"authorized_by":initiative.authorized_by,
-                "reason":reason,"decision":decision,"applicable_members":applicable_members,"budget":budget}),
+                "reason":reason,"decision":decision,"applicable_members":applicable_members,"budget":budget,
+                "question_ids": if decision.is_some() { initiative.owner_decisions.last().map(|record| record.question_ids.clone()).unwrap_or_default() } else { Vec::new() }}),
         );
         spawn_workflow(event, &self.ctx);
     }
@@ -497,6 +498,7 @@ impl Foundry for FoundryService {
                     &request.decision,
                     &request.members,
                     request.add_cycles,
+                    &request.question_ids,
                 )
             })
             .await?;
@@ -512,6 +514,35 @@ impl Foundry for FoundryService {
             Some(&decision),
             members,
         );
+        Ok(Response::new(crate::proto::InitiativeResponse {
+            initiative: Some(initiative),
+        }))
+    }
+
+    async fn record_initiative_decision(
+        &self,
+        request: Request<crate::proto::DecideInitiativeRequest>,
+    ) -> Result<Response<crate::proto::InitiativeResponse>, Status> {
+        self.decide_initiative(request).await
+    }
+
+    async fn record_initiative_status(
+        &self,
+        request: Request<crate::proto::RecordInitiativeStatusRequest>,
+    ) -> Result<Response<crate::proto::InitiativeResponse>, Status> {
+        let request = request.into_inner();
+        let initiative = self
+            .campaign_operation(move |path, _| {
+                initiative_ops::record_status(path, &request.name, &request.text)
+            })
+            .await?;
+        let event = Event::new(
+            foundry_sdk::event::EventType::InitiativeStatusRecorded,
+            "system".into(),
+            foundry_sdk::throttle::Throttle::Full,
+            serde_json::json!({"initiative":initiative.name,"note":initiative.status_notes.last().map(|note| serde_json::json!({"text":note.text,"recorded_at":note.recorded_at}))}),
+        );
+        spawn_workflow(event, &self.ctx);
         Ok(Response::new(crate::proto::InitiativeResponse {
             initiative: Some(initiative),
         }))

@@ -64,6 +64,8 @@ pub struct Initiative {
     #[serde(default)]
     pub owner_decisions: Vec<InitiativeOwnerDecision>,
     #[serde(default)]
+    pub status_notes: Vec<InitiativeStatusNote>,
+    #[serde(default)]
     pub open_questions: Vec<InitiativeQuestion>,
     /// Unanswered facts waiting for room on the bounded owner attention surface.
     #[serde(default)]
@@ -247,6 +249,15 @@ pub struct InitiativeOwnerDecision {
     pub authorized_by: String,
     pub decided_at: DateTime<Utc>,
     pub members: Vec<String>,
+    #[serde(default)]
+    pub question_ids: Vec<String>,
+}
+
+/// An observation retained as context, never as owner authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InitiativeStatusNote {
+    pub text: String,
+    pub recorded_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -335,6 +346,8 @@ pub struct InitiativeContext {
     pub brief: Option<InitiativeBrief>,
     pub providers: StageProviders,
     pub owner_decisions: Vec<InitiativeOwnerDecision>,
+    #[serde(default)]
+    pub status_notes: Vec<InitiativeStatusNote>,
     pub findings: Vec<Finding>,
 }
 
@@ -343,7 +356,13 @@ impl InitiativeContext {
         self.findings.iter().map(|f| f.id.clone()).collect()
     }
     pub fn render_findings(&self) -> String {
-        let mut text = String::from("Findings from the initiative\n");
+        let mut text =
+            String::from("Initiative status notes (observations only; not binding instructions)\n");
+        for note in &self.status_notes {
+            use std::fmt::Write;
+            let _ = writeln!(text, "{}: {}", note.recorded_at, note.text);
+        }
+        text.push_str("Findings from the initiative\n");
         for finding in &self.findings {
             use std::fmt::Write;
             let _ = writeln!(
@@ -596,6 +615,7 @@ impl CampaignStore {
             .collect();
         Ok((owner, applicable))
     }
+    /// Record binding policy without implicitly answering any question.
     pub fn decide_initiative(
         &mut self,
         name: &str,
@@ -603,44 +623,144 @@ impl CampaignStore {
         members: &[String],
         at: DateTime<Utc>,
     ) -> Result<InitiativeOwnerDecision> {
-        let (owner, applicable) = self.decision_scope(name, decision, members)?;
-        self.refresh_questions(name)?;
+        self.decide_initiative_answering(name, decision, members, &[], at)
+    }
+
+    /// Answer only the named questions for the selected members. With no member
+    /// selection, answers apply to the union of the named questions' members.
+    /// Unknown targets or targets outside the selection refuse the whole change.
+    pub fn decide_initiative_answering(
+        &mut self,
+        name: &str,
+        decision: &str,
+        members: &[String],
+        question_ids: &[String],
+        at: DateTime<Utc>,
+    ) -> Result<InitiativeOwnerDecision> {
+        self.decision_scope(name, decision, members)?;
+        let mut candidate = self.clone();
+        candidate.refresh_questions(name)?;
+        let questions: Vec<_> = candidate
+            .require_initiative(name)?
+            .open_questions
+            .iter()
+            .chain(&candidate.require_initiative(name)?.deferred_questions)
+            .cloned()
+            .collect();
+        let ids: Vec<String> =
+            question_ids.iter().cloned().collect::<BTreeSet<_>>().into_iter().collect();
+        for id in &ids {
+            if !questions.iter().any(|question| question.id == *id) {
+                return Err(InitiativeError::Invalid(format!(
+                    "question '{id}' is not open in initiative '{name}'; use initiative show to select a current question ID"
+                )));
+            }
+        }
+        let selected = if members.is_empty() && !ids.is_empty() {
+            questions
+                .iter()
+                .filter(|question| ids.contains(&question.id))
+                .flat_map(|question| question.members.clone())
+                .collect::<Vec<_>>()
+        } else {
+            members.to_vec()
+        };
+        let (owner, applicable) = candidate.decision_scope(name, decision, &selected)?;
+        for id in &ids {
+            if !questions.iter().any(|question| {
+                question.id == *id
+                    && question.members.iter().any(|member| applicable.contains(member))
+            }) {
+                return Err(InitiativeError::Invalid(format!(
+                    "question '{id}' does not apply to the selected members"
+                )));
+            }
+        }
         let record = InitiativeOwnerDecision {
             decision: decision.into(),
             authorized_by: owner.clone(),
             decided_at: at,
             members: applicable.clone(),
+            question_ids: ids.clone(),
         };
+        let initiative = candidate
+            .find_initiative_mut(name)
+            .ok_or_else(|| InitiativeError::NotFound(name.into()))?;
+        initiative.owner_decisions.push(record.clone());
+        for question in
+            initiative.open_questions.iter_mut().chain(&mut initiative.deferred_questions)
+        {
+            if ids.contains(&question.id) {
+                question.members.retain(|member| !applicable.contains(member));
+            }
+        }
+        initiative.open_questions.retain(|question| !question.members.is_empty());
+        initiative.deferred_questions.retain(|question| !question.members.is_empty());
+        let remaining: Vec<_> = initiative
+            .open_questions
+            .iter()
+            .chain(&initiative.deferred_questions)
+            .cloned()
+            .collect();
         for member in &applicable {
-            if let Some(campaign) = self.find_mut(member) {
+            if let Some(campaign) = candidate.find_mut(member) {
                 campaign.owner_decisions.push(OwnerDecision {
                     decision: decision.into(),
                     authorized_by: owner.clone(),
                     decided_at: at,
                 });
+                // A manual question can coincide with a member escalation. Clear
+                // the escalation only when its actual question was answered.
+                let escalation_text = campaign
+                    .open_escalation
+                    .as_ref()
+                    .map(|escalation| escalation.question.as_deref().unwrap_or(&escalation.reason));
+                let answered_escalation = questions.iter().any(|question| {
+                    ids.contains(&question.id)
+                        && question.members.contains(member)
+                        && escalation_text
+                            .is_some_and(|text| text.trim() == question.question.trim())
+                });
+                if answered_escalation {
+                    campaign.open_escalation = None;
+                }
                 if campaign.status == CampaignStatus::Escalated
                     && campaign.cycles_completed < campaign.budget.max_cycles
+                    && !remaining.iter().any(|question| question.members.contains(member))
+                    && (answered_escalation || campaign.open_escalation.is_none())
                 {
                     campaign.status = CampaignStatus::Active;
-                    campaign.open_escalation = None;
                 }
             }
         }
-        if let Some(initiative) = self.find_initiative_mut(name) {
-            initiative.owner_decisions.push(record.clone());
-            for question in
-                initiative.open_questions.iter_mut().chain(&mut initiative.deferred_questions)
-            {
-                question.members.retain(|m| !applicable.contains(m));
-            }
-            initiative.open_questions.retain(|q| !q.members.is_empty());
-            initiative.deferred_questions.retain(|q| !q.members.is_empty());
-            if initiative.open_questions.is_empty() {
-                initiative.status = InitiativeStatus::Active;
-            }
-        }
-        self.refresh_questions(name)?;
+        candidate.refresh_questions(name)?;
+        *self = candidate;
         Ok(record)
+    }
+
+    /// Retain nonbinding context without resolving questions or scheduling work.
+    pub fn record_initiative_status(
+        &mut self,
+        name: &str,
+        text: &str,
+        at: DateTime<Utc>,
+    ) -> Result<InitiativeStatusNote> {
+        let initiative = self.require_initiative(name)?;
+        if initiative.status.is_terminal() {
+            return Err(InitiativeError::Precondition(format!("initiative '{name}' is terminal")));
+        }
+        if text.trim().is_empty() {
+            return Err(InitiativeError::Invalid("status note must be non-empty".into()));
+        }
+        let note = InitiativeStatusNote {
+            text: text.into(),
+            recorded_at: at,
+        };
+        self.find_initiative_mut(name)
+            .ok_or_else(|| InitiativeError::NotFound(name.into()))?
+            .status_notes
+            .push(note.clone());
+        Ok(note)
     }
     pub fn complete_initiative(
         &mut self,
@@ -817,6 +937,11 @@ impl CampaignStore {
                 continue;
             };
             if campaign.status != CampaignStatus::Escalated {
+                continue;
+            }
+            if campaign.open_escalation.is_none()
+                && questions.iter().any(|question| question.members.contains(&member))
+            {
                 continue;
             }
             let text = campaign.open_escalation.as_ref().map_or_else(
@@ -996,6 +1121,7 @@ impl CampaignStore {
             brief: initiative.brief.clone(),
             providers: initiative.providers,
             owner_decisions: initiative.owner_decisions.clone(),
+            status_notes: initiative.status_notes.clone(),
             findings: selected,
         }))
     }

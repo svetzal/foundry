@@ -370,6 +370,9 @@
         "decision": "Use API v1 for first",
         "members": [
           "first"
+        ],
+        "questionIds": [
+          "question_63cbe146051e2f66777adea978a283017f46a0c8254b39ac6d71df1bdb147a7e"
         ]
       },
       "response": {
@@ -598,6 +601,9 @@
         "decision": "Use API v1 for both",
         "members": [
           "second"
+        ],
+        "questionIds": [
+          "question_63cbe146051e2f66777adea978a283017f46a0c8254b39ac6d71df1bdb147a7e"
         ]
       },
       "response": {

@@ -390,6 +390,7 @@ impl CampaignStore {
         let mut initiative = self.require_initiative(name)?.clone();
         initiative.steering = None;
         initiative.pending_actions.clear();
+        initiative.status_notes.clear();
         let campaigns: Vec<_> = self
             .campaigns
             .iter()
@@ -1564,6 +1565,19 @@ impl CampaignStore {
         add_cycles: u64,
         at: DateTime<Utc>,
     ) -> Result<super::InitiativeOwnerDecision> {
+        self.decide_initiative_answering_with_budget(name, decision, members, &[], add_cycles, at)
+    }
+
+    /// Record policy and explicit question answers with an atomic budget grant.
+    pub fn decide_initiative_answering_with_budget(
+        &mut self,
+        name: &str,
+        decision: &str,
+        members: &[String],
+        question_ids: &[String],
+        add_cycles: u64,
+        at: DateTime<Utc>,
+    ) -> Result<super::InitiativeOwnerDecision> {
         self.decision_scope(name, decision, members)?;
         if add_cycles == 0
             && self.shared_cycles_used(name)? >= self.require_initiative(name)?.budget.max_cycles
@@ -1591,7 +1605,8 @@ impl CampaignStore {
                 campaign.budget.max_cycles = ceiling;
             }
         }
-        let record = candidate.decide_initiative(name, decision, members, at)?;
+        let record =
+            candidate.decide_initiative_answering(name, decision, members, question_ids, at)?;
         if let Some(initiative) = candidate.find_initiative_mut(name) {
             initiative.completion_proposal = None;
             initiative.completion_confirmation = None;

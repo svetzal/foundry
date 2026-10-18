@@ -295,13 +295,15 @@ async fn typed_commands_fan_out_decisions_and_serve_owned_brief_and_findings() {
             name: "shared".into(),
             decision: "Use contract one".into(),
             members: vec![],
-            add_cycles: 0
+            add_cycles: 0,
+            question_ids: vec![],
         }),
         second_client.decide_initiative(proto::DecideInitiativeRequest {
             name: "shared".into(),
             decision: "Keep both compatible".into(),
             members: vec![],
-            add_cycles: 0
+            add_cycles: 0,
+            question_ids: vec![],
         })
     );
     first.unwrap();
@@ -390,6 +392,7 @@ async fn failed_mutation_preserves_the_store_and_returns_internal_through_the_cl
             decision: "No lost updates".into(),
             members: vec![],
             add_cycles: 0,
+            question_ids: vec![],
         })
         .await
         .unwrap_err();
@@ -545,6 +548,7 @@ async fn shared_budget_changes_only_through_initiative_and_never_after_terminal(
             decision: "Spend three more cycles".into(),
             members: vec![],
             add_cycles: 3,
+            question_ids: vec![],
         })
         .await
         .unwrap()
@@ -747,7 +751,8 @@ async fn initiative_attention_v1_provider_verifies_shared_contract() {
             "DecideInitiative" => client.decide_initiative(proto::DecideInitiativeRequest {
                 name:request["name"].as_str().unwrap().into(), decision:request["decision"].as_str().unwrap().into(),
                 members:request["members"].as_array().unwrap().iter().map(|member| member.as_str().unwrap().into()).collect(), add_cycles:0,
-            }).await.map(|response| json!({"initiative":attention_contract_projection(&response.into_inner().initiative.unwrap())})),
+            question_ids: request.get("questionIds").and_then(|value| value.as_array()).map(|ids| ids.iter().map(|id| id.as_str().unwrap().to_owned()).collect()).unwrap_or_default(),
+}).await.map(|response| json!({"initiative":attention_contract_projection(&response.into_inner().initiative.unwrap())})),
             method => panic!("unverified contract method {method}"),
         };
         if let Some(error) = scenario.get("error") {
@@ -1300,12 +1305,14 @@ fn advance_request(request: &serde_json::Value) -> proto::AdvanceInitiativeReque
 
 /// `addCycles` is a uint64, so Protobuf JSON writes it as a string.
 fn decide_request(request: &serde_json::Value) -> proto::DecideInitiativeRequest {
-    let request = Message::new(request, &["name", "decision", "members", "addCycles"]);
+    let request =
+        Message::new(request, &["name", "decision", "members", "addCycles", "questionIds"]);
     proto::DecideInitiativeRequest {
         name: request.text("name"),
         decision: request.text("decision"),
         members: request.texts("members"),
         add_cycles: request.uint64("addCycles"),
+        question_ids: request.texts("questionIds"),
     }
 }
 
@@ -1545,4 +1552,138 @@ fn assert_brief_under_home(brief: &proto::InitiativeBrief, home: &std::path::Pat
         std::path::Path::new(&brief.path),
         home.join("initiatives").join(name).join("BRIEF.md")
     );
+}
+
+/// Two independent questions for the same member are deliberately harder than
+/// questions on different members: member scope alone must never resolve them.
+#[tokio::test]
+async fn decisions_answer_exact_ids_and_preserve_other_questions_through_rpc() {
+    let home = tempfile::tempdir().unwrap();
+    seed(home.path());
+    let path = home.path().join("campaigns.json");
+    let mut store = CampaignStore::load(&path).unwrap();
+    store
+        .add_initiative(serde_json::from_str(&definition()).unwrap(), &["sample".into()])
+        .unwrap();
+    store.find_initiative_mut("shared").unwrap().budget.max_open_questions = 1;
+    let first = store
+        .record_question("shared", "Which API version?", &["first".into()])
+        .unwrap();
+    let second = store
+        .record_required_question("shared", "Which timeout?", &["first".into()])
+        .unwrap();
+    store.save(&path).unwrap();
+    let baseline = store.initiative_view("shared").unwrap();
+    let (mut client, server) = client(home.path()).await;
+    let policy = client
+        .record_initiative_decision(proto::DecideInitiativeRequest {
+            name: "shared".into(),
+            decision: "Keep the compatibility adapter".into(),
+            members: vec!["first".into()],
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .initiative
+        .unwrap();
+    assert_eq!(policy.open_questions[0].id, first.id);
+    assert_eq!(policy.deferred_questions[0].id, second.id);
+    assert!(policy.owner_decisions.last().unwrap().question_ids.is_empty());
+    let before = std::fs::read(&path).unwrap();
+    let error = client
+        .record_initiative_decision(proto::DecideInitiativeRequest {
+            name: "shared".into(),
+            decision: "Use API v2".into(),
+            question_ids: vec![first.id.clone(), "question_missing".into()],
+            add_cycles: 2,
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    let answered = client
+        .record_initiative_decision(proto::DecideInitiativeRequest {
+            name: "shared".into(),
+            decision: "Use API v2".into(),
+            question_ids: vec![first.id.clone()],
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .initiative
+        .unwrap();
+    assert_eq!(answered.open_questions.len(), 1);
+    assert_eq!(answered.open_questions[0].id, second.id);
+    assert_eq!(answered.open_questions[0].opened_at, second.opened_at.to_rfc3339());
+    assert!(answered.deferred_questions.is_empty());
+    assert_eq!(answered.owner_decisions.last().unwrap().members, ["first"]);
+    assert_eq!(answered.owner_decisions.last().unwrap().question_ids, [first.id]);
+    let reloaded = CampaignStore::load(&path).unwrap();
+    assert_eq!(reloaded.find("second").unwrap().owner_decisions.len(), 0);
+    let current = reloaded.initiative_view("shared").unwrap();
+    assert_eq!(current.open_questions[0], baseline.deferred_questions[0]);
+    assert_eq!(current.status.to_string(), "escalated");
+    server.abort();
+}
+
+#[tokio::test]
+async fn status_notes_are_durable_observations_and_save_failure_is_atomic_through_rpc() {
+    let home = tempfile::tempdir().unwrap();
+    seed(home.path());
+    let path = home.path().join("campaigns.json");
+    let mut store = CampaignStore::load(&path).unwrap();
+    store
+        .add_initiative(serde_json::from_str(&definition()).unwrap(), &["sample".into()])
+        .unwrap();
+    store.record_question("shared", "Which API?", &["first".into()]).unwrap();
+    store.hold_member("shared", "second", "Wait for publication").unwrap();
+    store.find_initiative_mut("shared").unwrap().budget.max_cycles = 0;
+    store.save(&path).unwrap();
+    let (mut client, server) = client(home.path()).await;
+    let noted = client
+        .record_initiative_status(proto::RecordInitiativeStatusRequest {
+            name: "shared".into(),
+            text: "Mac verification landed".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .initiative
+        .unwrap();
+    assert_eq!(noted.status_notes[0].text, "Mac verification landed");
+    assert_rfc3339(&noted.status_notes[0].recorded_at);
+    let mut restored = CampaignStore::load(&path).unwrap();
+    assert_eq!(
+        restored.find_initiative_mut("shared").unwrap().status_notes.pop().unwrap().text,
+        "Mac verification landed"
+    );
+    assert_eq!(
+        serde_json::to_value(restored).unwrap(),
+        serde_json::to_value(store).unwrap(),
+        "the note is the only state change, even with a spent budget"
+    );
+    let before = std::fs::read(&path).unwrap();
+    let empty = client
+        .record_initiative_status(proto::RecordInitiativeStatusRequest {
+            name: "shared".into(),
+            text: " ".into(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(empty.code(), tonic::Code::InvalidArgument);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    std::fs::create_dir(path.with_extension("json.tmp")).unwrap();
+    let failed = client
+        .record_initiative_status(proto::RecordInitiativeStatusRequest {
+            name: "shared".into(),
+            text: "Must not be recorded".into(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(failed.code(), tonic::Code::Internal);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    server.abort();
 }

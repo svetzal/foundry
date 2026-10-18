@@ -37,17 +37,29 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Record a decision for applicable members \[mutates\]
+    /// Record binding policy; answer only named --question IDs \[mutates\]
     Decide {
         name: String,
         #[arg(long)]
         decision: String,
+        /// Answer this exact question ID (repeatable); omit for policy only
+        #[arg(long = "question")]
+        question_ids: Vec<String>,
         #[arg(long = "member")]
         members: Vec<String>,
         /// Extend the shared initiative budget by this many cycles; required
         /// (> 0) once the shared budget is spent
         #[arg(long, default_value_t = 0)]
         add_cycles: u64,
+    },
+    /// Record nonbinding status without answering questions or resuming work \[mutates\]
+    /// (example: foundry initiative note shared --text "Mac verification landed")
+    Note {
+        name: String,
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        json: bool,
     },
     /// Hold a member until an owner release or named milestones \[mutates\]
     Hold {
@@ -255,6 +267,44 @@ pub async fn run_and_render(
     run_online(command, addr).await
 }
 
+async fn decide_online(
+    client: &mut proto::foundry_client::FoundryClient<tonic::transport::Channel>,
+    request: proto::DecideInitiativeRequest,
+) -> Result<String> {
+    let initiative = client
+        .record_initiative_decision(request)
+        .await
+        .map_err(|status| {
+            if status.code() == tonic::Code::Unimplemented {
+                anyhow::anyhow!("foundryd does not support question-specific initiative decisions; update the daemon before using initiative decide. No legacy decision was sent.")
+            } else { status_to_anyhow(status) }
+        })?
+        .into_inner()
+        .initiative
+        .context("daemon returned no initiative")?;
+    Ok(render::initiative::decision_recorded(&initiative))
+}
+
+async fn note_online(
+    client: &mut proto::foundry_client::FoundryClient<tonic::transport::Channel>,
+    name: String,
+    text: String,
+    as_json: bool,
+) -> Result<String> {
+    let initiative = client
+        .record_initiative_status(proto::RecordInitiativeStatusRequest { name, text })
+        .await
+        .map_err(status_to_anyhow)?
+        .into_inner()
+        .initiative
+        .context("daemon returned no initiative")?;
+    if as_json {
+        json(&initiative)
+    } else {
+        Ok(render::initiative::status_recorded(&initiative.name))
+    }
+}
+
 async fn run_online(command: Commands, addr: &str) -> Result<String> {
     if let Commands::Brief(command) = command {
         return brief_online(command, addr).await;
@@ -309,21 +359,25 @@ async fn run_online(command: Commands, addr: &str) -> Result<String> {
             decision,
             members,
             add_cycles,
+            question_ids,
         } => {
-            let initiative = client
-                .decide_initiative(proto::DecideInitiativeRequest {
+            decide_online(
+                &mut client,
+                proto::DecideInitiativeRequest {
                     name,
                     decision,
                     members,
                     add_cycles,
-                })
-                .await
-                .map_err(status_to_anyhow)?
-                .into_inner()
-                .initiative
-                .context("daemon returned no initiative")?;
-            Ok(format!("Recorded decision for initiative '{}'.\n", initiative.name))
+                    question_ids,
+                },
+            )
+            .await
         }
+        Commands::Note {
+            name,
+            text,
+            json: as_json,
+        } => note_online(&mut client, name, text, as_json).await,
         command @ (Commands::Hold { .. }
         | Commands::Relay { .. }
         | Commands::Dispatch { .. }
@@ -683,15 +737,32 @@ fn run_offline(command: Commands, path: &Path, registry: &Path) -> Result<String
                     decision,
                     members,
                     add_cycles,
+                    question_ids,
                 } => {
-                    guard.store.decide_initiative_with_budget(
+                    guard.store.decide_initiative_answering_with_budget(
                         &name,
                         &decision,
                         &members,
+                        &question_ids,
                         add_cycles,
                         Utc::now(),
                     )?;
-                    format!("Recorded decision for initiative '{name}'.\n")
+                    render::initiative::decision_recorded(&to_proto(
+                        &guard.store,
+                        &guard.store.initiative_view(&name)?,
+                    )?)
+                }
+                Commands::Note {
+                    name,
+                    text,
+                    json: as_json,
+                } => {
+                    guard.store.record_initiative_status(&name, &text, Utc::now())?;
+                    if as_json {
+                        json(&to_proto(&guard.store, &guard.store.initiative_view(&name)?)?)?
+                    } else {
+                        render::initiative::status_recorded(&name)
+                    }
                 }
                 Commands::Cancel { name, reason } => {
                     let _transition = guard.store.cancel_initiative(&name, &reason, Utc::now())?;

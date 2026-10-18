@@ -391,6 +391,8 @@ pub enum EventType {
     InitiativeAdded,
     /// An owner decision was recorded and fanned out to member campaigns.
     InitiativeDecided,
+    /// A nonbinding status observation was recorded without scheduling work.
+    InitiativeStatusRecorded,
     /// An owner affirmed initiative completion.
     InitiativeCompleted,
     /// An owner cancelled an initiative.
@@ -661,6 +663,7 @@ impl EventType {
             | EventType::CampaignCompleted
             | EventType::CampaignCancelled
             | EventType::InitiativeAdded
+            | EventType::InitiativeStatusRecorded
             | EventType::InitiativeDecided
             | EventType::InitiativeCompleted
             | EventType::InitiativeCancelled

@@ -477,6 +477,11 @@ message InitiativeDecision {
     string authorized_by = 2;
     string decided_at = 3;
     repeated string members = 4;
+    repeated string question_ids = 5;
+}
+message InitiativeStatusNote {
+    string text = 1;
+    string recorded_at = 2;
 }
 message InitiativeQuestion {
     string id = 1;
@@ -520,6 +525,8 @@ message Initiative {
     repeated InitiativeEtCloseReceipt completion_receipts = 33;
     // Unanswered facts waiting for room under max_open_questions.
     uint64 deferred_question_count = 34;
+    repeated InitiativeStatusNote status_notes = 35;
+    repeated InitiativeQuestion deferred_questions = 36;
 }
 message InitiativeRepositoryIdentity {
     string project = 1;
@@ -624,7 +631,10 @@ message DecideInitiativeRequest {
     // shared budget (FAILED_PRECONDITION otherwise, and nothing is recorded);
     // 0 = no extension.
     uint64 add_cycles = 4;
+    // Only these exact questions are answered. Empty means policy only.
+    repeated string question_ids = 5;
 }
+message RecordInitiativeStatusRequest { string name = 1; string text = 2; }
 message EndInitiativeRequest { string name = 1; string reason = 2; }
 message SetInitiativeBriefRequest { string name = 1; string content = 2; }
 message InitiativeBriefResponse { InitiativeBrief brief = 1; string content = 2; }
@@ -1216,6 +1226,9 @@ service Foundry {
     rpc ListInitiatives(ListInitiativesRequest) returns (ListInitiativesResponse);
     rpc GetInitiative(GetInitiativeRequest) returns (InitiativeResponse);
     rpc DecideInitiative(DecideInitiativeRequest) returns (InitiativeResponse);
+    // New clients must use this method so older daemons refuse safely.
+    rpc RecordInitiativeDecision(DecideInitiativeRequest) returns (InitiativeResponse);
+    rpc RecordInitiativeStatus(RecordInitiativeStatusRequest) returns (InitiativeResponse);
     rpc CompleteInitiative(EndInitiativeRequest) returns (InitiativeResponse);
     rpc CancelInitiative(EndInitiativeRequest) returns (InitiativeResponse);
     rpc SetInitiativeBrief(SetInitiativeBriefRequest) returns (InitiativeBriefResponse);
