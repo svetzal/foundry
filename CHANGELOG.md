@@ -7,6 +7,52 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.55.0] - 2026-10-18
+
+### Changed
+
+- Agents now design and judge tests by one shared rule, `TEST_DESIGN_GUIDANCE`.
+  Campaign formation (standalone and initiative), every task executor, every
+  task review and initiative steering include it. The boundary a test proves
+  is the project's public API, used the way a caller uses it, and never a real
+  network. Unit and library tests use in-process doubles at the I/O boundary
+  (a stub transport, a fake gateway, an injected clock and sleeper). They do
+  not open real sockets or local servers, call external services, assert
+  wall-clock thresholds or sleep for real time. A double at the gateway or
+  transport boundary is valid proof; mocking library internals is not. Only a
+  suite that the project's own `AGENTS.md` or gate file designates as
+  integration or end-to-end keeps real infrastructure. Between 2026-10-09 and
+  2026-10-18, campaigns for the Mojentic ports read "the real boundary" as "a
+  real network" and built suites on local HTTP servers with wall-clock
+  assertions; Swift CI hung for up to six hours.
+- Campaign early proof now asks for the hardest acceptance behavior "through
+  the project's public API", with the I/O boundary stubbed in process, in
+  place of "through the real boundary". The proof check in review matches, and
+  a probe that opens real sockets, local servers or external services, or
+  asserts wall-clock thresholds, is a defect. The behavioral, direct and
+  blocker shapes are unchanged.
+- The task reviewer no longer calls a stub at the boundary insufficient. A test
+  must drive the public or generated boundary the way a caller does; only a
+  double that replaces the code under test, or a mock of library internals,
+  is insufficient. Formation asks for proof that rejects tests bypassing the
+  public API, not the "real boundary".
+- The initiative contract reminder now says that mocks each side writes
+  independently do not prove two services agree, and that cross-service
+  doubles derive from the verified contract set. It no longer reads as a ban on
+  boundary doubles. Library self-validation and paired service-to-service
+  verification are unchanged.
+
+### Fixed
+
+- Initiative steering no longer fails on a large packet that it should have
+  exported. Export was decided by a constant 8 KB margin for the prompt's fixed
+  text, but that text had grown to about 10 KB, so a packet just under the
+  threshold stayed inline and the steer failed on the 65,536-byte limit.
+  Foundry now renders the whole prompt and exports the packet whenever the
+  inline prompt would exceed the limit. mojentic-3-0 steering prompts reached
+  63,891 bytes on 2026-10-17; the test-design rule above would have pushed
+  them over.
+
 ## [0.54.1] - 2026-10-18
 
 ### Fixed
