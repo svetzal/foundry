@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.55.1] - 2026-10-18
+
 ### Fixed
 
 - A release now fetches and fast-forwards the registered checkout to
