@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.54.0] - 2026-10-18
+
 ### Added
 
 - Computed initiative readiness in human and JSON reads, with typed blockers,
