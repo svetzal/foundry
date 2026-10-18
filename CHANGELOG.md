@@ -7,6 +7,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A release now fetches and fast-forwards the registered checkout to
+  `origin/<branch>` before the agent is asked to bump anything. On 2026-10-18
+  `foundry release mojentic-ru --bump patch` ran on ops-01 in a clean checkout
+  that was two commits behind origin and had never pulled the 3.0.0 release
+  commit or its tag. The agent ran in that stale tree anyway; only the tag
+  check after the fact reported that the tag did not point at `HEAD`, and
+  nothing was tagged. The release runner now verifies the
+  registered branch is checked out (recovering from a detached `HEAD`), then
+  runs the maintenance chain's own sync. A dirty tree, a diverged branch, a
+  checkout on another branch or an unreachable remote refuses the release
+  before the agent runs: `release_completed` carries `success: false`, a
+  typed `sync_failure` and no tag, and nothing is bumped, committed, tagged or
+  published. A successful sync records `fast_forwarded` on the event, and the
+  manual release prompt tells the agent the checkout is already level and not
+  to pull, rebase or switch branches.
+
 ## [0.55.0] - 2026-10-18
 
 ### Changed

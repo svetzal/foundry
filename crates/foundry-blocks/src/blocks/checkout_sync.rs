@@ -8,6 +8,11 @@
 //! absorbs any remote movement that happened during the run, rebasing the
 //! local commit only when that applies cleanly. Nothing here ever forces.
 //!
+//! [`check_git_branch`] is the step before either: it confirms the registered
+//! branch is checked out, recovering from a detached `HEAD`, so that
+//! `origin/<branch>` is the right thing to measure against. The maintenance
+//! chain (`ValidateProject`) and the release runner share all of it.
+//!
 //! The decision logic ([`parse_divergence`], [`plan_sync`]) is pure; the async
 //! functions are a thin imperative shell over the [`ShellGateway`].
 
@@ -16,6 +21,61 @@ use std::path::Path;
 use foundry_sdk::payload::GitSyncFailure;
 
 use crate::gateway::ShellGateway;
+
+/// Result of the git branch check.
+pub(super) enum BranchCheckOutcome {
+    /// The expected branch is checked out (possibly after recovering from a
+    /// detached `HEAD`).
+    Ok,
+    /// Git could not say which branch is checked out, or the detached-`HEAD`
+    /// recovery failed. Carries the reason.
+    Err(String),
+    /// The checkout is on another branch than the registry's. Carries the
+    /// reason.
+    WrongBranch(String),
+}
+
+/// Verify the git branch at `path` matches `expected_branch`.
+///
+/// Recovers from detached HEAD by checking out `expected_branch`.
+/// Returns `Ok(BranchCheckOutcome)` on success (spawn-level errors propagate as `Err`).
+pub(super) async fn check_git_branch(
+    project: &str,
+    path: &Path,
+    expected_branch: &str,
+    shell: &dyn ShellGateway,
+) -> anyhow::Result<BranchCheckOutcome> {
+    let result = shell
+        .run(path, "git", &["rev-parse", "--abbrev-ref", "HEAD"], None, None)
+        .await?;
+
+    if result.exit_code != 0 {
+        let reason = format!("git rev-parse failed: {}", result.stderr.trim());
+        tracing::warn!(%project, %reason, "git check failed");
+        return Ok(BranchCheckOutcome::Err(reason));
+    }
+
+    let current_branch = result.stdout.trim().to_string();
+
+    if current_branch == "HEAD" {
+        tracing::warn!(%project, %expected_branch, "detached HEAD detected, attempting recovery");
+        let checkout = shell.run(path, "git", &["checkout", expected_branch], None, None).await?;
+        if checkout.exit_code != 0 {
+            let reason = format!("detached HEAD and checkout failed: {}", checkout.stderr.trim());
+            return Ok(BranchCheckOutcome::Err(reason));
+        }
+        tracing::info!(%project, %expected_branch, "recovered from detached HEAD");
+        return Ok(BranchCheckOutcome::Ok);
+    }
+
+    if current_branch != expected_branch {
+        let reason = format!("wrong branch: {current_branch}, expected {expected_branch}");
+        tracing::warn!(%project, %reason, "branch mismatch");
+        return Ok(BranchCheckOutcome::WrongBranch(reason));
+    }
+
+    Ok(BranchCheckOutcome::Ok)
+}
 
 /// Position of local `HEAD` relative to `origin/<branch>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -342,6 +402,65 @@ mod tests {
             }),
             SyncPlan::Diverged
         );
+    }
+
+    // -- check_git_branch (scripted shell) --
+
+    #[tokio::test]
+    async fn the_registered_branch_checked_out_passes_the_branch_check() {
+        let shell = FakeShellGateway::sequence(vec![ok("main\n")]);
+        let outcome =
+            check_git_branch("proj", Path::new("/p"), "main", shell.as_ref()).await.unwrap();
+
+        assert!(matches!(outcome, BranchCheckOutcome::Ok));
+        assert_eq!(git_calls(&shell), ["rev-parse --abbrev-ref HEAD"]);
+    }
+
+    #[tokio::test]
+    async fn a_detached_head_is_recovered_by_checking_out_the_registered_branch() {
+        let shell = FakeShellGateway::sequence(vec![ok("HEAD\n"), ok("")]);
+        let outcome =
+            check_git_branch("proj", Path::new("/p"), "main", shell.as_ref()).await.unwrap();
+
+        assert!(matches!(outcome, BranchCheckOutcome::Ok));
+        assert_eq!(git_calls(&shell), ["rev-parse --abbrev-ref HEAD", "checkout main"]);
+    }
+
+    #[tokio::test]
+    async fn a_detached_head_whose_recovery_fails_reports_the_reason() {
+        let shell = FakeShellGateway::sequence(vec![ok("HEAD\n"), fail("branch not found")]);
+        let outcome =
+            check_git_branch("proj", Path::new("/p"), "main", shell.as_ref()).await.unwrap();
+
+        let BranchCheckOutcome::Err(reason) = outcome else {
+            panic!("expected an error outcome");
+        };
+        assert!(reason.contains("detached HEAD and checkout failed"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn another_branch_checked_out_is_a_wrong_branch_without_any_checkout() {
+        let shell = FakeShellGateway::sequence(vec![ok("feature/x\n")]);
+        let outcome =
+            check_git_branch("proj", Path::new("/p"), "main", shell.as_ref()).await.unwrap();
+
+        let BranchCheckOutcome::WrongBranch(reason) = outcome else {
+            panic!("expected a wrong-branch outcome");
+        };
+        assert!(reason.contains("wrong branch: feature/x, expected main"), "{reason}");
+        assert_eq!(git_calls(&shell), ["rev-parse --abbrev-ref HEAD"]);
+    }
+
+    #[tokio::test]
+    async fn a_failing_rev_parse_reports_the_reason() {
+        let shell = FakeShellGateway::sequence(vec![fail("not a git repository")]);
+        let outcome =
+            check_git_branch("proj", Path::new("/p"), "main", shell.as_ref()).await.unwrap();
+
+        let BranchCheckOutcome::Err(reason) = outcome else {
+            panic!("expected an error outcome");
+        };
+        assert!(reason.contains("git rev-parse failed: not a git repository"), "{reason}");
     }
 
     // -- sync_checkout (scripted shell) --

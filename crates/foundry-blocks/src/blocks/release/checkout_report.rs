@@ -154,7 +154,7 @@ pub(super) async fn probe(dir: &Path, shell: &dyn ShellGateway) -> Option<PathBu
             tracing::warn!(
                 dir = %dir.display(),
                 stderr = %result.stderr.trim(),
-                "release checkout is not a git work tree; leftovers will not be reported"
+                "release checkout is not a git work tree; it will not be synced and leftovers will not be reported"
             );
             None
         }
@@ -162,7 +162,7 @@ pub(super) async fn probe(dir: &Path, shell: &dyn ShellGateway) -> Option<PathBu
             tracing::warn!(
                 dir = %dir.display(),
                 %error,
-                "could not run git in the release checkout; leftovers will not be reported"
+                "could not run git in the release checkout; it will not be synced and leftovers will not be reported"
             );
             None
         }
