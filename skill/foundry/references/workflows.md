@@ -591,6 +591,17 @@ to `capability_unavailable`, `access_unavailable`, `environment_unavailable`,
 `missing_evidence`, `unmet_precondition` or `runner_unavailable`.
 Without that field, legacy blockers still represent owner decisions.
 
+`initiative show` exposes computed `readiness` with typed blockers and exact
+dependency evidence. Online reads check the current ledger and registry;
+offline reads say `live: false`. This is admission readiness, not release or
+deployment proof. A bare `after: ["producer"]` now requires the producer's
+completed outcome. Use `producer:landed` for an intentional first-landing
+prerequisite, or `producer:<milestone>` for exact recorded evidence. Partial
+landings and notes never satisfy completion. Conditional `hold --until`
+ends when all declared prerequisites have proof; indefinite owner holds stay.
+Dependency waits require no owner decision, spend no cycle and leave unrelated
+members eligible. Admission rechecks controls before starting work.
+
 Shared cycles include initiative tasks. Use
 `initiative decide --add-cycles N` to authorize more shared cycles. Once the
 shared budget is spent, `initiative decide` without `--add-cycles` is refused

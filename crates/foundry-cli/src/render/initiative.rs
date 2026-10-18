@@ -118,6 +118,7 @@ pub fn detail(initiative: &Initiative) -> String {
             let _ = writeln!(out, "  After: {}", member.after.join(", "));
         }
     }
+    out.push_str(&super::readiness::detail(initiative.readiness.as_ref()));
     render_questions(&mut out, initiative);
     if !initiative.owner_decisions.is_empty() {
         out.push_str("\nOwner decisions:\n");

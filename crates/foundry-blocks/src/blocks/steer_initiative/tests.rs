@@ -349,6 +349,23 @@ fn task_landing_consumes_only_the_shown_findings_and_records_verified_milestones
         items: vec![item],
         ..Default::default()
     };
+    store.find_initiative_mut("shared").unwrap().members[0].after = vec!["task".into()];
+    let before_projection = serde_json::to_value(&store).unwrap();
+    let projected =
+        admission::steering_readiness(&store, "shared", &ledger, &fixture.registry.read().unwrap())
+            .unwrap();
+    let member = projected.readiness.iter().find(|member| member.member == "one").unwrap();
+    assert!(
+        member
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.prerequisite == "task" && dependency.satisfied)
+    );
+    assert_eq!(
+        before_projection,
+        serde_json::to_value(&store).unwrap(),
+        "read-only readiness must derive task receipts without changing the store"
+    );
     admission::record_task_evidence(&mut store, "shared", &ledger).unwrap();
     admission::record_task_evidence(&mut store, "shared", &ledger).unwrap();
     assert_eq!(store.find_finding(&finding.id).unwrap().consumed_by.len(), 1);
@@ -777,4 +794,30 @@ async fn new_escalation_at_question_capacity_still_advances_eligible_work() {
             .len(),
         1
     );
+}
+
+#[test]
+fn shared_readiness_never_admits_missing_or_skipped_registered_projects() {
+    use foundry_sdk::initiative::ReadinessBlockerKind;
+    let fixture = Fixture::new();
+    let store = CampaignStore::load(&fixture.store).unwrap();
+    for missing in [false, true] {
+        let mut registry = fixture.registry.read().unwrap().clone();
+        if missing {
+            registry.projects.clear();
+        } else {
+            registry.projects[0].skip = Some("maintenance hold".into());
+        }
+        let readiness =
+            admission::steering_readiness(&store, "shared", &WorkItemStore::default(), &registry)
+                .unwrap();
+        assert!(readiness.eligible.is_empty());
+        assert!(!readiness.dispatch_open);
+        assert!(readiness.readiness.iter().all(|member| {
+            member
+                .blockers
+                .iter()
+                .any(|blocker| blocker.kind == ReadinessBlockerKind::ProjectUnavailable)
+        }));
+    }
 }

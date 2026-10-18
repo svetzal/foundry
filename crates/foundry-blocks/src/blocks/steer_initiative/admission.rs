@@ -123,17 +123,90 @@ pub fn steering_eligible_members(
     ledger: &WorkItemStore,
     registry: &Registry,
 ) -> anyhow::Result<Vec<String>> {
-    let initiative = store.initiative_view(name)?;
+    Ok(steering_readiness(store, name, ledger, registry)?.eligible)
+}
+
+/// The same typed readiness used by steering and its read-only projections.
+/// Task receipts are derived into a copy; inspection changes no durable state.
+pub fn steering_readiness(
+    store: &CampaignStore,
+    name: &str,
+    ledger: &WorkItemStore,
+    registry: &Registry,
+) -> anyhow::Result<foundry_sdk::initiative::SteeringPrecheck> {
+    let mut checked = store.clone();
+    let initiative = checked.initiative_view(name)?;
+    if !initiative.status.is_terminal()
+        && initiative.authorized_by.as_ref().is_some_and(|owner| !owner.trim().is_empty())
+    {
+        record_task_evidence(&mut checked, name, ledger)?;
+    }
     let mut others = ledger.clone();
     others.items.retain(|item| {
-        !item.started_root.as_ref().is_some_and(|root| {
-            root.event_type == foundry_sdk::event::EventType::InitiativeAdvanceRequested
-                && root.payload_str("initiative") == Some(name)
-        })
+        ![item.started_root.as_ref(), item.pending_root.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|root| {
+                root.event_type == foundry_sdk::event::EventType::InitiativeAdvanceRequested
+                    && root.payload_str("initiative") == Some(name)
+            })
     });
-    let active = store.ledger_active_members(&others);
+    let active = checked.ledger_active_members(&others);
     let busy = busy_projects(&initiative, &others, registry);
-    Ok(store.steering_precheck(name, &active, &busy)?.eligible)
+    let mut precheck = checked.steering_precheck(name, &active, &busy)?;
+    let available =
+        |project: &str| registry.find_project(project).is_some_and(|entry| entry.skip.is_none());
+    for readiness in &mut precheck.readiness {
+        let projects = checked
+            .find(&readiness.member)
+            .map_or_else(|| initiative.projects.clone(), |campaign| vec![campaign.project.clone()]);
+        if !projects.iter().any(|project| available(project)) {
+            readiness.block(
+                foundry_sdk::initiative::ReadinessBlockerKind::ProjectUnavailable,
+                "no registered, enabled project is available for this member".into(),
+            );
+        } else if !projects.iter().any(|project| available(project) && !busy.contains(project))
+            && !readiness.blockers.iter().any(|blocker| {
+                blocker.kind == foundry_sdk::initiative::ReadinessBlockerKind::RepositoryBusy
+            })
+        {
+            readiness.block(
+                foundry_sdk::initiative::ReadinessBlockerKind::RepositoryBusy,
+                "its repository has an execution or cleanup owner".into(),
+            );
+        }
+    }
+    precheck.eligible.retain(|member| {
+        precheck
+            .readiness
+            .iter()
+            .any(|readiness| readiness.member == *member && readiness.ready)
+    });
+    precheck.blocked = precheck
+        .readiness
+        .iter()
+        .filter(|readiness| {
+            !readiness.ready
+                && initiative.members.iter().any(|member| {
+                    member.name == readiness.member
+                        && member.kind != foundry_sdk::initiative::MemberKind::Task
+                })
+        })
+        .map(|readiness| foundry_sdk::initiative::BlockedMember {
+            member: readiness.member.clone(),
+            reason: readiness
+                .blockers
+                .iter()
+                .map(|blocker| blocker.detail.as_str())
+                .collect::<Vec<_>>()
+                .join("; "),
+        })
+        .collect();
+    precheck.dispatch_open &= initiative
+        .projects
+        .iter()
+        .any(|project| available(project) && !busy.contains(project));
+    Ok(precheck)
 }
 
 pub(super) fn live_operations(items: &WorkItemStore) -> Vec<String> {

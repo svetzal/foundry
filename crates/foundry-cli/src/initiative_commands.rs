@@ -181,6 +181,12 @@ pub(crate) fn to_proto(
     initiative: &Initiative,
 ) -> Result<proto::Initiative> {
     let mut value = serde_json::to_value(initiative)?;
+    let check = store.steering_precheck(&initiative.name, &[], &[])?;
+    value["readiness"] = serde_json::json!({
+        "members": check.readiness, "dispatch_open":check.dispatch_open,
+        "occupied":check.occupied, "max_active_members":check.max_active_members,
+        "observed_at":Utc::now().to_rfc3339(), "live":false
+    });
     value["steering_history_count"] = serde_json::json!(initiative.steering_history.len());
     value["steering_history"] =
         serde_json::to_value(initiative.steering_history.last().into_iter().collect::<Vec<_>>())?;
@@ -936,7 +942,11 @@ mod steering_transport_tests {
             }]
         }))
         .unwrap();
-        let shown = to_proto(&CampaignStore::default(), &initiative).unwrap();
+        let store = CampaignStore {
+            initiatives: vec![initiative.clone()],
+            ..Default::default()
+        };
+        let shown = to_proto(&store, &initiative).unwrap();
         assert_eq!(shown.steering_history[0].integration_skipped.as_deref(), Some(reason));
     }
 

@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use super::{CampaignStore, MemberKind, Result};
+#[cfg(test)]
 use crate::campaign::CampaignStatus;
 
 /// A member that cannot advance now, and why.
@@ -26,6 +27,7 @@ pub struct BlockedMember {
 pub struct SteeringPrecheck {
     /// Campaign and candidate members that could advance now.
     pub eligible: Vec<String>,
+    pub readiness: Vec<super::MemberReadiness>,
     /// Every other campaign and candidate member, with the reason it cannot.
     pub blocked: Vec<BlockedMember>,
     /// Members holding one of the initiative's active-member slots.
@@ -97,52 +99,45 @@ impl CampaignStore {
         let free_project = |project: &str| !busy_projects.iter().any(|busy| busy == project);
         let mut eligible = Vec::new();
         let mut blocked = Vec::new();
-        for member in &initiative.members {
-            if member.kind == MemberKind::Task {
+        let readiness = initiative
+            .members
+            .iter()
+            .map(|member| self.member_readiness(name, &member.name, active_members, busy_projects))
+            .collect::<Result<Vec<_>>>()?;
+        for member in &readiness {
+            if initiative.members.iter().any(|definition| {
+                definition.name == member.member && definition.kind == MemberKind::Task
+            }) {
                 continue;
             }
-            let campaign = self.find(&member.name);
-            let reason = if let Some(recovery) = campaign
-                .and_then(|campaign| campaign.recovery.as_ref())
-                .filter(|recovery| recovery.is_pending())
-            {
-                Some(format!("recovery '{}' pending: {}", recovery.id, recovery.detail))
-            } else if let Some(status) = campaign.map(|campaign| campaign.status)
-                && matches!(
-                    status,
-                    CampaignStatus::Completed | CampaignStatus::Cancelled | CampaignStatus::Paused
-                )
-            {
-                Some(format!("campaign is {status}"))
-            } else if occupied.contains(&member.name) {
-                Some("has work in flight".into())
-            } else if let Err(refused) =
-                self.enforce_member_eligibility(name, &member.name, active_members)
-            {
-                Some(refused.to_string())
-            } else if !budget_left {
-                Some(format!("initiative '{name}' exhausted its cycle budget"))
-            } else if campaign.map_or_else(
-                || !initiative.projects.iter().any(|project| free_project(project)),
-                |campaign| !free_project(&campaign.project),
-            ) {
-                Some("its repository has an execution or cleanup owner".into())
+            if member.ready {
+                eligible.push(member.member.clone());
             } else {
-                None
-            };
-            match reason {
-                Some(reason) => blocked.push(BlockedMember {
-                    member: member.name.clone(),
-                    reason,
-                }),
-                None => eligible.push(member.name.clone()),
+                blocked.push(BlockedMember {
+                    member: member.member.clone(),
+                    reason: member
+                        .blockers
+                        .iter()
+                        .map(|blocker| blocker.detail.as_str())
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                });
             }
         }
-        let dispatch_open = occupied.len() < initiative.budget.max_active_members
+        let dispatch_open = !initiative.status.is_terminal()
+            && initiative.authorized_by.as_ref().is_some_and(|owner| !owner.trim().is_empty())
+            && initiative.completion_proposal.is_none()
+            && !initiative
+                .open_questions
+                .iter()
+                .chain(&initiative.deferred_questions)
+                .any(|question| question.members.is_empty())
+            && occupied.len() < initiative.budget.max_active_members
             && budget_left
             && initiative.projects.iter().any(|project| free_project(project));
         Ok(SteeringPrecheck {
             eligible,
+            readiness,
             blocked,
             occupied: occupied.into_iter().collect(),
             max_active_members: initiative.budget.max_active_members,

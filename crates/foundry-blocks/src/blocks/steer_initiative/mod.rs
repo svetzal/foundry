@@ -8,10 +8,10 @@ mod packet;
 mod request;
 mod task_result;
 pub use action::ApplyInitiativeAction;
-pub use admission::steering_eligible_members;
 use admission::{
     ensure_action_repository_free, live_operations, record_task_evidence, validate_member_pin,
 };
+pub use admission::{steering_eligible_members, steering_readiness};
 pub use request::RequestInitiativeAdvance;
 pub use task_result::RecordInitiativeTaskResult;
 
@@ -116,9 +116,7 @@ impl SteerInitiative {
         let ledger = ledger_snapshot(&items, &guard.store.initiative_view(&initiative.name)?)?;
         let precheck = {
             let others = admission::without_steering_owner(&items, &trigger.id);
-            let active = guard.store.ledger_active_members(&others);
-            let busy = admission::busy_projects(&initiative, &others, &registry);
-            guard.store.steering_precheck(&initiative.name, &active, &busy)?
+            steering_readiness(&guard.store, &initiative.name, &others, &registry)?
         };
         guard.save()?;
         if let Some(reason) = steering_wait_reason(request, &initiative, &precheck) {

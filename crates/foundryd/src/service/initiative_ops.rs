@@ -409,20 +409,43 @@ pub(super) fn finding_to_proto(finding: &Finding) -> proto::Finding {
     }
 }
 
-pub(super) fn get(path: &Path, name: &str) -> Result<proto::Initiative, Status> {
+pub(super) fn get(
+    path: &Path,
+    name: &str,
+    live: Option<(&Path, &foundry_sdk::registry::Registry)>,
+) -> Result<proto::Initiative, Status> {
     let store = load(path)?;
     let initiative = store.initiative_view(name).map_err(error)?;
-    Ok(to_proto(&store, &initiative))
+    let mut response = to_proto(&store, &initiative);
+    if let Some((ledger_path, registry)) = live {
+        let ledger = foundry_sdk::work_item::WorkItemStore::load(ledger_path)
+            .map_err(|error| Status::internal(error.to_string()))?;
+        super::readiness_ops::attach(&mut response, &store, &ledger, registry)?;
+    }
+    Ok(response)
 }
 
-pub(super) fn list(path: &Path) -> Result<Vec<proto::Initiative>, Status> {
+pub(super) fn list(
+    path: &Path,
+    live: Option<(&Path, &foundry_sdk::registry::Registry)>,
+) -> Result<Vec<proto::Initiative>, Status> {
     let store = load(path)?;
+    let ledger = live
+        .map(|(path, _)| foundry_sdk::work_item::WorkItemStore::load(path))
+        .transpose()
+        .map_err(|error| Status::internal(error.to_string()))?;
     store
         .initiatives
         .iter()
         .map(|initiative| {
             let view = store.initiative_view(&initiative.name).map_err(error)?;
-            Ok(to_proto(&store, &view))
+            let mut response = to_proto(&store, &view);
+            if let Some((_, registry)) = live
+                && let Some(ledger) = &ledger
+            {
+                super::readiness_ops::attach(&mut response, &store, ledger, registry)?;
+            }
+            Ok(response)
         })
         .collect()
 }
@@ -575,7 +598,7 @@ mod tests {
         assert_eq!(result.name, "test");
         let result = decide(&path, "test", "Use the current contract", &[], 0, &[]).unwrap();
         assert_eq!(result.owner_decisions[0].decision, "Use the current contract");
-        assert_eq!(get(&path, "test").unwrap().owner_decisions, result.owner_decisions);
+        assert_eq!(get(&path, "test", None).unwrap().owner_decisions, result.owner_decisions);
     }
 
     #[test]
@@ -602,7 +625,7 @@ mod tests {
         }
         guard.save().unwrap();
         drop(guard);
-        let response = get(&path, "test").unwrap();
+        let response = get(&path, "test", None).unwrap();
         assert_eq!(response.steering_history_count, 3);
         assert_eq!(response.steering_history.len(), 1);
         assert_eq!(response.steering_history[0].prompt, "Prompt 2");
@@ -632,7 +655,7 @@ mod tests {
     fn unknown_and_duplicate_records_have_typed_errors() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("campaigns.json");
-        assert_eq!(get(&path, "absent").unwrap_err().code(), tonic::Code::NotFound);
+        assert_eq!(get(&path, "absent", None).unwrap_err().code(), tonic::Code::NotFound);
         add(&path, &["sample".into()], &definition()).unwrap();
         assert_eq!(
             add(&path, &["sample".into()], &definition()).unwrap_err().code(),

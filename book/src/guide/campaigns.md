@@ -1179,3 +1179,12 @@ prerequisite that it cannot correct within the campaign's authority.
 A recheck returns to full mission assessment and retains preserved work.
 It does not replay the old runner failure as a new failure.
 No recovery record authorizes more cycles, publishing or a contract change.
+
+### Dependency readiness
+
+Within an initiative, a bare `after` member waits for the campaign's completed
+outcome. Its first landed cycle is insufficient. Use `member:landed` only when
+that is the intended prerequisite, or name an evidence milestone such as
+`member:contract-published`. Readiness and exact wait reasons appear in
+`initiative show`; ordinary dependency waits need no owner decision.
+See [readiness and dependencies](initiatives.md#readiness-and-dependencies).
