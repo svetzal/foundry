@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.54.1] - 2026-10-18
+
 ### Fixed
 
 - Headless Claude runs can no longer start a command in the background and end
