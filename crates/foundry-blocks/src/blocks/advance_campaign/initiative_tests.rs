@@ -54,6 +54,7 @@ async fn initiative_formation_receives_contract_guidance_without_a_brief_or_find
     let result = block.execute(&manual_advance_trigger()).await.unwrap();
     assert!(result.success, "{}", result.summary);
     assert!(agent.invocations()[0].prompt.contains(crate::blocks::agent_helpers::INITIATIVE_CONTRACT_GUIDANCE));
+    assert!(agent.invocations()[0].prompt.contains(crate::blocks::agent_helpers::TEST_DESIGN_GUIDANCE));
     let execution = result.events.iter().find(|event| event.event_type == EventType::ExecutionRequested).unwrap();
     assert_eq!(execution.payload["initiative"], "both");
     assert!(execution.payload["initiative_brief"].is_null());

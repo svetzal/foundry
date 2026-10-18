@@ -25,7 +25,7 @@ FOUNDRY SCRATCH: files under .foundry/ are Foundry scratch for execution evidenc
 
 const EARLY_PROOF_PROMPT: &str = r#"
 
-PROOF FIRST: before expanding fixtures, documentation, or running the full quality suite, exercise the hardest acceptance behavior through the real boundary. Observe its rejecting case and corrected passing case. A marker toggle or count-only test is insufficient.
+PROOF FIRST: before expanding fixtures, documentation, or running the full quality suite, exercise the hardest acceptance behavior through the project's public API, with its I/O boundary stubbed by an in-process test double as TEST DESIGN describes. Observe its rejecting case and corrected passing case. A marker toggle or count-only test is insufficient.
 Record .foundry/proof.json with this exact behavioral shape:
 {
   "kind": "behavioral",
@@ -309,13 +309,16 @@ fn build_no_correction_result(
     })
 }
 
-/// What a task adds to the plan prompt: the `.foundry` scratch rule for every
-/// task, then early proof for a campaign cycle. Iterate, maintain and prompt
-/// runs commit through other paths and get neither.
+/// What a task adds to the plan prompt: the `.foundry` scratch rule and the
+/// shared test-design rule for every task, then early proof for a campaign
+/// cycle. Iterate, maintain and prompt runs commit through other paths and get
+/// none of them.
 fn task_prompt_suffix(workflow: WorkflowType, campaign: bool) -> String {
     let mut suffix = String::new();
     if workflow == WorkflowType::Task {
         suffix.push_str(TASK_SCRATCH_PROMPT);
+        suffix.push('\n');
+        suffix.push_str(super::agent_helpers::TEST_DESIGN_GUIDANCE);
     }
     if campaign {
         suffix.push_str(EARLY_PROOF_PROMPT);
@@ -937,6 +940,38 @@ mod tests {
         ] {
             assert!(super::task_prompt_suffix(workflow, false).is_empty(), "{workflow}");
         }
+    }
+
+    /// "Through the real boundary" was read as "through a real network", and
+    /// campaign executors built test suites on local HTTP servers. Every task
+    /// executor gets the shared test-design rule, and early proof names the
+    /// project's public API with a stubbed I/O boundary. The proof and blocker
+    /// shapes are unchanged.
+    #[test]
+    fn every_task_executor_gets_the_test_design_rule_and_proof_names_the_public_api() {
+        use foundry_sdk::workflow::WorkflowType;
+
+        let guidance = super::super::agent_helpers::TEST_DESIGN_GUIDANCE;
+        for campaign in [false, true] {
+            let suffix = super::task_prompt_suffix(WorkflowType::Task, campaign);
+            assert!(suffix.contains(guidance), "{suffix}");
+            assert!(!suffix.contains("through the real boundary"), "{suffix}");
+        }
+
+        let campaign = super::task_prompt_suffix(WorkflowType::Task, true);
+        assert!(
+            campaign.contains(
+                "exercise the hardest acceptance behavior through the project's public API, with its I/O boundary stubbed by an in-process test double"
+            ),
+            "{campaign}"
+        );
+        assert!(campaign.contains(r#""kind": "behavioral""#), "{campaign}");
+        assert!(campaign.contains(r#""kind": "direct""#), "{campaign}");
+        assert!(campaign.contains(r#""kind": "blocked""#), "{campaign}");
+        assert!(
+            campaign.find(guidance) < campaign.find("PROOF FIRST"),
+            "early proof refers to TEST DESIGN, so the rule must come first: {campaign}"
+        );
     }
 
     #[test]

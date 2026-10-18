@@ -105,8 +105,14 @@ pub(super) fn prompt(
         "done_evidence":initiative.done_evidence,"integration_results":integration_results,
         "integration_skipped":snapshot.integration_skipped,
         "recovery":initiative.recovery,"completion_proposal":initiative.completion_proposal});
-    let (packet, artifact) = bounded_packet(packet, evidence_root)?;
+    bounded_prompt(&serde_json::to_string(&packet)?, evidence_root, render_prompt)
+}
+
+/// The complete steering prompt around a rendered packet. Everything except
+/// the packet is fixed text, so its size is known before the packet is placed.
+fn render_prompt(packet: &str) -> String {
     let contract_guidance = super::super::agent_helpers::INITIATIVE_CONTRACT_GUIDANCE;
+    let test_design_guidance = super::super::agent_helpers::TEST_DESIGN_GUIDANCE;
     let text = format!(
         r#"Choose exactly one next initiative action from current intent and live repository evidence. Take one step, then reassess. You are read-only; do not modify repositories, Foundry state, or Tracker. Foundry has executed integration gates and retained bounded capture evidence in this packet. When integration_skipped is set, Foundry did not integrate this pass, for the reason given, and integration_results predate the current trunks. Inspect the registered repository paths and Foundry-owned brief yourself. All owner decisions are binding. Status notes are observations, not binding instructions; they do not answer questions or authorize scope, budget, or scheduling changes. An explicit requested_member restricts advance to that member, but never overrides audit, budget, dependencies, questions, repository ownership, or terminal state.
 
@@ -117,6 +123,8 @@ Foundry computed the packet's eligibility section from the store and the work le
 Foundry computed the eligibility section from those same diagnostics. eligible lists the members that can advance now; blocked lists every other member with the reason; occupied lists the members using the max_active_members slots; dispatch_open says whether a new task can start. Advance only an eligible member. A hold on a member that already has an owner hold, or a relay to members a finding already reaches, changes nothing. When nothing should move until running work settles, choose wait and say what the initiative waits for. Use ask only for a question the owner must answer, never to wait for workers to finish. You may wait while members are eligible when the mission requires it; Foundry records your reason beside the eligible list.
 
 {contract_guidance}
+
+{test_design_guidance}
 
 Return exactly one JSON object with action and audits. Action is exactly one tagged decision:
 advance: {{"decision":"advance","member":"existing member or audited candidate","project":null}}
@@ -137,39 +145,64 @@ STEERING PACKET:
 {packet}
 "#
     );
-    let text = super::super::with_single_turn_discipline(&text);
-    if text.len() > PACKET_BYTES {
-        anyhow::bail!(
-            "steering packet exceeds {PACKET_BYTES} bytes; owner policy was not truncated"
-        );
-    }
-    Ok(BoundedPrompt { text, artifact })
+    super::super::with_single_turn_discipline(&text)
 }
 
 pub(super) struct BoundedPrompt {
     pub text: String,
     pub artifact: Option<(PathBuf, String)>,
 }
-fn bounded_packet(
-    packet: serde_json::Value,
+
+/// Place the packet inline when the whole rendered prompt fits
+/// [`PACKET_BYTES`]; otherwise export it to a hashed artifact and place the
+/// reference instead.
+///
+/// The decision measures the actual rendered prompt, fixed text included,
+/// against the real limit. A constant margin for the fixed text went stale as
+/// guidance grew: with about 10 KB of fixed text against an 8 KB margin, a
+/// packet just under the margin threshold stayed inline and the steer failed
+/// on the limit instead of exporting.
+fn bounded_prompt(
+    content: &str,
     evidence_root: &Path,
-) -> anyhow::Result<(serde_json::Value, Option<(PathBuf, String)>)> {
-    let content = serde_json::to_string(&packet)?;
-    if content.len() <= PACKET_BYTES - 8192 {
-        return Ok((packet, None));
+    render: impl Fn(&str) -> String,
+) -> anyhow::Result<BoundedPrompt> {
+    let inline = render(content);
+    if inline.len() <= PACKET_BYTES {
+        return Ok(BoundedPrompt {
+            text: inline,
+            artifact: None,
+        });
     }
+    let (reference, artifact) = export_packet(content, evidence_root)?;
+    let text = render(&serde_json::to_string(&reference)?);
+    if text.len() > PACKET_BYTES {
+        anyhow::bail!(
+            "steering packet exceeds {PACKET_BYTES} bytes; owner policy was not truncated"
+        );
+    }
+    Ok(BoundedPrompt {
+        text,
+        artifact: Some(artifact),
+    })
+}
+
+fn export_packet(
+    content: &str,
+    evidence_root: &Path,
+) -> anyhow::Result<(serde_json::Value, (PathBuf, String))> {
     let root = evidence_root.join("initiatives").join("steering-evidence");
     std::fs::create_dir_all(&root)?;
     let path = root.join(format!("{}.json", uuid::Uuid::new_v4()));
-    let hash = context_hash(&content);
-    std::fs::write(&path, &content)?;
+    let hash = context_hash(content);
+    std::fs::write(&path, content)?;
     let path = path.canonicalize()?;
     Ok((
         serde_json::json!({"context_artifact":{
             "path":path,"sha256":hash,"bytes":content.len(),
             "instruction":"Read this entire Foundry-exported selected context before choosing. It contains all binding owner policy, members, questions, current evidence and repository references. No prior steering prompts are included. Verify SHA-256 before using it."
         }}),
-        Some((path, hash)),
+        (path, hash),
     ))
 }
 
@@ -281,6 +314,9 @@ mod tests {
                 .text
                 .contains(super::super::super::agent_helpers::INITIATIVE_CONTRACT_GUIDANCE)
         );
+        // Steering writes dispatch objectives and staged missions and judges
+        // test evidence for done, so it applies the same test-design rule.
+        assert!(prompt.text.contains(super::super::super::agent_helpers::TEST_DESIGN_GUIDANCE));
         assert!(prompt.text.contains("Verification is running"));
         assert!(prompt.text.contains("Status notes are observations, not binding instructions"));
     }
@@ -357,18 +393,75 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let policy = "Binding owner decision ".repeat(6000);
         let packet = serde_json::json!({"owner_decisions":[policy],"members":["one","two"]});
-        let (reference, artifact) = bounded_packet(packet.clone(), directory.path()).unwrap();
-        assert!(serde_json::to_vec(&reference).unwrap().len() < PACKET_BYTES);
-        let (path, hash) = artifact.unwrap();
-        let content = std::fs::read_to_string(path).unwrap();
-        assert_eq!(context_hash(&content), hash);
-        assert_eq!(serde_json::from_str::<serde_json::Value>(&content).unwrap(), packet);
+        let content = serde_json::to_string(&packet).unwrap();
+        let bounded = bounded_prompt(&content, directory.path(), render_prompt).unwrap();
+        assert!(bounded.text.len() <= PACKET_BYTES);
+        let (path, hash) = bounded.artifact.unwrap();
+        let exported = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(context_hash(&exported), hash);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&exported).unwrap(), packet);
+        assert!(bounded.text.contains("Read this entire Foundry-exported selected context"));
+        assert!(bounded.text.contains(&hash));
+        assert!(!bounded.text.contains(&policy));
+    }
+
+    /// A JSON packet whose compact form is exactly `bytes` long.
+    fn packet_of(bytes: usize) -> String {
+        let overhead = serde_json::to_string(&serde_json::json!({"owner_decisions":[""]}))
+            .unwrap()
+            .len();
+        let content = serde_json::to_string(
+            &serde_json::json!({"owner_decisions":["x".repeat(bytes - overhead)]}),
+        )
+        .unwrap();
+        assert_eq!(content.len(), bytes);
+        content
+    }
+
+    /// Regression: the export decision used a constant 8 KB margin for the
+    /// fixed prompt text, which had grown past 10 KB. A packet just under the
+    /// old `PACKET_BYTES - 8192` threshold stayed inline and the steer failed
+    /// on the limit. mojentic-3-0 steering prompts reached 63,891 bytes on
+    /// 2026-10-17, inside that window once the test-design rule was added.
+    #[test]
+    fn a_packet_just_under_the_old_margin_threshold_is_exported_instead_of_failing() {
+        let directory = tempfile::tempdir().unwrap();
+        let content = packet_of(PACKET_BYTES - 8192 - 64);
         assert!(
-            reference["context_artifact"]["instruction"]
-                .as_str()
-                .unwrap()
-                .contains("Read this entire")
+            render_prompt(&content).len() > PACKET_BYTES,
+            "the fixture must reproduce a prompt that cannot fit inline"
         );
+        let bounded = bounded_prompt(&content, directory.path(), render_prompt).unwrap();
+        assert!(bounded.text.len() <= PACKET_BYTES);
+        let (path, _) = bounded.artifact.expect("the packet must be exported");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), content);
+    }
+
+    #[test]
+    fn the_packet_stays_inline_exactly_while_the_whole_prompt_fits_the_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let fixed = render_prompt("").len();
+
+        let fits = packet_of(PACKET_BYTES - fixed);
+        let inline = bounded_prompt(&fits, directory.path(), render_prompt).unwrap();
+        assert!(inline.artifact.is_none());
+        assert_eq!(inline.text.len(), PACKET_BYTES);
+        assert!(inline.text.contains(&fits));
+
+        let one_over = packet_of(PACKET_BYTES - fixed + 1);
+        let exported = bounded_prompt(&one_over, directory.path(), render_prompt).unwrap();
+        assert!(exported.artifact.is_some());
+        assert!(exported.text.len() <= PACKET_BYTES);
+    }
+
+    #[test]
+    fn a_prompt_that_cannot_fit_even_with_an_exported_packet_is_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let padded = |packet: &str| format!("{}{packet}", "p".repeat(PACKET_BYTES));
+        let Err(error) = bounded_prompt(&packet_of(64), directory.path(), padded) else {
+            panic!("a prompt over the limit with an exported packet must be refused");
+        };
+        assert!(error.to_string().contains("owner policy was not truncated"), "{error}");
     }
 
     #[test]
