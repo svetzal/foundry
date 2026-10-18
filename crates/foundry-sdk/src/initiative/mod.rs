@@ -15,6 +15,8 @@ pub mod derive;
 mod occupancy;
 pub mod outcome;
 pub use outcome::*;
+pub mod readiness;
+pub use readiness::{DependencyReadiness, MemberReadiness, ReadinessBlocker, ReadinessBlockerKind};
 pub mod precheck;
 pub use precheck::{BlockedMember, SteeringPrecheck};
 pub mod steering;
@@ -418,33 +420,50 @@ impl Initiative {
                 ));
             }
         }
-        for member in &self.members {
-            for after in &member.after {
-                let prerequisite = after.split(':').next().unwrap_or(after);
-                if prerequisite == member.name || !names.contains(&prerequisite.to_owned()) {
-                    return Err(InitiativeError::Invalid(format!(
-                        "unknown or self prerequisite '{after}' for member '{}'",
-                        member.name
-                    )));
-                }
-            }
+        self.validate_prerequisites()?;
+        Ok(())
+    }
+    fn validate_prerequisites(&self) -> Result<()> {
+        if self
+            .holds
+            .iter()
+            .any(|hold| !self.members.iter().any(|member| member.name == hold.member))
+        {
+            return Err(InitiativeError::Invalid("hold names an unknown member".into()));
         }
+        let prerequisites = |member: &str| {
+            self.members
+                .iter()
+                .filter(|definition| definition.name == member)
+                .flat_map(|definition| definition.after.iter())
+                .chain(
+                    self.holds
+                        .iter()
+                        .filter(|hold| hold.member == member)
+                        .flat_map(|hold| hold.until.iter()),
+                )
+                .cloned()
+                .collect::<Vec<_>>()
+        };
         for member in &self.members {
-            let mut pending = member.after.clone();
+            let mut pending = prerequisites(&member.name);
             let mut visited = BTreeSet::new();
-            while let Some(dependency) = pending.pop() {
-                let dependency = dependency.split(':').next().unwrap_or(&dependency);
+            while let Some(prerequisite) = pending.pop() {
+                let (dependency, _) = readiness::parse_prerequisite(&prerequisite)?;
                 if dependency == member.name {
                     return Err(InitiativeError::Invalid(format!(
                         "member '{}' has a dependency cycle",
                         member.name
                     )));
                 }
-                if visited.insert(dependency.to_owned())
-                    && let Some(prerequisite) =
-                        self.members.iter().find(|member| member.name == dependency)
-                {
-                    pending.extend(prerequisite.after.clone());
+                if !self.members.iter().any(|definition| definition.name == dependency) {
+                    return Err(InitiativeError::Invalid(format!(
+                        "unknown prerequisite '{prerequisite}' for member '{}'",
+                        member.name
+                    )));
+                }
+                if visited.insert(dependency.to_owned()) {
+                    pending.extend(prerequisites(dependency));
                 }
             }
         }

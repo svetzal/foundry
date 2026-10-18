@@ -1400,85 +1400,17 @@ impl CampaignStore {
         member: &str,
         active_members: &[String],
     ) -> Result<()> {
-        let initiative = self.initiative_view(name)?;
-        require_authorized(&initiative)?;
-        let definition = initiative
-            .members
-            .iter()
-            .find(|definition| definition.name == member)
-            .ok_or_else(|| InitiativeError::NotFound(format!("member '{member}' not found")))?;
-        if let Some(recovery) = self
-            .find(member)
-            .and_then(|campaign| campaign.recovery.as_ref())
-            .filter(|recovery| recovery.is_pending())
-        {
-            return Err(InitiativeError::Precondition(format!(
-                "member '{member}' waits on recovery '{}': {}",
-                recovery.id, recovery.detail
-            )));
-        }
-        if definition
-            .intent_state
-            .as_deref()
-            .is_some_and(|state| matches!(state, "discarded" | "plan" | "revoked"))
-        {
-            return Err(InitiativeError::Precondition(
-                "member intent was discarded or revoked".into(),
-            ));
-        }
-        if initiative
-            .open_questions
-            .iter()
-            .chain(&initiative.deferred_questions)
-            .any(|question| {
-                question.members.is_empty() || question.members.iter().any(|m| m == member)
-            })
-        {
-            return Err(InitiativeError::Precondition(format!(
-                "member '{member}' waits on an initiative owner question"
-            )));
-        }
-        for hold in initiative.holds.iter().filter(|hold| hold.member == member) {
-            if hold.owner
-                || hold.until.is_empty()
-                || hold.until.iter().any(|milestone| !self.milestone_satisfied(name, milestone))
-            {
-                return Err(InitiativeError::Precondition(format!(
-                    "member '{member}' is held: {}",
-                    hold.reason
-                )));
-            }
-        }
-        for after in &definition.after {
-            if !self.milestone_satisfied(name, after) {
-                return Err(InitiativeError::Precondition(format!(
-                    "member '{member}' waits on '{after}'"
-                )));
-            }
-        }
-        let active = self.occupied_member_slots(name, active_members)?;
-        if !active.contains(member) && active.len() >= initiative.budget.max_active_members {
-            return Err(InitiativeError::Precondition(format!(
-                "initiative '{name}' has reached its active member limit"
-            )));
+        let readiness = self.member_readiness(name, member, active_members, &[])?;
+        if let Some(blocker) = readiness.blockers.iter().find(|blocker| {
+            !matches!(
+                blocker.kind,
+                super::ReadinessBlockerKind::WorkInFlight
+                    | super::ReadinessBlockerKind::BudgetExhausted
+            )
+        }) {
+            return Err(InitiativeError::Precondition(blocker.detail.clone()));
         }
         Ok(())
-    }
-
-    fn milestone_satisfied(&self, name: &str, prerequisite: &str) -> bool {
-        let Some(initiative) = self.find_initiative(name) else {
-            return false;
-        };
-        if let Some((member, milestone)) = prerequisite.split_once(':') {
-            return initiative.milestones.iter().any(|proof| {
-                proof.member == member && proof.name == milestone && !proof.evidence.is_empty()
-            });
-        }
-        self.find(prerequisite).is_some_and(|campaign| {
-            campaign.cycles_landed > 0 || campaign.status == CampaignStatus::Completed
-        }) || initiative.milestones.iter().any(|proof| {
-            proof.member == prerequisite && proof.name == "landed" && !proof.evidence.is_empty()
-        })
     }
 
     fn set_member_hold(
@@ -1499,8 +1431,7 @@ impl CampaignStore {
             ));
         }
         for prerequisite in until {
-            let (dependency, milestone) =
-                prerequisite.split_once(':').unwrap_or((prerequisite, "landed"));
+            let (dependency, milestone) = super::readiness::parse_prerequisite(prerequisite)?;
             if dependency == member
                 || milestone.trim().is_empty()
                 || !initiative.members.iter().any(|definition| definition.name == dependency)
@@ -1510,6 +1441,15 @@ impl CampaignStore {
                 ));
             }
         }
+        let mut checked = initiative.clone();
+        checked.holds.retain(|hold| hold.member != member || (hold.owner && !owner));
+        checked.holds.push(MemberHold {
+            member: member.into(),
+            until: until.to_vec(),
+            reason: reason.into(),
+            owner,
+        });
+        checked.validate_prerequisites()?;
         let initiative = self
             .find_initiative_mut(name)
             .ok_or_else(|| InitiativeError::NotFound(name.into()))?;
@@ -1556,6 +1496,8 @@ impl CampaignStore {
         require_authorized(initiative)?;
         if !initiative.members.iter().any(|definition| definition.name == member)
             || milestone.trim().is_empty()
+            || milestone.trim() != milestone
+            || milestone.contains(':')
             || evidence.is_empty()
             || evidence.iter().any(|path| path.trim().is_empty())
         {

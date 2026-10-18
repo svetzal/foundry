@@ -40,6 +40,7 @@ pub(crate) mod eventing_ops;
 mod initiative_completion;
 mod initiative_ops;
 mod pacing_ops;
+mod readiness_ops;
 mod recovery;
 mod recovery_ops;
 mod registry_ops;
@@ -469,7 +470,17 @@ impl Foundry for FoundryService {
         _request: Request<crate::proto::ListInitiativesRequest>,
     ) -> Result<Response<crate::proto::ListInitiativesResponse>, Status> {
         let path = self.campaigns_path.clone();
-        let initiatives = campaign_ops::blocking(move || initiative_ops::list(&path)).await?;
+        let ledger_path = self.work_items_path.clone();
+        let registry = self
+            .ctx
+            .registry
+            .read()
+            .map_err(|_| Status::internal("registry lock poisoned"))?
+            .clone();
+        let initiatives = campaign_ops::blocking(move || {
+            initiative_ops::list(&path, Some((&ledger_path, &registry)))
+        })
+        .await?;
         Ok(Response::new(crate::proto::ListInitiativesResponse { initiatives }))
     }
 
@@ -479,7 +490,17 @@ impl Foundry for FoundryService {
     ) -> Result<Response<crate::proto::InitiativeResponse>, Status> {
         let name = request.into_inner().name;
         let path = self.campaigns_path.clone();
-        let initiative = campaign_ops::blocking(move || initiative_ops::get(&path, &name)).await?;
+        let ledger_path = self.work_items_path.clone();
+        let registry = self
+            .ctx
+            .registry
+            .read()
+            .map_err(|_| Status::internal("registry lock poisoned"))?
+            .clone();
+        let initiative = campaign_ops::blocking(move || {
+            initiative_ops::get(&path, &name, Some((&ledger_path, &registry)))
+        })
+        .await?;
         Ok(Response::new(crate::proto::InitiativeResponse {
             initiative: Some(initiative),
         }))

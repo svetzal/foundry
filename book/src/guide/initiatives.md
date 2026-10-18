@@ -75,8 +75,9 @@ The store and typed event history retain all assessment prompts and decisions.
 
 `max_cycles` counts dispatched cycles across all members. The initiative owns
 member budgets. `max_active_members` defaults to two. A member with an open
-owner question cannot advance. A member's `after` prerequisite must have
-landed a cycle or completed before that member can advance. Queued formation,
+owner question cannot advance. A bare member in `after` must have completed
+its campaign outcome before the dependent can advance. A partial landing does
+not satisfy it. Queued formation,
 reserved dispatches, running cycles and standalone initiative tasks count
 toward the active cap. A completed or cancelled member counts only while one of
 its cycles still runs, for example after a graceful cancellation. Its last
@@ -268,6 +269,63 @@ Record custom milestones only after checking their evidence. Built-in settlement
 milestones retain actual landing or completion evidence. A meaningful owner
 override during a running assessment is refused with a retry instruction;
 it is never silently dropped.
+
+## Readiness and dependencies
+
+`initiative show <name>` reports readiness for each member. The JSON response
+contains `readiness.members`, typed `blockers`, and each dependency's required
+milestone, satisfaction and evidence. This is a read-only snapshot. Admission
+checks the current state again before starting work.
+
+Readiness means the next assessment or task is allowed under the current
+controls. It does not mean the product is released, deployed or usable on a
+particular host. Express those requirements as named evidence milestones.
+
+Use the dependency that matches what the consumer actually needs:
+
+| `after` entry | Required fact |
+| --- | --- |
+| `"producer"` or `"producer:completed"` | The producer campaign's whole outcome is completed |
+| `"producer:landed"` | At least one producer cycle landed |
+| `"producer:contract-published"` | Evidence was recorded for that exact named milestone |
+
+A bare dependency no longer means the first landed cycle. Existing definitions
+that intentionally start after the first landing must use `member:landed`.
+Definitions keep the same JSON shape; Foundry does not rewrite their intent.
+A custom milestone called `completed` cannot complete an active campaign.
+Completed task receipts and current realised-intent audits also provide outcome
+evidence for task and candidate members.
+
+For example, a consumer that needs the released contract can declare:
+
+```json
+{
+  "kind": "campaign",
+  "name": "adopt-contract",
+  "after": ["publish-contract:contract-published"]
+}
+```
+
+Record that exact milestone with checked publication evidence. A different
+milestone, a status note, or another landed cycle cannot satisfy it. Milestones
+are recorded evidence declarations; Foundry does not infer publication or
+refresh their external evidence automatically.
+
+A hold with `until` ends when every declared prerequisite is satisfied. This
+also applies when the owner set the conditional hold. An indefinite owner hold
+still needs an explicit owner release. Agents cannot replace it. Unknown,
+malformed, self-referencing and cyclic prerequisites are refused.
+
+Dependency waits open no owner question, spend no cycle and require no decision
+to clear. Existing settlement and milestone events wake enabled steering.
+Unrelated eligible members can continue while a dependency waits. Questions,
+indefinite holds, pauses, recovery and budgets still apply after it is satisfied.
+
+Online readiness uses the daemon's current store, work ledger and registry.
+It includes running and cleanup owners and unavailable projects. Offline
+inspection reports `live: false`: it checks the store but does not claim the
+live ledger or registry was checked. An older daemon that does not report
+readiness is shown as unavailable, never as ready.
 
 ## Record an owner decision
 

@@ -9,6 +9,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Computed initiative readiness in human and JSON reads, with typed blockers,
+  exact dependency evidence and live ledger/registry checks. Offline reads are
+  explicitly store-only. Steering and admission share the readiness rules.
+
 - Typed operational recovery on campaigns and initiatives, with exact recovery
   IDs, causes, blocker details and evidence-backed rechecks. `campaign recover`
   and `initiative recover` request reassessment without recording owner policy,
@@ -25,6 +29,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
   resume work, release holds, change budgets, or request steering.
 
 ### Fixed
+
+- Bare initiative dependencies wait for a campaign's completed outcome instead
+  of any first landed cycle. Explicit `member:landed` keeps intentional
+  first-landing ordering; named evidence milestones remain available.
+- Conditional owner holds release when every declared prerequisite is proved.
+  Indefinite owner holds and all other authority controls remain binding.
 
 - Runner failures no longer masquerade as owner decisions. Campaign recovery
   retains the failed result and preserved work without replaying that failure

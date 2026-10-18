@@ -1857,3 +1857,121 @@ async fn failed_recovery_write_changes_no_state_or_events() {
     assert!(!home.path().join("events").exists());
     server.abort();
 }
+
+#[tokio::test]
+async fn readiness_reads_wait_for_the_outcome_and_preserve_all_controls_without_writes() {
+    use foundry_sdk::campaign::{CampaignCycle, CycleOutcome};
+    use foundry_sdk::payload::TaskVerdict;
+    let home = tempfile::tempdir().unwrap();
+    seed(home.path());
+    let path = home.path().join("campaigns.json");
+    let mut store = CampaignStore::load(&path).unwrap();
+    let mut definition: serde_json::Value = serde_json::from_str(&definition()).unwrap();
+    definition["members"][1]["after"] = json!(["first"]);
+    store
+        .add_initiative(serde_json::from_value(definition).unwrap(), &["sample".into()])
+        .unwrap();
+    let first = store.find_mut("first").unwrap();
+    first.cycles_completed = 1;
+    first.cycles_landed = 1;
+    first.objective_history.push(CampaignCycle {
+        cycle: 1,
+        objective: "Deliver the first slice".into(),
+        outcome: Some(CycleOutcome {
+            verdict: TaskVerdict::Remainder {
+                gaps: vec!["Finish the mission".into()],
+            },
+            landed: true,
+            land_blocked: None,
+        }),
+    });
+    store.save(&path).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let (mut client, server) = client(home.path()).await;
+    let shown = client
+        .get_initiative(proto::GetInitiativeRequest {
+            name: "shared".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .initiative
+        .unwrap();
+    let readiness = shown.readiness.unwrap();
+    assert!(readiness.live);
+    assert!(readiness.members.iter().find(|member| member.member == "first").unwrap().ready);
+    let consumer = readiness.members.iter().find(|member| member.member == "second").unwrap();
+    assert!(!consumer.ready);
+    assert!(consumer.blockers.iter().any(|blocker| blocker.kind == "dependency_unmet"));
+    assert_eq!(consumer.dependencies[0].prerequisite, "first");
+    assert_eq!(consumer.dependencies[0].milestone, "completed");
+    assert!(!consumer.dependencies[0].satisfied);
+    let listed = client
+        .list_initiatives(proto::ListInitiativesRequest {})
+        .await
+        .unwrap()
+        .into_inner()
+        .initiatives;
+    assert_eq!(listed[0].readiness.as_ref().unwrap().members, readiness.members);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert!(shown.open_questions.is_empty());
+    assert!(shown.owner_decisions.is_empty());
+    assert!(!home.path().join("work-items.json").exists());
+    assert!(!home.path().join("events").exists());
+
+    client
+        .complete_campaign(proto::CompleteCampaignRequest {
+            name: "first".into(),
+            reason: "Owner verified the whole campaign outcome".into(),
+        })
+        .await
+        .unwrap();
+    let completed = client
+        .get_initiative(proto::GetInitiativeRequest {
+            name: "shared".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .initiative
+        .unwrap();
+    let consumer = completed
+        .readiness
+        .as_ref()
+        .unwrap()
+        .members
+        .iter()
+        .find(|member| member.member == "second")
+        .unwrap();
+    assert!(consumer.ready, "{consumer:?}");
+    assert!(consumer.dependencies[0].satisfied);
+    assert!(!consumer.dependencies[0].evidence.is_empty());
+    assert!(completed.open_questions.is_empty());
+    assert_eq!(completed.budget, shown.budget);
+    assert_eq!(completed.holds, shown.holds);
+    server.abort();
+}
+
+#[tokio::test]
+async fn readiness_never_reports_ready_when_live_ledger_cannot_be_read() {
+    let home = tempfile::tempdir().unwrap();
+    seed(home.path());
+    let mut store = CampaignStore::load(&home.path().join("campaigns.json")).unwrap();
+    store
+        .add_initiative(serde_json::from_str(&definition()).unwrap(), &["sample".into()])
+        .unwrap();
+    store.save(&home.path().join("campaigns.json")).unwrap();
+    std::fs::write(home.path().join("work-items.json"), "{broken").unwrap();
+    let (mut client, server) = client(home.path()).await;
+    assert_eq!(
+        client
+            .get_initiative(proto::GetInitiativeRequest {
+                name: "shared".into()
+            })
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::Internal
+    );
+    server.abort();
+}

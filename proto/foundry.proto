@@ -457,6 +457,30 @@ message InitiativeMember {
     optional string audit_finding_id = 10;
     optional string project = 11;
 }
+// Read-only admission diagnostics, recomputed from current store and ledger.
+message ReadinessBlocker { string kind = 1; string detail = 2; }
+message DependencyReadiness {
+    string prerequisite = 1;
+    string member = 2;
+    string milestone = 3;
+    bool satisfied = 4;
+    repeated string evidence = 5;
+}
+message MemberReadiness {
+    string member = 1;
+    bool ready = 2;
+    repeated ReadinessBlocker blockers = 3;
+    repeated DependencyReadiness dependencies = 4;
+}
+message InitiativeReadiness {
+    repeated MemberReadiness members = 1;
+    bool dispatch_open = 2;
+    repeated string occupied = 3;
+    uint64 max_active_members = 4;
+    string observed_at = 5;
+    // False for offline store-only inspection without live ledger/registry.
+    bool live = 6;
+}
 message InitiativeBudget {
     uint64 max_cycles = 1;
     uint64 max_active_members = 2;
@@ -553,6 +577,7 @@ message Initiative {
     repeated InitiativeStatusNote status_notes = 35;
     repeated InitiativeQuestion deferred_questions = 36;
     RecoveryState recovery = 37;
+    InitiativeReadiness readiness = 38;
 }
 message InitiativeRepositoryIdentity {
     string project = 1;

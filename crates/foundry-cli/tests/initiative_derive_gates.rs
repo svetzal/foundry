@@ -411,3 +411,54 @@ async fn recovery_cli_refuses_offline_and_older_daemons_without_decision_or_resu
     }
     server.abort();
 }
+
+#[tokio::test]
+async fn initiative_show_reports_dependency_readiness_online_and_store_only_offline() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("campaigns.json");
+    let mut store = CampaignStore::default();
+    for name in ["producer", "consumer"] {
+        store.add(serde_json::from_value(json!({"name":name,"project":"sample","mission":"Deliver the whole contract","status":"active","authorized_by":"Test","done_evidence":[{"kind":"review","statement":"Works"}]})).unwrap()).unwrap();
+    }
+    store.find_mut("producer").unwrap().cycles_landed = 1;
+    store.add_initiative(serde_json::from_value(json!({"name":"shared","outcome":"Works","projects":["sample"],"authorized_by":"Test","members":[{"kind":"campaign","name":"producer"},{"kind":"campaign","name":"consumer","after":["producer"]}],"done_evidence":[{"kind":"review","statement":"Works"}]})).unwrap(), &["sample".into()]).unwrap();
+    store.save(&path).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let (address, server) = daemon(home.path(), home.path()).await;
+    for offline in [false, true] {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_foundry"));
+        command
+            .args(["--addr", &address, "initiative", "show", "shared", "--json"])
+            .env("FOUNDRY_CAMPAIGNS_PATH", &path);
+        if offline {
+            command.arg("--offline");
+        }
+        let result = command.output().await.unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        let shown: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(shown["readiness"]["live"], !offline);
+        let member = shown["readiness"]["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|member| member["member"] == "consumer")
+            .unwrap();
+        assert_eq!(member["ready"], false);
+        assert_eq!(member["dependencies"][0]["milestone"], "completed");
+        assert_eq!(member["dependencies"][0]["satisfied"], false);
+        assert!(shown["open_questions"].as_array().unwrap().is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+    let human = tokio::process::Command::new(env!("CARGO_BIN_EXE_foundry"))
+        .args(["--addr", &address, "initiative", "show", "shared"])
+        .output()
+        .await
+        .unwrap();
+    assert!(human.status.success());
+    let out = String::from_utf8(human.stdout).unwrap();
+    assert!(out.contains("consumer: waiting"));
+    assert!(out.contains("producer: waiting for evidence"));
+    assert!(out.contains("live store and work ledger"));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    server.abort();
+}
