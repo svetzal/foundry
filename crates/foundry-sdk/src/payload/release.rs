@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::GitSyncFailure;
+
 // ---------------------------------------------------------------------------
 // Release workflow
 // ---------------------------------------------------------------------------
@@ -93,6 +95,44 @@ mod release_payload_tests {
         .expect("deserializable");
         assert_eq!(p.left_uncommitted, ["mix.exs"]);
     }
+
+    #[test]
+    fn release_completed_payload_without_sync_fields_still_parses_and_omits_them() {
+        let p: ReleaseCompletedPayload =
+            serde_json::from_str(r#"{"release":"manual","new_tag":"v1.2.3","success":true}"#)
+                .expect("a payload written before the fields existed parses");
+        assert_eq!(p.sync_failure, None);
+        assert_eq!(p.fast_forwarded, None);
+        let v = serde_json::to_value(&p).expect("serializable");
+        let obj = v.as_object().unwrap();
+        assert!(!obj.contains_key("sync_failure"), "sync_failure key must be absent when None");
+        assert!(
+            !obj.contains_key("fast_forwarded"),
+            "fast_forwarded key must be absent when None"
+        );
+    }
+
+    #[test]
+    fn release_completed_payload_sync_failure_round_trips_as_snake_case() {
+        let p: ReleaseCompletedPayload = serde_json::from_str(
+            r#"{"release":"manual","new_tag":null,"success":false,"sync_failure":"diverged"}"#,
+        )
+        .expect("deserializable");
+        assert_eq!(p.sync_failure, Some(GitSyncFailure::Diverged));
+        let v = serde_json::to_value(&p).expect("serializable");
+        assert_eq!(v["sync_failure"], "diverged");
+    }
+
+    #[test]
+    fn release_completed_payload_fast_forwarded_round_trips() {
+        let p: ReleaseCompletedPayload = serde_json::from_str(
+            r#"{"release":"patch","cve":"CVE-2026-1","new_tag":"v3.0.1","success":true,"fast_forwarded":2}"#,
+        )
+        .expect("deserializable");
+        assert_eq!(p.fast_forwarded, Some(2));
+        let v = serde_json::to_value(&p).expect("serializable");
+        assert_eq!(v["fast_forwarded"], 2);
+    }
 }
 
 /// Payload for `ReleaseRequested`.
@@ -125,6 +165,18 @@ pub struct ReleaseCompletedPayload {
     /// success and when the release left nothing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub left_uncommitted: Vec<String>,
+    /// Why the registered checkout could not be brought level with
+    /// `origin/<branch>` before the release. When set, the release was
+    /// refused before the agent ran: no version bump, commit, tag or publish
+    /// happened. Absent when the sync succeeded or the checkout is not a git
+    /// work tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_failure: Option<GitSyncFailure>,
+    /// Commits fast-forwarded from `origin/<branch>` before the agent ran
+    /// (`0` when the checkout was already level). Absent when the sync was
+    /// refused or the checkout is not a git work tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_forwarded: Option<u32>,
 }
 
 /// Payload for `ReleasePipelineCompleted`.

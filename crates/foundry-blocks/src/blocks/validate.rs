@@ -9,7 +9,7 @@ use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use crate::gateway::ShellGateway;
 
 use super::TriggerContext;
-use super::checkout_sync::{SyncOutcome, sync_checkout};
+use super::checkout_sync::{BranchCheckOutcome, SyncOutcome, check_git_branch, sync_checkout};
 
 task_block_new! {
     /// Validates a project before the maintenance run proceeds.
@@ -37,56 +37,6 @@ task_block_new! {
     pub struct ValidateProject {
         shell: ShellGateway = crate::gateway::ProcessShellGateway
     }
-}
-
-/// Result of the git branch check — either an error reason or the resolved branch name.
-enum BranchCheckOutcome {
-    Ok,
-    Err(String),
-    /// The checkout is on another branch than the registry's.
-    WrongBranch(String),
-}
-
-/// Verify the git branch at `path` matches `expected_branch`.
-///
-/// Recovers from detached HEAD by checking out `expected_branch`.
-/// Returns `Ok(BranchCheckOutcome)` on success (spawn-level errors propagate as `Err`).
-async fn check_git_branch(
-    project: &str,
-    path: &Path,
-    expected_branch: &str,
-    shell: &dyn ShellGateway,
-) -> anyhow::Result<BranchCheckOutcome> {
-    let result = shell
-        .run(path, "git", &["rev-parse", "--abbrev-ref", "HEAD"], None, None)
-        .await?;
-
-    if result.exit_code != 0 {
-        let reason = format!("git rev-parse failed: {}", result.stderr.trim());
-        tracing::warn!(%project, %reason, "git check failed");
-        return Ok(BranchCheckOutcome::Err(reason));
-    }
-
-    let current_branch = result.stdout.trim().to_string();
-
-    if current_branch == "HEAD" {
-        tracing::warn!(%project, %expected_branch, "detached HEAD detected, attempting recovery");
-        let checkout = shell.run(path, "git", &["checkout", expected_branch], None, None).await?;
-        if checkout.exit_code != 0 {
-            let reason = format!("detached HEAD and checkout failed: {}", checkout.stderr.trim());
-            return Ok(BranchCheckOutcome::Err(reason));
-        }
-        tracing::info!(%project, %expected_branch, "recovered from detached HEAD");
-        return Ok(BranchCheckOutcome::Ok);
-    }
-
-    if current_branch != expected_branch {
-        let reason = format!("wrong branch: {current_branch}, expected {expected_branch}");
-        tracing::warn!(%project, %reason, "branch mismatch");
-        return Ok(BranchCheckOutcome::WrongBranch(reason));
-    }
-
-    Ok(BranchCheckOutcome::Ok)
 }
 
 /// Why a run must not start here, when the filesystem holding the project or

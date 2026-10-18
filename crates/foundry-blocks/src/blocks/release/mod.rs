@@ -2,11 +2,14 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use foundry_sdk::event::{Event, EventType};
+use foundry_sdk::payload::GitSyncFailure;
 use foundry_sdk::throttle::Throttle;
 
 use crate::gateway::{
     AgentAccess, AgentGateway, AgentRequest, ModelTier, ReasoningEffort, ShellGateway,
 };
+
+use super::checkout_sync::{BranchCheckOutcome, SyncOutcome, check_git_branch, sync_checkout};
 
 mod checkout_report;
 mod cut_release;
@@ -69,6 +72,9 @@ pub(super) fn cut_release_target(trigger: &Event) -> Option<String> {
 pub(super) struct ReleaseInput {
     pub project: String,
     pub project_path: PathBuf,
+    /// The registry's branch for the project. The checkout is brought level
+    /// with `origin/<branch>` before the agent is asked to bump anything.
+    pub branch: String,
     pub prompt: String,
     /// Trace this release belongs to, forwarded into the agent session so its
     /// token spend is attributed to the release workflow.
@@ -85,6 +91,34 @@ pub(super) struct ReleaseOutput {
     /// Paths a failed release left uncommitted that were clean when it
     /// started, relative to the repository root. Empty on success.
     pub left_uncommitted: Vec<String>,
+    /// Why the checkout could not be brought level with its remote. When set,
+    /// the agent was never invoked and nothing was bumped, committed, tagged
+    /// or published.
+    pub sync_failure: Option<GitSyncFailure>,
+    /// Commits fast-forwarded from `origin/<branch>` before the agent ran.
+    /// `None` when the sync was refused or the checkout is not a git work
+    /// tree.
+    pub fast_forwarded: Option<u32>,
+}
+
+impl ReleaseOutput {
+    /// A release refused before the agent ran because the checkout could not
+    /// be brought level with its remote.
+    fn refused(failure: GitSyncFailure, detail: &str) -> Self {
+        Self {
+            success: false,
+            new_tag: None,
+            summary: format!(
+                "Release refused before any version bump: {failure}: {detail}. \
+                 The agent was not invoked; nothing was committed, tagged or published."
+            ),
+            raw_output: None,
+            exit_code: None,
+            left_uncommitted: Vec::new(),
+            sync_failure: Some(failure),
+            fast_forwarded: None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -123,16 +157,38 @@ pub(super) fn release_completed_event(
     Event::new(EventType::ReleaseCompleted, project.to_string(), throttle, payload)
 }
 
-/// Add `left_uncommitted` to a `ReleaseCompleted` event built by
-/// [`release_completed_event`].
+/// Build the `ReleaseCompleted` event for a release that went through
+/// [`run_release`], on top of [`release_completed_event`].
 ///
-/// The key is omitted when `paths` is empty, so a successful release and a
-/// failure that left nothing behind keep the existing payload shape.
-pub(super) fn with_left_uncommitted(mut event: Event, paths: &[String]) -> Event {
-    if !paths.is_empty()
-        && let Some(obj) = event.payload.as_object_mut()
-    {
-        obj.insert("left_uncommitted".to_string(), serde_json::json!(paths));
+/// `left_uncommitted` is omitted when empty, and `sync_failure` and
+/// `fast_forwarded` when `None`, so a release in a checkout outside git keeps
+/// the payload shape it always had.
+pub(super) fn release_outcome_event(
+    project: &str,
+    throttle: Throttle,
+    release_type: &str,
+    cve: Option<&str>,
+    output: &ReleaseOutput,
+) -> Event {
+    let mut event = release_completed_event(
+        project,
+        throttle,
+        release_type,
+        output.new_tag.as_deref(),
+        output.success,
+        cve,
+        None,
+    );
+    if let Some(obj) = event.payload.as_object_mut() {
+        if !output.left_uncommitted.is_empty() {
+            obj.insert("left_uncommitted".to_string(), serde_json::json!(output.left_uncommitted));
+        }
+        if let Some(failure) = output.sync_failure {
+            obj.insert("sync_failure".to_string(), serde_json::json!(failure));
+        }
+        if let Some(count) = output.fast_forwarded {
+            obj.insert("fast_forwarded".to_string(), serde_json::json!(count));
+        }
     }
     event
 }
@@ -154,12 +210,16 @@ pub(super) const FOREGROUND_INSTRUCTION: &str = "This is a single non-interactiv
 
 /// Invoke the Claude agent for a release and return structured output.
 ///
-/// Verifies `AGENTS.md` exists, builds the agent request, invokes the agent,
-/// and verifies the tag points at HEAD. When the release fails, the summary
-/// also names what it left in the checkout (see `checkout_report`); the
-/// checkout itself is never cleaned.
+/// Verifies `AGENTS.md` exists, brings the registered checkout level with
+/// `origin/<branch>` (see [`sync_before_release`]), builds the agent request,
+/// invokes the agent, and verifies the tag points at HEAD. A checkout that
+/// cannot be fast-forwarded refuses the release before the agent runs, with a
+/// typed `sync_failure`. When the release fails, the summary also names what
+/// it left in the checkout (see `checkout_report`); the checkout itself is
+/// never cleaned.
 ///
-/// Returns `Err` if `AGENTS.md` is missing — callers convert this to a failure result.
+/// Returns `Err` if `AGENTS.md` is missing or git cannot say which branch the
+/// checkout is on — callers convert this to a failure result.
 pub(super) async fn run_release(
     agent: &dyn AgentGateway,
     shell: &dyn ShellGateway,
@@ -190,9 +250,32 @@ pub(super) async fn run_release(
         requires_json: false,
     };
 
-    // The release runs in the registered checkout, so a failure can strand its
-    // edits there. Record what was already dirty to tell the two apart.
-    let before = match checkout_report::probe(project_dir, shell).await {
+    // The release runs in the registered checkout, so a stale checkout bumps
+    // the wrong version and a failure can strand its edits there. Find the
+    // work tree once; outside one (a non-git fixture) the sync, the dirt
+    // snapshot and the leftover report are all skipped, with the probe's
+    // warning.
+    let checkout = checkout_report::probe(project_dir, shell).await;
+
+    let fast_forwarded = match &checkout {
+        Some(_) => {
+            match sync_before_release(shell, project_dir, &input.project, &input.branch).await? {
+                SyncOutcome::Synced { fast_forwarded } => {
+                    tracing::info!(project = %input.project, fast_forwarded, "release checkout synced with remote");
+                    Some(fast_forwarded)
+                }
+                SyncOutcome::Refused { failure, detail } => {
+                    tracing::warn!(project = %input.project, %failure, %detail, "release refused: checkout could not be synced");
+                    return Ok(ReleaseOutput::refused(failure, &detail));
+                }
+            }
+        }
+        None => None,
+    };
+
+    // Record what was already dirty, to tell a failed release's leftovers
+    // from dirt that was there before it.
+    let before = match checkout {
         Some(checkout) => checkout_report::snapshot(project_dir, shell)
             .await
             .map(|state| (checkout, state)),
@@ -238,7 +321,48 @@ pub(super) async fn run_release(
         raw_output,
         exit_code,
         left_uncommitted,
+        sync_failure: None,
+        fast_forwarded,
     })
+}
+
+/// Bring the registered checkout level with `origin/<branch>` before the agent
+/// is asked to bump anything.
+///
+/// Verifies `branch` is checked out, recovering from a detached `HEAD`, then
+/// fetches and fast-forwards by the maintenance chain's own
+/// [`sync_checkout`]. Another branch refuses with
+/// [`GitSyncFailure::WrongBranch`]; a dirty tree, a diverged branch and an
+/// unreachable remote refuse as `sync_checkout` does. Every refusal leaves the
+/// checkout exactly as found.
+///
+/// The sync is never simulated here. A dry-run release is answered by
+/// `SimulatedSuccess` before `run_release` is reached, so this only runs under
+/// a throttle that permits mutation, and `sync_checkout` is called with
+/// `dry_run = false`.
+///
+/// Returns `Err` when git cannot say which branch is checked out, or the
+/// detached-`HEAD` recovery fails: the checkout needs a human before any
+/// release can run in it.
+async fn sync_before_release(
+    shell: &dyn ShellGateway,
+    path: &std::path::Path,
+    project: &str,
+    branch: &str,
+) -> anyhow::Result<SyncOutcome> {
+    match check_git_branch(project, path, branch, shell).await? {
+        BranchCheckOutcome::Ok => {}
+        BranchCheckOutcome::WrongBranch(reason) => {
+            return Ok(SyncOutcome::Refused {
+                failure: GitSyncFailure::WrongBranch,
+                detail: reason,
+            });
+        }
+        BranchCheckOutcome::Err(reason) => {
+            anyhow::bail!("cannot verify the release checkout is on {branch}: {reason}");
+        }
+    }
+    sync_checkout(shell, path, branch, false).await
 }
 
 // ---------------------------------------------------------------------------

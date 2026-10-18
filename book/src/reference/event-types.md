@@ -98,6 +98,15 @@ Every event carries these common fields:
 | `new_tag` | string or null | Semver tag extracted from Claude CLI output |
 | `success` | bool           | Whether the Claude CLI invocation succeeded |
 | `left_uncommitted` | string array (optional) | Files a failed release left uncommitted in the registered checkout that were clean when it started, relative to the repository root. Absent on success and when it left none |
+| `sync_failure` | string (optional) | Why the registered checkout could not be brought level with `origin/<branch>` before the release: `"dirty_tree"`, `"diverged"`, `"wrong_branch"` or `"remote_unavailable"`. When present the agent never ran |
+| `fast_forwarded` | int (optional) | Commits fast-forwarded from `origin/<branch>` before the agent ran (`0` when the checkout was already level). Absent when the sync was refused or the checkout is not a git work tree |
+
+Before the agent is asked to bump anything, the release fetches and
+fast-forwards the registered checkout to `origin/<branch>`, where `<branch>`
+is the project's registered branch. A dirty tree, a diverged branch, a
+checkout on another branch or an unreachable remote fails the release with
+`sync_failure` naming the reason, and no version bump, commit, tag or publish
+happens.
 
 A failed release does not clean the registered checkout. Its summary names
 the files it left uncommitted, the files that were already uncommitted

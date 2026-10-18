@@ -56,6 +56,10 @@ per event.
 `Audit Release Tag` also sinks on `project_changes_pushed` to perform a
 post-push re-audit, confirming the fix is clean before anything downstream acts.
 
+`Cut Release` (and the manual `Execute Release`) fetches and fast-forwards the
+registered checkout to `origin/<branch>` before the agent is asked to bump
+anything, and refuses the release with a typed `sync_failure` when it cannot.
+
 | Block | Kind | Sinks On | Emits | Self-filters |
 |-------|------|----------|-------|--------------|
 | Scan Dependencies | Observer | `scan_requested` | `vulnerability_detected` | — |

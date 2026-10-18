@@ -9,8 +9,8 @@ use foundry_sdk::task_block::{BlockFuture, BlockKind, TaskBlock, TaskBlockResult
 use crate::gateway::{AgentGateway, ProcessShellGateway, ShellGateway};
 
 use super::{
-    FOREGROUND_INSTRUCTION, ReleaseInput, SimulatedSuccess, release_completed_event, run_release,
-    with_left_uncommitted,
+    FOREGROUND_INSTRUCTION, ReleaseInput, SimulatedSuccess, release_completed_event,
+    release_outcome_event, run_release,
 };
 
 #[derive(Debug, PartialEq)]
@@ -118,23 +118,14 @@ impl TaskBlock for CutRelease {
             let input = ReleaseInput {
                 project: project.clone(),
                 project_path,
+                branch: entry.branch.clone(),
                 prompt,
                 trace_id: trace_id.clone(),
             };
             match run_release(agent.as_ref(), shell.as_ref(), input).await {
                 Ok(output) => {
-                    let event = with_left_uncommitted(
-                        release_completed_event(
-                            &project,
-                            throttle,
-                            "patch",
-                            output.new_tag.as_deref(),
-                            output.success,
-                            Some(&cve),
-                            None,
-                        ),
-                        &output.left_uncommitted,
-                    );
+                    let event =
+                        release_outcome_event(&project, throttle, "patch", Some(&cve), &output);
                     Ok(TaskBlockResult {
                         events: vec![event],
                         success: output.success,
@@ -297,29 +288,54 @@ mod tests {
         assert_eq!(result.events[0].payload["success"], false);
     }
 
-    #[tokio::test]
-    async fn a_failed_patch_release_reports_what_it_left_in_the_checkout() {
-        use crate::gateway::fakes::FakeShellGateway;
-        use crate::shell::CommandResult;
-        let ok = |stdout: &str| CommandResult {
+    fn ok(stdout: &str) -> crate::shell::CommandResult {
+        crate::shell::CommandResult {
             stdout: stdout.to_string(),
             stderr: String::new(),
             exit_code: 0,
             success: true,
-        };
-        let shell = FakeShellGateway::sequence(vec![
+        }
+    }
+
+    /// The git answers a release reads before the agent runs, for a clean
+    /// checkout at `/repo` on `main` that is `behind` commits behind
+    /// `origin/main` (see the same helper in `execute_release`).
+    fn synced_checkout(behind: u32) -> Vec<crate::shell::CommandResult> {
+        let mut results = vec![
             ok("/repo\n"),
+            ok("main\n"),
             ok(""),
-            ok("0\n"),
-            ok(" M Cargo.toml\0"),
-            ok("0\n"),
-        ]);
-        let (entry, _dir) = test_helpers::project_entry_with_agents_md("my-project", true);
+            ok(""),
+            ok(&format!("0\t{behind}\n")),
+        ];
+        if behind > 0 {
+            results.push(ok("Updating\n"));
+        }
+        results.extend([ok(""), ok("0\n")]);
+        results
+    }
+
+    fn git_calls(shell: &crate::gateway::fakes::FakeShellGateway) -> Vec<String> {
+        shell.invocations().iter().map(|call| call.args.join(" ")).collect()
+    }
+
+    fn patch_release_block(
+        agent: Arc<dyn crate::gateway::AgentGateway>,
+        shell: Arc<dyn crate::gateway::ShellGateway>,
+    ) -> (CutRelease, Option<tempfile::TempDir>) {
+        let (entry, dir) = test_helpers::project_entry_with_agents_md("my-project", true);
         let registry = test_helpers::registry_with_entry(entry);
-        let block = CutRelease::with_gateways(
+        (CutRelease::with_gateways(agent, registry, shell), dir)
+    }
+
+    #[tokio::test]
+    async fn a_failed_patch_release_reports_what_it_left_in_the_checkout() {
+        use crate::gateway::fakes::FakeShellGateway;
+        let mut results = synced_checkout(0);
+        results.extend([ok(" M Cargo.toml\0"), ok("0\n")]);
+        let (block, _dir) = patch_release_block(
             FakeAgentGateway::failure("Claude CLI failed"),
-            registry,
-            shell,
+            FakeShellGateway::sequence(results),
         );
 
         let result = block.execute(&clean_trigger()).await.unwrap();
@@ -332,5 +348,69 @@ mod tests {
         );
         assert_eq!(result.events[0].payload["left_uncommitted"], serde_json::json!(["Cargo.toml"]));
         assert_eq!(result.events[0].payload["cve"], "CVE-2026-1234");
+    }
+
+    #[tokio::test]
+    async fn a_clean_checkout_behind_origin_is_fast_forwarded_before_the_patch_release() {
+        use crate::gateway::fakes::FakeShellGateway;
+        let shell = FakeShellGateway::sequence(synced_checkout(3));
+        let agent = FakeAgentGateway::success_with("Tagged as v1.2.4 and pushed.");
+        let (block, _dir) = patch_release_block(
+            agent.clone(),
+            Arc::clone(&shell) as Arc<dyn crate::gateway::ShellGateway>,
+        );
+
+        let result = block.execute(&clean_trigger()).await.unwrap();
+
+        assert!(result.success, "{}", result.summary);
+        assert_eq!(agent.invocations().len(), 1);
+        let calls = git_calls(&shell);
+        assert_eq!(calls[3], "fetch origin main");
+        assert_eq!(calls[5], "merge --ff-only origin/main");
+        let payload = &result.events[0].payload;
+        assert_eq!(payload["success"], true);
+        assert_eq!(payload["new_tag"], "v1.2.4");
+        assert_eq!(payload["cve"], "CVE-2026-1234");
+        assert_eq!(payload["fast_forwarded"], 3);
+        assert!(payload.get("sync_failure").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_dirty_checkout_refuses_the_patch_release_without_invoking_the_agent() {
+        use crate::gateway::fakes::FakeShellGateway;
+        let shell =
+            FakeShellGateway::sequence(vec![ok("/repo\n"), ok("main\n"), ok("?? scratch.rs\n")]);
+        let agent = FakeAgentGateway::success_with("v9.9.9");
+        let (block, _dir) = patch_release_block(
+            agent.clone(),
+            Arc::clone(&shell) as Arc<dyn crate::gateway::ShellGateway>,
+        );
+
+        let result = block.execute(&clean_trigger()).await.unwrap();
+
+        assert!(!result.success);
+        assert!(agent.invocations().is_empty(), "no agent session may be spent");
+        assert_eq!(
+            git_calls(&shell),
+            [
+                "rev-parse --show-toplevel",
+                "rev-parse --abbrev-ref HEAD",
+                "status --porcelain"
+            ]
+        );
+        assert_eq!(result.events.len(), 1);
+        let payload = &result.events[0].payload;
+        assert_eq!(result.events[0].event_type, EventType::ReleaseCompleted);
+        assert_eq!(payload["success"], false);
+        assert_eq!(payload["sync_failure"], "dirty_tree");
+        assert_eq!(payload["new_tag"], serde_json::Value::Null);
+        assert_eq!(payload["cve"], "CVE-2026-1234");
+        assert!(
+            result
+                .summary
+                .starts_with("Release refused before any version bump: dirty_tree: "),
+            "summary: {}",
+            result.summary
+        );
     }
 }

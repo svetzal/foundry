@@ -9,8 +9,8 @@ use foundry_sdk::task_block::{BlockFuture, BlockKind, TaskBlock, TaskBlockResult
 use crate::gateway::{AgentGateway, ProcessShellGateway, ShellGateway};
 
 use super::{
-    FOREGROUND_INSTRUCTION, ReleaseInput, SimulatedSuccess, release_completed_event, run_release,
-    with_left_uncommitted,
+    FOREGROUND_INSTRUCTION, ReleaseInput, SimulatedSuccess, release_completed_event,
+    release_outcome_event, run_release,
 };
 
 agent_execution_block! {
@@ -84,6 +84,7 @@ impl TaskBlock for ExecuteRelease {
 
         Box::pin(async move {
             let project_path = PathBuf::from(&entry.path);
+            let branch = entry.branch.clone();
 
             let bump_instruction = match &bump {
                 Some(b) => format!("The version bump type is {b}."),
@@ -96,6 +97,8 @@ impl TaskBlock for ExecuteRelease {
             let prompt = format!(
                 "Release {project}. Follow the release process documented in AGENTS.md exactly.\n\
                  {bump_instruction}\n\
+                 The checkout has already been fetched and fast-forwarded to origin/{branch}; \
+                 do not pull, rebase, or switch branches.\n\
                  {FOREGROUND_INSTRUCTION}\n\
                  Complete all steps: run quality gates, update the changelog, bump the version in all \
                  locations, commit (the version-bump commit must be the HEAD commit), then create the \
@@ -111,23 +114,13 @@ impl TaskBlock for ExecuteRelease {
             let input = ReleaseInput {
                 project: project.clone(),
                 project_path,
+                branch,
                 prompt,
                 trace_id: trace_id.clone(),
             };
             match run_release(agent.as_ref(), shell.as_ref(), input).await {
                 Ok(output) => {
-                    let event = with_left_uncommitted(
-                        release_completed_event(
-                            &project,
-                            throttle,
-                            "manual",
-                            output.new_tag.as_deref(),
-                            output.success,
-                            None,
-                            None,
-                        ),
-                        &output.left_uncommitted,
-                    );
+                    let event = release_outcome_event(&project, throttle, "manual", None, &output);
                     Ok(TaskBlockResult {
                         events: vec![event],
                         success: output.success,
@@ -338,20 +331,53 @@ mod tests {
         }
     }
 
-    /// `git rev-parse --show-toplevel`, `git status` and `git rev-list` for a
-    /// checkout at `/repo` holding `porcelain` and `unpushed` commits.
-    fn checkout_snapshot(porcelain: &str, unpushed: &str) -> Vec<crate::shell::CommandResult> {
-        vec![ok("/repo\n"), ok(porcelain), ok(unpushed)]
+    /// The git answers a release reads before the agent runs, for a clean
+    /// checkout at `/repo` on `main` that is `behind` commits behind
+    /// `origin/main`: the work-tree probe, the branch check, the sync (status,
+    /// fetch, measure, and the fast-forward when behind) and the dirt
+    /// snapshot (status and unpushed count).
+    fn synced_checkout(behind: u32) -> Vec<crate::shell::CommandResult> {
+        let mut results = vec![
+            ok("/repo\n"),
+            ok("main\n"),
+            ok(""),
+            ok(""),
+            ok(&format!("0\t{behind}\n")),
+        ];
+        if behind > 0 {
+            results.push(ok("Updating\n"));
+        }
+        results.extend([ok(""), ok("0\n")]);
+        results
     }
 
-    /// A clean checkout, then tag verification's two `git rev-parse` calls,
-    /// then a clean checkout again for a release that fails.
+    /// The git calls [`synced_checkout`] answers, in order.
+    fn synced_calls(behind: u32) -> Vec<&'static str> {
+        let mut calls = vec![
+            "rev-parse --show-toplevel",
+            "rev-parse --abbrev-ref HEAD",
+            "status --porcelain",
+            "fetch origin main",
+            "rev-list --left-right --count HEAD...origin/main",
+        ];
+        if behind > 0 {
+            calls.push("merge --ff-only origin/main");
+        }
+        calls.extend([
+            "status --porcelain=v1 -z",
+            "rev-list --count @{upstream}..HEAD",
+        ]);
+        calls
+    }
+
+    /// A clean, level checkout, then tag verification's two `git rev-parse`
+    /// calls, then a clean checkout again for a release that fails.
     fn git_revparse_sequence(
         tag_commit: &str,
         head_commit: &str,
     ) -> Arc<dyn crate::gateway::ShellGateway> {
         use crate::gateway::fakes::FakeShellGateway;
-        let mut results = checkout_snapshot("", "0\n");
+        let mut results = synced_checkout(0);
         results.push(ok(&format!("{tag_commit}\n")));
         results.push(ok(&format!("{head_commit}\n")));
         results.extend([ok(""), ok("0\n")]);
@@ -458,7 +484,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_release_names_the_files_and_commits_it_left_in_the_checkout() {
         use crate::gateway::fakes::FakeShellGateway;
-        let mut results = checkout_snapshot("", "0\n");
+        let mut results = synced_checkout(0);
         results.extend([
             ok(" M mix.exs\0 M CHANGELOG.md\0 M README.md\0?? guides/getting_started.md\0"),
             ok("1\n"),
@@ -489,44 +515,12 @@ mod tests {
                 "guides/getting_started.md"
             ])
         );
-        assert_eq!(
-            git_calls(&shell),
-            [
-                "rev-parse --show-toplevel",
-                "status --porcelain=v1 -z",
-                "rev-list --count @{upstream}..HEAD",
-                "status --porcelain=v1 -z",
-                "rev-list --count @{upstream}..HEAD",
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn dirt_present_before_the_release_is_reported_as_pre_existing() {
-        use crate::gateway::fakes::FakeShellGateway;
-        let mut results = checkout_snapshot(" M notes.md\0", "0\n");
-        results.extend([ok(" M notes.md\0 M mix.exs\0"), ok("0\n")]);
-        let (block, _dir) = release_block(
-            FakeAgentGateway::failure("release failed"),
-            FakeShellGateway::sequence(results),
-        );
-
-        let result = block.execute(&release_trigger(serde_json::json!({}))).await.unwrap();
-
-        assert!(
-            result.summary.contains("Left uncommitted in /repo: mix.exs (1 file)."),
-            "summary: {}",
-            result.summary
-        );
-        assert!(
-            result
-                .summary
-                .contains("Already uncommitted before the release: notes.md (1 file)."),
-            "summary: {}",
-            result.summary
-        );
-        assert!(!result.summary.contains("not pushed"), "summary: {}", result.summary);
-        assert_eq!(result.events[0].payload["left_uncommitted"], serde_json::json!(["mix.exs"]));
+        let mut expected = synced_calls(0);
+        expected.extend([
+            "status --porcelain=v1 -z",
+            "rev-list --count @{upstream}..HEAD",
+        ]);
+        assert_eq!(git_calls(&shell), expected);
     }
 
     #[tokio::test]
@@ -538,7 +532,7 @@ mod tests {
         entry.actions = release_actions();
         let registry = test_helpers::registry_with_entry(entry);
         let shell = crate::gateway::fakes::FakeShellGateway::sequence({
-            let mut results = checkout_snapshot("", "0\n");
+            let mut results = synced_checkout(0);
             results.extend([ok("aaaa\n"), ok("aaaa\n"), ok(" M stray.rs\0")]);
             results
         });
@@ -553,16 +547,10 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.summary, "Release completed — v3.0.0");
         assert!(result.events[0].payload.get("left_uncommitted").is_none());
-        assert_eq!(
-            git_calls(&shell),
-            [
-                "rev-parse --show-toplevel",
-                "status --porcelain=v1 -z",
-                "rev-list --count @{upstream}..HEAD",
-                "rev-parse v3.0.0^{commit}",
-                "rev-parse HEAD",
-            ]
-        );
+        assert_eq!(result.events[0].payload["fast_forwarded"], 0);
+        let mut expected = synced_calls(0);
+        expected.extend(["rev-parse v3.0.0^{commit}", "rev-parse HEAD"]);
+        assert_eq!(git_calls(&shell), expected);
     }
 
     #[tokio::test]
@@ -585,7 +573,7 @@ mod tests {
     #[tokio::test]
     async fn a_git_status_failure_after_the_release_leaves_the_failure_summary_unchanged() {
         use crate::gateway::fakes::FakeShellGateway;
-        let mut results = checkout_snapshot("", "0\n");
+        let mut results = synced_checkout(0);
         results.push(failed("fatal: index file corrupt"));
         let (block, _dir) = release_block(
             FakeAgentGateway::failure("release failed"),
@@ -597,5 +585,321 @@ mod tests {
         assert!(!result.success);
         assert_eq!(result.summary, "Claude CLI exited with code 1; stderr: release failed");
         assert!(result.events[0].payload.get("left_uncommitted").is_none());
+    }
+
+    // -- Sync before the agent runs (scripted shell) --
+
+    /// Git subcommands a refused release must never reach.
+    const MUTATING: [&str; 5] = ["merge", "rebase", "commit", "tag", "push"];
+
+    fn assert_no_mutating_calls(shell: &crate::gateway::fakes::FakeShellGateway) {
+        for call in git_calls(shell) {
+            let sub = call.split_whitespace().next().unwrap_or_default();
+            assert!(!MUTATING.contains(&sub), "unexpected mutating git call: git {call}");
+        }
+    }
+
+    /// The mojentic-ru shape of 2026-10-18: a clean registered checkout that
+    /// never pulled the last release. The release fetches and fast-forwards
+    /// it before the agent is asked to bump anything, and tells the agent so.
+    #[tokio::test]
+    async fn a_clean_checkout_behind_origin_is_fast_forwarded_before_the_agent_runs() {
+        use crate::gateway::fakes::FakeShellGateway;
+        let shell = FakeShellGateway::sequence(synced_checkout(2));
+        let agent = FakeAgentGateway::success_with("Release complete!\nv3.0.1");
+        let (block, _dir) = release_block(
+            agent.clone(),
+            Arc::clone(&shell) as Arc<dyn crate::gateway::ShellGateway>,
+        );
+
+        let result = block.execute(&release_trigger(serde_json::json!({}))).await.unwrap();
+
+        assert!(result.success, "{}", result.summary);
+        // Every git call the release made is the sync; the agent ran after
+        // all of them (it makes none of its own here).
+        assert_eq!(git_calls(&shell), synced_calls(2));
+        let invocations = agent.invocations();
+        assert_eq!(invocations.len(), 1);
+        assert!(
+            invocations[0]
+                .prompt
+                .contains("already been fetched and fast-forwarded to origin/main"),
+            "prompt: {}",
+            invocations[0].prompt
+        );
+        assert!(
+            invocations[0].prompt.contains("do not pull, rebase, or switch branches"),
+            "prompt: {}",
+            invocations[0].prompt
+        );
+        let payload = &result.events[0].payload;
+        assert_eq!(payload["success"], true);
+        assert_eq!(payload["new_tag"], "v3.0.1");
+        assert_eq!(payload["fast_forwarded"], 2);
+        assert!(payload.get("sync_failure").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_diverged_checkout_refuses_the_release_without_invoking_the_agent() {
+        use crate::gateway::fakes::FakeShellGateway;
+        let shell = FakeShellGateway::sequence(vec![
+            ok("/repo\n"),
+            ok("main\n"),
+            ok(""),
+            ok(""),
+            ok("1\t1\n"),
+        ]);
+        let agent = FakeAgentGateway::success_with("v9.9.9");
+        let (block, _dir) = release_block(
+            agent.clone(),
+            Arc::clone(&shell) as Arc<dyn crate::gateway::ShellGateway>,
+        );
+
+        let result = block.execute(&release_trigger(serde_json::json!({}))).await.unwrap();
+
+        assert!(!result.success);
+        assert!(agent.invocations().is_empty(), "no agent session may be spent");
+        assert_no_mutating_calls(&shell);
+        assert_eq!(result.events.len(), 1);
+        let payload = &result.events[0].payload;
+        assert_eq!(result.events[0].event_type, EventType::ReleaseCompleted);
+        assert_eq!(payload["success"], false);
+        assert_eq!(payload["sync_failure"], "diverged");
+        assert_eq!(payload["new_tag"], serde_json::Value::Null);
+        assert!(payload.get("fast_forwarded").is_none());
+        assert!(payload.get("left_uncommitted").is_none());
+        assert!(
+            result
+                .summary
+                .starts_with("Release refused before any version bump: diverged: "),
+            "summary: {}",
+            result.summary
+        );
+        assert!(
+            result
+                .summary
+                .contains("1 commit(s) ahead of and 1 commit(s) behind origin/main"),
+            "summary: {}",
+            result.summary
+        );
+        assert!(
+            result.summary.contains("nothing was committed, tagged or published"),
+            "summary: {}",
+            result.summary
+        );
+        assert!(result.raw_output.is_none());
+        assert!(result.exit_code.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_dirty_checkout_refuses_the_release_before_fetching() {
+        use crate::gateway::fakes::FakeShellGateway;
+        let shell =
+            FakeShellGateway::sequence(vec![ok("/repo\n"), ok("main\n"), ok(" M mix.exs\n")]);
+        let agent = FakeAgentGateway::success_with("v9.9.9");
+        let (block, _dir) = release_block(
+            agent.clone(),
+            Arc::clone(&shell) as Arc<dyn crate::gateway::ShellGateway>,
+        );
+
+        let result = block.execute(&release_trigger(serde_json::json!({}))).await.unwrap();
+
+        assert!(!result.success);
+        assert!(agent.invocations().is_empty(), "no agent session may be spent");
+        assert_eq!(
+            git_calls(&shell),
+            [
+                "rev-parse --show-toplevel",
+                "rev-parse --abbrev-ref HEAD",
+                "status --porcelain"
+            ]
+        );
+        let payload = &result.events[0].payload;
+        assert_eq!(payload["success"], false);
+        assert_eq!(payload["sync_failure"], "dirty_tree");
+        assert_eq!(payload["new_tag"], serde_json::Value::Null);
+        assert!(
+            result
+                .summary
+                .starts_with("Release refused before any version bump: dirty_tree: "),
+            "summary: {}",
+            result.summary
+        );
+    }
+
+    #[tokio::test]
+    async fn a_checkout_on_another_branch_refuses_the_release_without_fetching() {
+        use crate::gateway::fakes::FakeShellGateway;
+        let shell = FakeShellGateway::sequence(vec![ok("/repo\n"), ok("release-prep\n")]);
+        let agent = FakeAgentGateway::success_with("v9.9.9");
+        let (block, _dir) = release_block(
+            agent.clone(),
+            Arc::clone(&shell) as Arc<dyn crate::gateway::ShellGateway>,
+        );
+
+        let result = block.execute(&release_trigger(serde_json::json!({}))).await.unwrap();
+
+        assert!(!result.success);
+        assert!(agent.invocations().is_empty(), "no agent session may be spent");
+        assert_eq!(git_calls(&shell), ["rev-parse --show-toplevel", "rev-parse --abbrev-ref HEAD"]);
+        let payload = &result.events[0].payload;
+        assert_eq!(payload["sync_failure"], "wrong_branch");
+        assert_eq!(payload["new_tag"], serde_json::Value::Null);
+        assert!(
+            result
+                .summary
+                .contains("wrong_branch: wrong branch: release-prep, expected main"),
+            "summary: {}",
+            result.summary
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_remote_refuses_the_release() {
+        use crate::gateway::fakes::FakeShellGateway;
+        let shell = FakeShellGateway::sequence(vec![
+            ok("/repo\n"),
+            ok("main\n"),
+            ok(""),
+            failed("fatal: could not read from remote repository"),
+        ]);
+        let agent = FakeAgentGateway::success_with("v9.9.9");
+        let (block, _dir) = release_block(
+            agent.clone(),
+            Arc::clone(&shell) as Arc<dyn crate::gateway::ShellGateway>,
+        );
+
+        let result = block.execute(&release_trigger(serde_json::json!({}))).await.unwrap();
+
+        assert!(!result.success);
+        assert!(agent.invocations().is_empty(), "no agent session may be spent");
+        assert_no_mutating_calls(&shell);
+        assert_eq!(git_calls(&shell).last().map(String::as_str), Some("fetch origin main"));
+        let payload = &result.events[0].payload;
+        assert_eq!(payload["sync_failure"], "remote_unavailable");
+        assert_eq!(payload["new_tag"], serde_json::Value::Null);
+    }
+
+    /// Git inside a work tree that cannot say which branch is checked out is a
+    /// checkout a human must look at; the block fails without an event, as it
+    /// does for a missing `AGENTS.md`.
+    #[tokio::test]
+    async fn a_checkout_whose_branch_cannot_be_read_fails_the_block_without_an_event() {
+        use crate::gateway::fakes::FakeShellGateway;
+        let shell = FakeShellGateway::sequence(vec![ok("/repo\n"), failed("fatal: bad revision")]);
+        let agent = FakeAgentGateway::success_with("v9.9.9");
+        let (block, _dir) = release_block(
+            agent.clone(),
+            Arc::clone(&shell) as Arc<dyn crate::gateway::ShellGateway>,
+        );
+
+        let result = block.execute(&release_trigger(serde_json::json!({}))).await.unwrap();
+
+        assert!(!result.success);
+        assert!(agent.invocations().is_empty(), "no agent session may be spent");
+        assert!(result.events.is_empty(), "{:?}", result.events);
+        assert!(
+            result.summary.contains("cannot verify the release checkout is on main"),
+            "summary: {}",
+            result.summary
+        );
+    }
+
+    // -- Sync before the agent runs (real git) --
+
+    /// A registered checkout with `AGENTS.md` committed and pushed, so its
+    /// tree is clean, and a second clone that stands in for another host
+    /// pushing to origin.
+    fn release_fixture() -> (test_helpers::git_repo::Repo, std::path::PathBuf) {
+        use test_helpers::git_repo::{commit, git, repo};
+        let fixture = repo();
+        commit(&fixture.work, "AGENTS.md", "# Release process\n", "add agent guidance");
+        git(&fixture.work, &["push", "-q", "origin", "main"]);
+        let root = fixture.remote.parent().unwrap().to_path_buf();
+        git(&root, &["clone", "-q", fixture.remote.to_str().unwrap(), "other"]);
+        let other = root.join("other");
+        git(&other, &["config", "user.email", "other@example.com"]);
+        git(&other, &["config", "user.name", "Other"]);
+        (fixture, other)
+    }
+
+    fn real_git_block(
+        checkout: &std::path::Path,
+        agent: Arc<dyn crate::gateway::AgentGateway>,
+    ) -> ExecuteRelease {
+        let mut entry = test_helpers::project_entry("my-project", checkout.to_str().unwrap());
+        entry.actions = release_actions();
+        ExecuteRelease::with_gateways(
+            agent,
+            test_helpers::registry_with_entry(entry),
+            Arc::new(test_helpers::git_repo::CleanProcessShellGateway),
+        )
+    }
+
+    #[tokio::test]
+    async fn real_git_a_checkout_two_behind_origin_is_fast_forwarded_before_the_release() {
+        use test_helpers::git_repo::{commit, git};
+        let (fixture, other) = release_fixture();
+        commit(&other, "CHANGELOG.md", "## [3.0.0]\n", "Release 3.0.0");
+        commit(&other, "README.md", "after the release", "follow-up");
+        git(&other, &["push", "-q", "origin", "main"]);
+        let origin_head = git(&other, &["rev-parse", "HEAD"]);
+        let agent = FakeAgentGateway::success_with("done");
+        let block = real_git_block(&fixture.work, agent.clone());
+
+        let result = block.execute(&release_trigger(serde_json::json!({}))).await.unwrap();
+
+        assert!(result.success, "{}", result.summary);
+        assert_eq!(agent.invocations().len(), 1);
+        assert_eq!(git(&fixture.work, &["rev-parse", "HEAD"]), origin_head);
+        assert_eq!(
+            git(&fixture.work, &["rev-parse", "HEAD"]),
+            git(&fixture.work, &["rev-parse", "origin/main"])
+        );
+        assert_eq!(result.events[0].payload["fast_forwarded"], 2);
+        assert!(result.events[0].payload.get("sync_failure").is_none());
+    }
+
+    #[tokio::test]
+    async fn real_git_a_diverged_checkout_is_refused_and_left_untouched() {
+        use test_helpers::git_repo::{commit, git};
+        let (fixture, other) = release_fixture();
+        commit(&fixture.work, "notes.md", "local only", "local commit never pushed");
+        commit(&other, "README.md", "remote moved", "remote commit");
+        git(&other, &["push", "-q", "origin", "main"]);
+        let head_before = git(&fixture.work, &["rev-parse", "HEAD"]);
+        let agent = FakeAgentGateway::success_with("v9.9.9");
+        let block = real_git_block(&fixture.work, agent.clone());
+
+        let result = block.execute(&release_trigger(serde_json::json!({}))).await.unwrap();
+
+        assert!(!result.success);
+        assert!(agent.invocations().is_empty(), "no agent session may be spent");
+        assert_eq!(result.events[0].payload["sync_failure"], "diverged");
+        assert_eq!(result.events[0].payload["new_tag"], serde_json::Value::Null);
+        assert_eq!(git(&fixture.work, &["rev-parse", "HEAD"]), head_before);
+        assert_eq!(git(&fixture.work, &["tag"]), "");
+        assert_eq!(git(&fixture.work, &["status", "--porcelain"]), "");
+    }
+
+    #[tokio::test]
+    async fn real_git_a_dirty_checkout_is_refused_with_the_edit_intact() {
+        use test_helpers::git_repo::git;
+        let (fixture, _other) = release_fixture();
+        std::fs::write(fixture.work.join("README.md"), "unstaged edit").unwrap();
+        let agent = FakeAgentGateway::success_with("v9.9.9");
+        let block = real_git_block(&fixture.work, agent.clone());
+
+        let result = block.execute(&release_trigger(serde_json::json!({}))).await.unwrap();
+
+        assert!(!result.success);
+        assert!(agent.invocations().is_empty(), "no agent session may be spent");
+        assert_eq!(result.events[0].payload["sync_failure"], "dirty_tree");
+        assert_eq!(
+            std::fs::read_to_string(fixture.work.join("README.md")).unwrap(),
+            "unstaged edit"
+        );
+        assert_eq!(git(&fixture.work, &["status", "--porcelain"]), "M README.md");
+        assert_eq!(git(&fixture.work, &["tag"]), "");
     }
 }
