@@ -272,6 +272,7 @@ fn budget_exhausted_campaign(name: &str) -> Campaign {
             campaign: Some(name.to_string()),
             ..foundry_sdk::payload::LoopContext::default()
         },
+        failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
     });
     campaign
 }

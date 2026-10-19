@@ -211,6 +211,7 @@ async fn online_pause_preserves_pending_run_result_and_status() {
             campaign: Some("c".to_string()),
             ..LoopContext::default()
         },
+        failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
     };
 
     let mut campaign = active_campaign("c");

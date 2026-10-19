@@ -892,6 +892,7 @@ mod tests {
                 task_branch: Some("foundry-task/abc".to_string()),
                 ..LoopContext::default()
             },
+            failure: crate::gateway::AgentFailureMetadata::default(),
         }
     }
 

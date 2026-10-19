@@ -16,7 +16,7 @@ agent_execution_block! {
     /// Mutator — sinks on `RetryRequested`.
     /// Uses `AgentGateway` with `Coding` capability and `Full` access.
     /// Emits `ExecutionCompleted` which feeds back into `RunVerifyGates` -> `RouteGateResult`.
-    pub struct RetryExecution
+    pub struct RetryExecution with sleeper
 }
 
 /// Outcome of a retry-execution dry-run simulation.
@@ -78,6 +78,7 @@ impl TaskBlock for RetryExecution {
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
         let shell = Arc::clone(&self.shell);
+        let sleeper = Arc::clone(&self.sleeper);
 
         Box::pin(async move {
             let prompt = build_retry_prompt(
@@ -101,7 +102,7 @@ impl TaskBlock for RetryExecution {
                 correction_needed: true,
             };
 
-            Ok(super::execute_agent_block(&*agent, &*shell, &entry, &ctx, prompt).await)
+            Ok(super::execute_agent_block(&*agent, &*shell, &*sleeper, &entry, &ctx, prompt).await)
         })
     }
 }

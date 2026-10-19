@@ -393,6 +393,53 @@ fn outcome_label(outcome: Option<&CycleOutcome>) -> String {
     condense(&detail)
 }
 
+/// One line telling formation whether the last run's agent session started
+/// and why it ended.
+///
+/// Without it formation reads a verdict and a reason and cannot tell a runner
+/// outage from a work defect: on 2026-10-19 it judged that repeating an
+/// objective whose Codex session never started would fail again, and
+/// recorded `capability_unavailable` recoveries for a provider at capacity.
+fn last_run_line(result: &TaskRunCompletedPayload) -> String {
+    if result.failure.is_provider_unavailable() {
+        return format!(
+            "last run: did not start ({}); no agent worked on the objective",
+            result.failure.execution_summary()
+        );
+    }
+    if result.land_blocked == Some(LandBlocked::ContinuationConflict) {
+        return format!(
+            "last run: did not start (its continuation was refused before any agent session: {})",
+            condense(&result.summary)
+        );
+    }
+    if result.failure.is_terminal_provider_failure() {
+        return format!(
+            "last run: stopped by its provider ({})",
+            result.failure.execution_summary()
+        );
+    }
+    let detail = match &result.verdict {
+        TaskVerdict::Complete => String::new(),
+        TaskVerdict::Remainder { gaps } => gaps.join("; "),
+        TaskVerdict::Defect { diagnosis } => diagnosis.clone(),
+        TaskVerdict::BlockedOnDecision { finding, .. } => finding.clone(),
+        TaskVerdict::BlockedOnRecovery { kind, detail } => format!("{kind}: {detail}"),
+        TaskVerdict::RunnerError { detail } => {
+            return format!(
+                "last run: ended with a runner error before review: {}",
+                condense(detail)
+            );
+        }
+    };
+    let tag = result.verdict.tag();
+    if detail.is_empty() {
+        format!("last run: started, ended with verdict {tag}")
+    } else {
+        format!("last run: started, ended with verdict {tag}: {}", condense(&detail))
+    }
+}
+
 /// The objectives this campaign has already cut, oldest first.
 ///
 /// Shown only one cycle deep, the agent cannot tell that it is asking for the
@@ -522,12 +569,13 @@ fn decision_prompt(
     let last_result = request.run_result.as_ref().map_or_else(
         || "none (initial/manual advance)".to_string(),
         |result| {
+            let started = last_run_line(result);
             #[allow(
                 clippy::expect_used,
                 reason = "TaskRunCompletedPayload contains only strings, bools, and typed \
                           sub-structs — no non-string map keys or non-finite floats"
             )]
-            serde_json::to_string_pretty(&serde_json::json!({
+            let typed = serde_json::to_string_pretty(&serde_json::json!({
                 "summary": result.summary,
                 "verdict": result.verdict,
                 "landed": result.landed,
@@ -535,7 +583,8 @@ fn decision_prompt(
                 "land_blocked": result.land_blocked,
                 "trunk_arrivals": result.trunk_arrivals,
             }))
-            .expect("task run result is infallibly serializable")
+            .expect("task run result is infallibly serializable");
+            format!("{started}\n{typed}")
         },
     );
     let history = objective_history(campaign);
@@ -659,6 +708,8 @@ enum AdvanceOutcome {
         finding: String,
         options: Vec<String>,
     },
+    /// Run the cycle's objective again; see [`Redispatch`].
+    Redispatch(Redispatch),
 }
 
 impl AdvanceOutcome {
@@ -667,7 +718,7 @@ impl AdvanceOutcome {
     fn map_decision(self, rule: impl FnOnce(CampaignDecision) -> CampaignDecision) -> Self {
         match self {
             Self::Decided(decision) => Self::Decided(rule(decision)),
-            Self::Recovery { .. } | Self::OwnerQuestion { .. } => self,
+            Self::Recovery { .. } | Self::OwnerQuestion { .. } | Self::Redispatch(_) => self,
         }
     }
 }
@@ -713,6 +764,149 @@ impl DecisionRequest {
             trace_id: self.trace_id.clone(),
             requires_json: true,
         }
+    }
+}
+
+/// Pauses before each re-dispatch of a cycle whose agent session the provider
+/// refused as unavailable, after execution's own retries ran out. About two
+/// hours in all; the 2026-10-19 Codex capacity outage lasted 1 h 42 min. An
+/// outage that outlasts them records a `runner_unavailable` recovery.
+const PROVIDER_REDISPATCH_DELAYS: [Duration; 4] = [
+    Duration::from_secs(5 * 60),
+    Duration::from_secs(15 * 60),
+    Duration::from_secs(30 * 60),
+    Duration::from_secs(60 * 60),
+];
+
+/// What a campaign does with a cycle the provider refused as unavailable.
+#[derive(Debug, PartialEq, Eq)]
+enum ProviderOutage {
+    /// Dispatch the same objective again, under the same cycle number.
+    Redispatch {
+        objective: String,
+        reason: String,
+        not_before: Option<chrono::DateTime<chrono::Utc>>,
+    },
+    /// The re-dispatches ran out: record a `runner_unavailable` recovery.
+    Exhausted { detail: String },
+}
+
+/// Whether the campaign's recovery was recorded for the run `request` names
+/// and has since been rechecked.
+fn recovery_rechecked_for_run(
+    campaign: &Campaign,
+    request: &CampaignAdvanceRequestedPayload,
+) -> bool {
+    campaign.recovery.as_ref().is_some_and(|recovery| {
+        !recovery.is_pending()
+            && request
+                .run_event_id
+                .as_ref()
+                .is_some_and(|event| recovery.id.starts_with(&format!("recovery_{event}_")))
+    })
+}
+
+/// The next step for a run the provider refused as unavailable, or `None`
+/// when `result` is not one, or when the objective to repeat is unknown.
+///
+/// The cycle did no work, so it is repeated rather than re-formed: formation
+/// would only see a failed run and judge the objective again. Each repeat
+/// keeps the cycle number, so no budget is spent; the cycle's entries in the
+/// objective history count the repeats. A recovery recheck dispatches at
+/// once; otherwise the next pause in [`PROVIDER_REDISPATCH_DELAYS`] applies,
+/// and when they are spent the outage becomes a typed recovery.
+fn provider_outage(
+    campaign: &Campaign,
+    result: &TaskRunCompletedPayload,
+    rechecked: bool,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<ProviderOutage> {
+    if !result.provider_unavailable() {
+        return None;
+    }
+    let cycle = campaign.cycles_completed;
+    let objective = campaign
+        .objective_history
+        .iter()
+        .rev()
+        .find(|entry| entry.cycle == cycle)
+        .map(|entry| entry.objective.clone())
+        .or_else(|| {
+            result
+                .context
+                .prompt
+                .as_ref()
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })?;
+    let detail = result.failure.execution_summary();
+    if rechecked {
+        return Some(ProviderOutage::Redispatch {
+            objective,
+            reason: format!(
+                "recovery rechecked; re-dispatching cycle {cycle} after a provider outage without forming: {detail}"
+            ),
+            not_before: None,
+        });
+    }
+    let repeats = campaign
+        .objective_history
+        .iter()
+        .filter(|entry| entry.cycle == cycle)
+        .count()
+        .saturating_sub(1);
+    Some(match PROVIDER_REDISPATCH_DELAYS.get(repeats) {
+        Some(pause) => ProviderOutage::Redispatch {
+            objective,
+            reason: format!(
+                "cycle {cycle} did not start ({detail}); re-dispatching it in {} minutes, repeat {} of {}, no cycle budget spent",
+                pause.as_secs() / 60,
+                repeats + 1,
+                PROVIDER_REDISPATCH_DELAYS.len()
+            ),
+            not_before: chrono::Duration::from_std(*pause).ok().map(|pause| now + pause),
+        },
+        None => ProviderOutage::Exhausted {
+            detail: format!(
+                "provider unavailable through {} re-dispatches of cycle {cycle}: {detail}. A recovery recheck dispatches the same objective again without forming",
+                PROVIDER_REDISPATCH_DELAYS.len()
+            ),
+        },
+    })
+}
+
+/// The re-dispatch for an advance whose last run the provider refused, with
+/// the formation record that dispatch needs, or `None` when the advance is
+/// to form as usual.
+fn provider_redispatch(
+    execution: &AdvanceExecution,
+    campaign: &Campaign,
+) -> Option<(AdvanceOutcome, FormationRecord)> {
+    let request = &execution.request;
+    let result = request.run_result.as_ref()?;
+    let rechecked = recovery_rechecked_for_run(campaign, request);
+    match provider_outage(campaign, result, rechecked, chrono::Utc::now())? {
+        ProviderOutage::Redispatch {
+            objective,
+            reason,
+            not_before,
+        } => Some((
+            AdvanceOutcome::Redispatch(Redispatch {
+                objective,
+                reason,
+                not_before,
+            }),
+            FormationRecord {
+                initiative_context: execution.initiative_context.clone(),
+                selected_providers: Some(cycle_providers(
+                    campaign,
+                    request,
+                    execution.initiative_context.as_ref(),
+                )),
+                ..FormationRecord::default()
+            },
+        )),
+        ProviderOutage::Exhausted { .. } => None,
     }
 }
 
@@ -1058,9 +1252,15 @@ fn persist_or_terminal(
     }
 }
 
+/// Record the arriving run and return the outcome it forces, if any.
+///
+/// `redispatch_on_outage` lets a run the provider refused as unavailable go
+/// on to be re-dispatched (see [`provider_outage`]) instead of forcing a
+/// recovery; an initiative that steers its members keeps that choice itself.
 fn update_run_and_forced_outcome(
     campaign: &mut Campaign,
     request: &CampaignAdvanceRequestedPayload,
+    redispatch_on_outage: bool,
 ) -> Option<AdvanceOutcome> {
     if let Some(run_event_id) = &request.run_event_id
         && Some(run_event_id) != campaign.last_run_event_id.as_ref()
@@ -1096,13 +1296,7 @@ fn update_run_and_forced_outcome(
             detail: recovery.detail.clone(),
         });
     }
-    let recovered_run = campaign.recovery.as_ref().is_some_and(|recovery| {
-        !recovery.is_pending()
-            && request
-                .run_event_id
-                .as_ref()
-                .is_some_and(|event| recovery.id.starts_with(&format!("recovery_{event}_")))
-    });
+    let recovered_run = recovery_rechecked_for_run(campaign, request);
     if let Some(result) = request.run_result.as_ref().filter(|_| !recovered_run) {
         match &result.verdict {
             TaskVerdict::BlockedOnDecision { finding, options } => {
@@ -1118,6 +1312,22 @@ fn update_run_and_forced_outcome(
                 });
             }
             TaskVerdict::RunnerError { .. } if continuation_refused(request) => {}
+            TaskVerdict::RunnerError { detail }
+                if redispatch_on_outage && result.provider_unavailable() =>
+            {
+                // The provider refused the session: the cycle is repeated
+                // after a pause, and the budget check below does not apply to
+                // a cycle that did no work.
+                let detail = match provider_outage(campaign, result, false, chrono::Utc::now()) {
+                    Some(ProviderOutage::Redispatch { .. }) => return None,
+                    Some(ProviderOutage::Exhausted { detail }) => detail,
+                    None => detail.clone(),
+                };
+                return Some(AdvanceOutcome::Recovery {
+                    kind: foundry_sdk::recovery::RecoveryKind::RunnerUnavailable,
+                    detail,
+                });
+            }
             TaskVerdict::RunnerError { detail } => {
                 return Some(AdvanceOutcome::Recovery {
                     kind: foundry_sdk::recovery::RecoveryKind::RunnerUnavailable,
@@ -1149,8 +1359,10 @@ fn update_run_and_forced_outcome(
 /// The escalation reason when the last authorized cycle was a refused
 /// continuation.
 ///
-/// The cycle is not refunded: a refund would reuse its number, and an open
-/// cycle is only carried forward by a later cycle with a higher one. Instead
+/// The cycle is not refunded: a refused continuation is the campaign's own
+/// decision to continue from that ref, and repeating it would be refused
+/// again. (A reused cycle number is kept for repeating a cycle the provider
+/// refused as unavailable, which did no work.) Instead
 /// the owner is told that the cycle ran no agent, which ref was refused and
 /// why (the refusal summary names the ref, the preserved commit, how far
 /// behind trunk it was and the conflicting files), and what to do next.
@@ -1371,6 +1583,9 @@ fn apply_advance_outcome(
         AdvanceOutcome::Recovery { kind, detail } => {
             return record_recovery_outcome(campaign, request, throttle, kind, detail, record);
         }
+        AdvanceOutcome::Redispatch(redispatch) => {
+            return redispatch_events(campaign, request, throttle, redispatch, record);
+        }
         AdvanceOutcome::Decided(decision) => (decision, None),
         AdvanceOutcome::OwnerQuestion { finding, options } => (
             CampaignDecision::Escalate {
@@ -1460,6 +1675,69 @@ fn apply_advance_outcome(
             ]
         }
     }
+}
+
+/// A cycle repeated after a provider outage: the same objective under the
+/// same cycle number, because the provider refused its agent session as
+/// unavailable. No agent forms it and it spends no cycle budget, since the
+/// cycle did no work. `not_before` holds the dispatch in the queue until the
+/// provider has had time to recover; `None` dispatches at once (a recovery
+/// recheck).
+struct Redispatch {
+    objective: String,
+    reason: String,
+    not_before: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Dispatch the cycle's objective again, under the cycle number it already
+/// has, from the same base it would have continued from.
+///
+/// `cycles_completed` does not move: the refused run did no work, so it
+/// spends no budget. The objective is recorded again for the same cycle, so
+/// the history shows each repeat, and the advance records it as an `advance`
+/// whose reason names the outage. `not_before` rides on the dispatch, and the
+/// pacing scheduler holds the queued cycle until then.
+fn redispatch_events(
+    campaign: &mut Campaign,
+    request: &CampaignAdvanceRequestedPayload,
+    throttle: foundry_sdk::throttle::Throttle,
+    redispatch: Redispatch,
+    record: &FormationRecord,
+) -> Vec<Event> {
+    let Redispatch {
+        objective,
+        reason,
+        not_before,
+    } = redispatch;
+    campaign.status = CampaignStatus::Active;
+    campaign.open_escalation = None;
+    campaign.record_dispatched_objective(objective.clone());
+    let base_ref = next_base_ref(request).map(ToString::to_string);
+    campaign.pending_run_result = None;
+    let mut dispatch = execution_event(
+        campaign,
+        throttle,
+        &objective,
+        base_ref,
+        request.operator_origin.as_deref(),
+        record.initiative_context.as_ref(),
+        record.selected_providers,
+    );
+    if let Some(at) = not_before {
+        dispatch.payload["not_before"] = serde_json::json!(at);
+    }
+    vec![
+        completed_event(
+            campaign,
+            throttle,
+            CampaignDecision::Advance {
+                objective: objective.clone(),
+                reason,
+            },
+            record,
+        ),
+        dispatch,
+    ]
 }
 
 async fn choose_advance_outcome(
@@ -1570,6 +1848,9 @@ fn outcome_summary(campaign: &str, outcome: &AdvanceOutcome) -> String {
         }
         AdvanceOutcome::Recovery { detail, .. } => {
             format!("campaign '{campaign}' awaiting recovery: {detail}")
+        }
+        AdvanceOutcome::Redispatch(Redispatch { reason, .. }) => {
+            format!("campaign '{campaign}' re-dispatched its cycle: {reason}")
         }
     }
 }
@@ -1905,7 +2186,7 @@ async fn prepare_formation_inner(
         ));
     }
 
-    let forced = update_run_and_forced_outcome(campaign, &execution.request);
+    let forced = update_run_and_forced_outcome(campaign, &execution.request, !initiative_steers);
     // Both a pause and a cancellation stop the loop here, by recording the
     // arriving run result and forming nothing further. For a cancellation this
     // is the whole graceful-stop mechanism: the in-flight cycle runs to
@@ -2086,7 +2367,10 @@ fn enforce_member_dispatch(
     outcome: AdvanceOutcome,
     record: &FormationRecord,
 ) -> Result<AdvanceOutcome, TaskBlockResult> {
-    if !matches!(outcome, AdvanceOutcome::Decided(CampaignDecision::Advance { .. })) {
+    if !matches!(
+        outcome,
+        AdvanceOutcome::Decided(CampaignDecision::Advance { .. }) | AdvanceOutcome::Redispatch(_)
+    ) {
         return Ok(outcome);
     }
     let name = &execution.request.campaign;
@@ -2277,8 +2561,11 @@ async fn execute_campaign_advance(mut execution: AdvanceExecution) -> TaskBlockR
         };
         let effective_execution =
             release_settled_base(replay_pending_run(&execution, &formed_from), &formed_from).await;
-        let (outcome, record) =
-            choose_advance_outcome(&effective_execution, &formed_from, None).await;
+        // A cycle the provider refused is repeated, not re-formed.
+        let (outcome, record) = match provider_redispatch(&effective_execution, &formed_from) {
+            Some(redispatch) => redispatch,
+            None => choose_advance_outcome(&effective_execution, &formed_from, None).await,
+        };
         let outcome =
             outcome.map_decision(|decision| enforce_campaign_budget(&formed_from, decision));
         match apply_unless_changed(
@@ -2426,8 +2713,8 @@ mod tests {
 
     use super::{
         AdvanceCampaign, AdvanceOutcome, DECISION_ATTEMPTS, Recheck, enforce_campaign_budget,
-        enforce_done_gate_truth, formation_gate_results, outcome_label, parse_decision, recheck,
-        run_done_gates, settled_base, update_run_and_forced_outcome,
+        enforce_done_gate_truth, formation_gate_results, last_run_line, outcome_label,
+        parse_decision, recheck, run_done_gates, settled_base, update_run_and_forced_outcome,
     };
     use foundry_sdk::work_item::WorkItemStore;
 
@@ -2751,25 +3038,11 @@ mod tests {
         let agent = FakeAgentGateway::success();
         let block =
             advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
-        let run_result = TaskRunCompletedPayload {
-            project: "p".to_string(),
-            success: false,
-            landed: false,
-            summary: "decision needed".to_string(),
-            preservation_ref: Some("foundry-task/preserved".to_string()),
-            land_blocked: None,
-            proof_evidence: None,
-            uncommitted_artifacts: None,
-            trunk_arrivals: Vec::new(),
-            verdict: TaskVerdict::BlockedOnDecision {
-                finding: "boundaries differ".to_string(),
-                options: vec!["A".to_string(), "B".to_string()],
-            },
-            context: LoopContext {
-                campaign: Some("c".to_string()),
-                ..LoopContext::default()
-            },
-        };
+        let mut run_result = run_result_with(TaskVerdict::BlockedOnDecision {
+            finding: "boundaries differ".to_string(),
+            options: vec!["A".to_string(), "B".to_string()],
+        });
+        run_result.summary = "decision needed".to_string();
         let trigger = Event::new(
             EventType::CampaignAdvanceRequested,
             "p".to_string(),
@@ -2887,6 +3160,7 @@ mod tests {
                         campaign: Some("c".to_string()),
                         ..LoopContext::default()
                     },
+                    failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
                 }),
             })
             .unwrap(),
@@ -2978,6 +3252,7 @@ mod tests {
                         campaign: Some("c".to_string()),
                         ..LoopContext::default()
                     },
+                    failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
                 }),
             })
             .unwrap(),
@@ -3061,6 +3336,7 @@ mod tests {
                         campaign: Some("c".to_string()),
                         ..LoopContext::default()
                     },
+                    failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
                 }),
             })
             .unwrap(),
@@ -3169,6 +3445,7 @@ mod tests {
                         campaign: Some("c".to_string()),
                         ..LoopContext::default()
                     },
+                    failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
                 }),
             })
             .unwrap(),
@@ -3281,6 +3558,7 @@ mod tests {
                 campaign: Some("c".to_string()),
                 ..LoopContext::default()
             },
+            failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
         };
         let mut store = CampaignStore::default();
         store
@@ -3546,6 +3824,7 @@ mod tests {
                         campaign: Some("c".to_string()),
                         ..LoopContext::default()
                     },
+                    failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
                 }),
             })
             .unwrap(),
@@ -4087,6 +4366,7 @@ mod tests {
                 campaign: Some("c".to_string()),
                 ..LoopContext::default()
             },
+            failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
         }
     }
 
@@ -4105,7 +4385,7 @@ mod tests {
             providers: foundry_sdk::gateway::StageProviders::default(),
         };
         assert!(matches!(
-            update_run_and_forced_outcome(&mut campaign, &request),
+            update_run_and_forced_outcome(&mut campaign, &request, true),
             Some(AdvanceOutcome::Recovery { .. })
         ));
         let preserved = campaign.pending_run_result.clone();
@@ -4120,7 +4400,7 @@ mod tests {
             }),
         });
         assert!(
-            update_run_and_forced_outcome(&mut campaign, &request).is_none(),
+            update_run_and_forced_outcome(&mut campaign, &request, true).is_none(),
             "formation must now reassess the objective"
         );
         assert_eq!(
@@ -4131,7 +4411,7 @@ mod tests {
         new_failure.run_event_id = Some("another-run".into());
         assert!(
             matches!(
-                update_run_and_forced_outcome(&mut campaign, &new_failure),
+                update_run_and_forced_outcome(&mut campaign, &new_failure, true),
                 Some(AdvanceOutcome::Recovery { .. })
             ),
             "a recheck cannot exempt a new failure"
@@ -4493,6 +4773,171 @@ mod tests {
                 .and_then(|result| result.preservation_ref.as_deref()),
             Some("foundry-task/preserved"),
             "the resumed advance must still see the preserved work"
+        );
+    }
+
+    const CAPACITY: &str = "Selected model is at capacity. Please try a different model.";
+
+    /// A cycle whose Codex session the provider refused at capacity: exit 1,
+    /// zero tokens, settled as a runner error that names the outage.
+    fn provider_refused_run() -> TaskRunCompletedPayload {
+        let mut result = run_result_with(TaskVerdict::RunnerError {
+            detail: format!("provider unavailable: {CAPACITY} (4 attempts)"),
+        });
+        result.failure = foundry_sdk::gateway::AgentFailureMetadata::new(AgentProvider::Codex)
+            .classified(AgentFailureKind::ProviderUnavailable)
+            .with_message(format!("{CAPACITY} (4 attempts)"));
+        result
+    }
+
+    /// A campaign whose cycle 2 dispatched `objective`, `repeats` times over,
+    /// with its cycle budget already spent.
+    fn campaign_at_its_last_cycle(
+        dir: &std::path::Path,
+        repeats: usize,
+    ) -> (
+        std::path::PathBuf,
+        std::sync::Arc<std::sync::RwLock<foundry_sdk::registry::Registry>>,
+    ) {
+        let store_path = dir.join("campaigns.json");
+        let mut campaign = campaign_for_accumulation_test();
+        campaign.budget.max_cycles = 2;
+        for _ in 0..repeats {
+            campaign
+                .record_dispatched_objective("Implement the parser behind the public API".into());
+            campaign.record_cycle_outcome(&provider_refused_run());
+        }
+        campaign.record_dispatched_objective("Implement the parser behind the public API".into());
+        let mut store = CampaignStore::default();
+        store.add(campaign).unwrap();
+        store.save(&store_path).unwrap();
+        let registry =
+            super::super::test_helpers::registry_with_project("p", dir.to_str().unwrap());
+        (store_path, registry)
+    }
+
+    fn dispatched(result: &foundry_sdk::task_block::TaskBlockResult) -> &Event {
+        result
+            .events
+            .iter()
+            .find(|event| event.event_type == EventType::ExecutionRequested)
+            .unwrap_or_else(|| panic!("no dispatch in {:?}", result.events))
+    }
+
+    /// Scenario 3 of the 2026-10-19 outage: a campaign cycle the provider
+    /// refused is dispatched again, the same objective from the same base and
+    /// under the same cycle number, after a pause. No agent forms it, no cycle
+    /// budget is spent (this campaign has none left), and no recovery is
+    /// recorded, so nobody has to act.
+    #[tokio::test(start_paused = true)]
+    async fn a_provider_refused_cycle_is_redispatched_without_forming_or_spending_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store_path, registry) = campaign_at_its_last_cycle(dir.path(), 0);
+        let agent = FakeAgentGateway::success();
+        let block =
+            advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
+        let before = chrono::Utc::now();
+
+        let result =
+            block.execute(&automatic_advance_trigger(provider_refused_run())).await.unwrap();
+
+        let after = chrono::Utc::now();
+        assert!(result.success, "{}", result.summary);
+        assert!(agent.invocations().is_empty(), "formation must not be asked");
+        assert_eq!(
+            result.events.iter().map(|event| &event.event_type).collect::<Vec<_>>(),
+            vec![
+                &EventType::CampaignAdvanceCompleted,
+                &EventType::ExecutionRequested
+            ],
+        );
+        let dispatch = dispatched(&result);
+        assert_eq!(dispatch.payload["prompt"], "Implement the parser behind the public API");
+        assert_eq!(dispatch.payload["campaign_cycle"], 2);
+        assert_eq!(dispatch.payload["base_ref"], "foundry-task/preserved");
+        let not_before: chrono::DateTime<chrono::Utc> =
+            serde_json::from_value(dispatch.payload["not_before"].clone()).unwrap();
+        let pause = chrono::Duration::minutes(5);
+        assert!(not_before >= before + pause && not_before <= after + pause, "{not_before}");
+        let reason = result.events[0].payload["reason"].as_str().unwrap_or_default().to_string();
+        assert!(
+            reason.contains("did not start") && reason.contains("no cycle budget spent"),
+            "{reason}"
+        );
+
+        let stored = CampaignStore::load(&store_path).unwrap();
+        let campaign = stored.find("c").unwrap();
+        assert_eq!(campaign.cycles_completed, 2, "the repeat spends no cycle");
+        assert_eq!(campaign.status, CampaignStatus::Active);
+        assert!(campaign.recovery.is_none(), "no recovery, no owner action");
+        let cycle_two = campaign.objective_history.iter().filter(|entry| entry.cycle == 2).count();
+        assert_eq!(cycle_two, 2, "the history shows the refused attempt and its repeat");
+    }
+
+    /// An outage that outlasts every re-dispatch records a typed
+    /// `runner_unavailable` recovery, never `capability_unavailable`, and its
+    /// recheck dispatches the same objective at once instead of re-forming.
+    #[tokio::test(start_paused = true)]
+    async fn an_outage_past_every_redispatch_records_runner_unavailable_and_its_recheck_dispatches()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (store_path, registry) =
+            campaign_at_its_last_cycle(dir.path(), super::PROVIDER_REDISPATCH_DELAYS.len());
+        let agent = FakeAgentGateway::success();
+        let block =
+            advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
+
+        let result =
+            block.execute(&automatic_advance_trigger(provider_refused_run())).await.unwrap();
+
+        assert!(agent.invocations().is_empty());
+        let recorded = result
+            .events
+            .iter()
+            .find(|event| event.event_type == EventType::CampaignRecoveryRecorded)
+            .expect("a typed recovery");
+        assert_eq!(recorded.payload["recovery"]["kind"], "runner_unavailable");
+        let detail = terminal_reason(&result, &EventType::CampaignRecoveryRecorded);
+        assert!(detail.contains("provider unavailable"), "{detail}");
+
+        let mut store = CampaignStore::load(&store_path).unwrap();
+        let id = store.find("c").unwrap().recovery.as_ref().unwrap().id.clone();
+        store
+            .recover_campaign(
+                "c",
+                &id,
+                &["codex capacity restored".to_string()],
+                chrono::Utc::now(),
+            )
+            .unwrap();
+        store.save(&store_path).unwrap();
+
+        let rechecked = block.execute(&manual_advance_trigger()).await.unwrap();
+
+        assert!(agent.invocations().is_empty(), "the recheck does not re-form");
+        let dispatch = dispatched(&rechecked);
+        assert_eq!(dispatch.payload["prompt"], "Implement the parser behind the public API");
+        assert_eq!(dispatch.payload["campaign_cycle"], 2);
+        assert!(dispatch.payload.get("not_before").is_none(), "a recheck dispatches at once");
+        let campaign = CampaignStore::load(&store_path).unwrap().find("c").unwrap().clone();
+        assert_eq!(campaign.cycles_completed, 2);
+    }
+
+    /// Formation is told whether the last run started and why it ended.
+    #[test]
+    fn formation_is_told_whether_the_last_run_started() {
+        assert_eq!(
+            last_run_line(&provider_refused_run()),
+            format!(
+                "last run: did not start (provider unavailable: {CAPACITY} (4 attempts)); no agent worked on the objective"
+            )
+        );
+        let defect = run_result_with(TaskVerdict::Defect {
+            diagnosis: "the parser drops trailing fields".into(),
+        });
+        assert_eq!(
+            last_run_line(&defect),
+            "last run: started, ended with verdict defect: the parser drops trailing fields"
         );
     }
 

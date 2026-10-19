@@ -462,6 +462,7 @@ fn landed_result(name: &str, summary: &str) -> TaskRunCompletedPayload {
             campaign: Some(name.to_string()),
             ..LoopContext::default()
         },
+        failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
     }
 }
 

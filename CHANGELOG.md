@@ -7,6 +7,40 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A provider outage no longer stalls campaigns as if the work were wrong.
+  Between 00:03 and 01:45 UTC on 2026-10-19, Codex sessions failed at startup
+  with "Selected model is at capacity. Please try a different model." (exit 1,
+  zero tokens). The task chain still reviewed each run, the review reported
+  missing `.foundry/proof.json` as a `defect`, and formation recorded
+  `capability_unavailable` recoveries that a recheck and an owner decision
+  could not clear. Three campaigns waited for a person. Now:
+  - A new failure kind, `provider_unavailable`, covers a model at capacity, an
+    overloaded API (Claude's `overloaded_error`), rate limits ("rate limited",
+    "rate limit exceeded", "too many requests"), "temporarily unavailable" and
+    HTTP 429, 503 and 529, for Codex (stream diagnostic, or stderr when the
+    stream has none) and Claude. It is not terminal: it does not open the
+    provider circuit breaker or stop a workflow. Terminal wording still wins,
+    so a 429 that names a monthly spend limit stays `account_limit`.
+    `classify_terminal_provider_failure` is now `classify_provider_failure`.
+  - Execution tries a refused session again after 30 seconds, 2 minutes and
+    5 minutes. When all four attempts are refused, the run ends `runner_error`
+    with a detail that starts `provider unavailable`, and `task_reviewed` and
+    `task_run_completed` carry `failure_kind`. No gate and no review session
+    runs, and review never reports missing proof for a run whose provider
+    refused it.
+  - A campaign repeats a refused cycle's objective, from the same base and
+    under the same cycle number, after 5, 15, 30 and 60 minutes
+    (`not_before` on the dispatch). No formation agent runs and no cycle
+    budget is spent, and the repeat carries the refused attempt's work item
+    forward. Only an outage that outlasts the four repeats records a
+    `runner_unavailable` recovery, and its recheck dispatches the objective
+    directly instead of forming.
+  - Formation's last run result now states whether the run started and why it
+    ended (`last run: did not start (provider unavailable: ...)` or `last run:
+    started, ended with verdict defect: ...`).
+
 ## [0.55.1] - 2026-10-18
 
 ### Fixed

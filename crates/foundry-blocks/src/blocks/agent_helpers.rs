@@ -187,6 +187,7 @@ pub(crate) async fn invoke_agent(
 ///
 /// Pass to [`invoke_coding_agent`] — the `Full`/`Balanced`/`Medium` profile
 /// is applied automatically.
+#[derive(Clone)]
 pub(crate) struct CodingAgentSpec {
     pub working_dir: PathBuf,
     pub prompt: String,

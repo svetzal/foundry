@@ -243,6 +243,7 @@ async fn complete_paused_campaign_persists_audit_record_and_emits_terminal_event
             campaign: Some("c".to_string()),
             ..LoopContext::default()
         },
+        failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
     });
     write_single(&tmp_campaigns, campaign);
 
@@ -522,6 +523,7 @@ async fn pause_preserves_pending_run_result_through_resume() {
             campaign: Some("c".to_string()),
             ..LoopContext::default()
         },
+        failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
     };
 
     let mut campaign = active_campaign("c");

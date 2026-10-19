@@ -538,6 +538,7 @@ fn augment_offline_recovery_campaigns(campaigns_path: &std::path::Path) {
             campaign: Some("complete-offline".to_string()),
             ..foundry_sdk::payload::LoopContext::default()
         },
+        failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
     });
     store.campaigns.push(complete);
     store.save(campaigns_path).expect("save augmented campaigns");

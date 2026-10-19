@@ -443,6 +443,7 @@ mod tests {
                     task_branch: Some(branch.to_string()),
                     ..LoopContext::default()
                 },
+                failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
             })
             .unwrap(),
         )

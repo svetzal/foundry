@@ -14,10 +14,12 @@
 mod agent;
 mod scanner;
 mod shell;
+mod sleeper;
 
 pub use agent::*;
 pub use scanner::*;
 pub use shell::*;
+pub use sleeper::*;
 
 /// In-memory gateway fakes for testing blocks without real I/O.
 ///

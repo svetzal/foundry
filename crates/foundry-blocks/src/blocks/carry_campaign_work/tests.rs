@@ -339,6 +339,29 @@ async fn an_escalated_cycle_stays_open_until_the_campaign_advances_again() {
     assert_announced(&events, &[&escalated], &ledger);
 }
 
+/// A cycle the provider refused as unavailable is repeated under its own
+/// number; the repeat carries the refused attempt, so the outage never waits
+/// in the open list for a person.
+#[tokio::test]
+async fn a_repeated_cycle_number_carries_the_refused_attempt_but_not_itself() {
+    let earlier = cycle("wi_3", 3, WorkItemState::Preserved, 30);
+    let refused = cycle("wi_4_refused", 4, WorkItemState::Failed, 40);
+    let repeat = cycle("wi_4_repeat", 4, WorkItemState::Queued, 45);
+    let fixture = Fixture::new(
+        &[earlier.clone(), refused.clone(), repeat.clone()],
+        campaign(CampaignStatus::Active),
+    );
+
+    let events = fixture.run(&lifecycle(EventType::WorkItemStarted, &repeat)).await;
+
+    let ledger = fixture.ledger();
+    let reason = "carried forward by campaign transient-recovery cycle 4 (wi_4_repeat)";
+    assert_settled(ledger.find(&refused.id).unwrap(), &refused, reason);
+    assert_settled(ledger.find(&earlier.id).unwrap(), &earlier, reason);
+    assert_eq!(ledger.find(&repeat.id), Some(&repeat), "the carrier never carries itself");
+    assert_announced(&events, &[&earlier, &refused], &ledger);
+}
+
 #[tokio::test]
 async fn completion_settles_every_remaining_open_cycle_with_its_reason() {
     let open = [

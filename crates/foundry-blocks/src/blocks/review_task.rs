@@ -172,6 +172,7 @@ fn early_review_payload(
         context,
         verdict,
         review,
+        failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
     }
 }
 
@@ -484,6 +485,9 @@ impl TaskBlock for ReviewTask {
             let reviewed = needs_review_payload(&project, objective, reason, p.results, context);
             return stop_for_review(project, throttle, reviewed);
         }
+        if let Some(reviewed) = provider_refusal_review(&project, &objective, &p, &context) {
+            return settle_without_review(project, throttle, reviewed);
+        }
         let working_dir = match context.task_worktree.clone() {
             Some(worktree) => PathBuf::from(worktree),
             None if throttle == Throttle::DryRun => PathBuf::from(&entry.path),
@@ -558,6 +562,7 @@ impl TaskBlock for ReviewTask {
                     gate_results: p.results,
                     verdict,
                     context,
+                    failure: p.failure,
                 },
             )
         })
@@ -582,6 +587,54 @@ fn review_outcome(outcome: crate::gateway::AgentOutcome) -> (String, TaskVerdict
     }
 }
 
+/// The review of a run whose execution session the provider refused, or
+/// `None` when the provider did not.
+///
+/// A classified provider failure (the provider unavailable, or a terminal
+/// account state) means no agent did the objective's work, so there is
+/// nothing to review and no proof to expect: the run settles as a runner
+/// error naming the provider failure, before the proof check and without a
+/// review session. Reporting missing `.foundry/proof.json` as a defect would
+/// tell campaign formation the work was wrong when it never ran (the
+/// 2026-10-19 Codex capacity outage).
+fn provider_refusal_review(
+    project: &str,
+    objective: &str,
+    verification: &GateVerificationCompletedPayload,
+    context: &LoopContext,
+) -> Option<TaskReviewedPayload> {
+    let failure = &verification.failure;
+    failure.failure_kind?;
+    let detail = failure.execution_summary();
+    Some(TaskReviewedPayload {
+        project: project.to_string(),
+        objective: objective.to_string(),
+        review: format!("execution did not run the objective; review skipped: {detail}"),
+        gate_results: verification.results.clone(),
+        verdict: TaskVerdict::RunnerError { detail },
+        failure: failure.clone(),
+        context: context.clone(),
+    })
+}
+
+fn settle_without_review(
+    project: String,
+    throttle: Throttle,
+    reviewed: TaskReviewedPayload,
+) -> foundry_sdk::task_block::BlockFuture<'static> {
+    tracing::warn!(project = %project, reason = %reviewed.review, "provider refused the execution session; skipping the reviewer");
+    Box::pin(async move {
+        super::emit_event_result(
+            format!("{project}: task not reviewed, execution did not run"),
+            false,
+            EventType::TaskReviewed,
+            &project,
+            throttle,
+            &reviewed,
+        )
+    })
+}
+
 /// The review of a task Foundry's post-agent checks stopped: the agent
 /// pushed, or added an advisory suppression. Accepting that is a person's
 /// decision, not the reviewer's, so no review session runs and the verdict
@@ -600,6 +653,7 @@ fn needs_review_payload(
         gate_results,
         verdict: needs_review_verdict(reason),
         context,
+        failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
     }
 }
 
@@ -711,6 +765,43 @@ mod tests {
         assert!(agent.invocations().is_empty());
         assert_eq!(result.events[0].payload["verdict"], "defect");
         assert!(result.events[0].payload["diagnosis"].as_str().unwrap().contains("proof.json"));
+    }
+
+    /// The 2026-10-19 incident: Codex was at capacity, execution never
+    /// started, and review called the absent proof a defect. A run the
+    /// provider refused is a runner error naming the outage, with no review
+    /// session and no proof check.
+    #[tokio::test]
+    async fn a_provider_refused_execution_is_a_runner_error_not_a_missing_proof_defect() {
+        use crate::{blocks::test_helpers, gateway::fakes::FakeAgentGateway};
+        use foundry_sdk::{event::EventType, task_block::TaskBlock};
+        let dir = tempfile::tempdir().unwrap();
+        let registry = test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
+        let agent = FakeAgentGateway::success_with("```json\n{\"verdict\":\"complete\"}\n```");
+        let block = super::ReviewTask::new(agent.clone(), registry);
+        let trigger = test_event!(EventType::GateVerificationCompleted, "p", {
+            "project":"p", "workflow":"task", "all_passed":false,
+            "required_passed":false, "retry_count":0,
+            "results":[{"name":"agent_execution","command":"","passed":false,"required":true,
+                "output":"provider unavailable: Selected model is at capacity.","exit_code":1}],
+            "provider":"codex", "failure_kind":"provider_unavailable",
+            "message":"Selected model is at capacity. Please try a different model.",
+            "task_worktree":dir.path().to_str().unwrap(), "campaign_limits":{}
+        });
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(agent.invocations().is_empty(), "the reviewer must not be asked");
+        assert!(!result.success);
+        let payload = &result.events[0].payload;
+        assert_eq!(result.events[0].event_type, EventType::TaskReviewed);
+        assert_eq!(payload["verdict"], "runner_error");
+        assert_eq!(
+            payload["detail"],
+            "provider unavailable: Selected model is at capacity. Please try a different model."
+        );
+        assert_eq!(payload["failure_kind"], "provider_unavailable");
+        assert!(!payload.to_string().contains("proof.json"), "{payload}");
     }
 
     /// Review a campaign cycle whose worktree holds `files`, with a reviewer

@@ -122,7 +122,7 @@ impl CliAgentAdapter for CodexAdapter {
     fn interpret<'a>(
         &'a self,
         outcome: &'a AgentStreamOutcome,
-        _session: SessionContext<'a>,
+        session: SessionContext<'a>,
         inv: &'a Invocation,
         _request: &'a AgentRequest,
         _shell: &'a Arc<dyn ShellGateway>,
@@ -160,10 +160,12 @@ impl CliAgentAdapter for CodexAdapter {
             // harmless "Reading additional input from stdin..." line to stderr
             // regardless of outcome, so stderr alone identifies nothing about
             // *why* a run failed. See the module doc for the stdin-probe note.
-            let failure =
-                (!success).then(|| extract_failure_message(&outcome.lines)).flatten().map(
-                    |message| AgentFailureMetadata::new(AgentProvider::Codex).with_message(message),
-                );
+            // The diagnostic is classified, so a model at capacity or a rate
+            // limit reaches the caller as `provider_unavailable` rather than as
+            // an anonymous failure.
+            let failure = (!success)
+                .then(|| codex_failure(&outcome.lines, &outcome.stderr, &session))
+                .flatten();
 
             Interpreted {
                 success,
@@ -315,6 +317,43 @@ fn extract_failure_message(lines: &[StreamedLine]) -> Option<String> {
 
     let raw = turn_failed.or(top_level_error)?;
     Some(unwrap_nested_error_message(&raw))
+}
+
+/// The failure metadata for a failed run: the stream's diagnostic (or, when
+/// the stream carries none, stderr's), classified into a provider failure
+/// kind when its wording names one.
+fn codex_failure(
+    lines: &[StreamedLine],
+    stderr: &str,
+    session: &SessionContext<'_>,
+) -> Option<AgentFailureMetadata> {
+    let message = extract_failure_message(lines).or_else(|| stderr_diagnostic(stderr))?;
+    Some(
+        foundry_sdk::gateway::classify_provider_failure(
+            AgentProvider::Codex,
+            None,
+            &message,
+            Some(session.session_id),
+            Some(session.log_path),
+        )
+        .unwrap_or_else(|| AgentFailureMetadata::new(AgentProvider::Codex).with_message(message)),
+    )
+}
+
+/// The probe line codex writes to stderr on every run, whatever the outcome.
+const STDIN_PROBE_LINE: &str = "Reading additional input from stdin";
+
+/// What stderr says about a failure that never reached the JSON stream (codex
+/// can exit before its first event): its last few lines, without the stdin
+/// probe. `None` when nothing else is there.
+fn stderr_diagnostic(stderr: &str) -> Option<String> {
+    let lines: Vec<&str> = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with(STDIN_PROBE_LINE))
+        .collect();
+    let start = lines.len().saturating_sub(3);
+    (!lines.is_empty()).then(|| lines[start..].join(" "))
 }
 
 /// Unwrap a message that is itself a JSON-encoded provider error body,
@@ -577,6 +616,88 @@ mod tests {
             failure.message.as_deref(),
             Some("The 'x' model is not supported when using Codex with a ChatGPT account.")
         );
+    }
+
+    /// Invoke a codex gateway over a fake stream runner whose run fails with
+    /// exit 1 after writing `transcript`, with `stderr` on the side.
+    async fn failed_codex_run(transcript: Vec<String>, stderr: &str) -> AgentResponse {
+        let mut outcome = ok_outcome();
+        outcome.success = false;
+        outcome.exit_code = 1;
+        outcome.stderr = stderr.to_string();
+        let runner = Arc::new(FakeRunner {
+            transcript,
+            last_message: None,
+            outcome,
+        });
+        let shell = crate::gateway::fakes::FakeShellGateway::success();
+        let (tx, _rx) = broadcast::channel(16);
+        let gateway =
+            CodexAgentGateway::new_with_streaming(shell, runner, tmp_dir("foundry-codex-test"), tx);
+        let request = AgentRequest {
+            prompt: "x".to_string(),
+            project: "demo".to_string(),
+            working_dir: PathBuf::from("/tmp"),
+            access: AgentAccess::Full,
+            tier: ModelTier::Balanced,
+            effort: ReasoningEffort::Medium,
+            agent_file: None,
+            provider: None,
+            env: Vec::new(),
+            timeout: Duration::from_secs(5),
+            trace_id: None,
+            requires_json: false,
+        };
+        gateway.invoke(&request).await.expect("invoke ok")
+    }
+
+    /// The 2026-10-19 production failure: the session ended at once, exit 1,
+    /// zero tokens, with the model at capacity.
+    #[tokio::test]
+    async fn a_model_at_capacity_classifies_as_provider_unavailable() {
+        let capacity = "Selected model is at capacity. Please try a different model.";
+        let response = failed_codex_run(
+            vec![
+                r#"{"type":"thread.started"}"#.to_string(),
+                r#"{"type":"turn.started"}"#.to_string(),
+                format!(r#"{{"type":"error","message":"{capacity}"}}"#),
+                format!(r#"{{"type":"turn.failed","error":{{"message":"{capacity}"}}}}"#),
+            ],
+            "Reading additional input from stdin...",
+        )
+        .await;
+
+        assert!(!response.success);
+        assert_eq!(response.exit_code, 1);
+        let failure = response.failure.expect("a failed run carries its diagnostic");
+        assert_eq!(failure.failure_kind, Some(super::super::AgentFailureKind::ProviderUnavailable));
+        assert!(!failure.terminal, "capacity is transient, never terminal");
+        assert_eq!(failure.message.as_deref(), Some(capacity));
+        assert_eq!(failure.provider, Some(AgentProvider::Codex));
+    }
+
+    /// codex can exit before its first JSON event; the diagnostic is then on
+    /// stderr beside the harmless stdin probe.
+    #[tokio::test]
+    async fn a_capacity_message_only_on_stderr_still_classifies() {
+        let response = failed_codex_run(
+            vec![],
+            "Reading additional input from stdin...\nERROR: Selected model is at capacity. Please try a different model.",
+        )
+        .await;
+
+        let failure = response.failure.expect("stderr carries the diagnostic");
+        assert!(failure.is_provider_unavailable());
+        assert_eq!(
+            failure.message.as_deref(),
+            Some("ERROR: Selected model is at capacity. Please try a different model.")
+        );
+    }
+
+    #[test]
+    fn stderr_diagnostic_ignores_the_stdin_probe() {
+        assert_eq!(stderr_diagnostic("Reading additional input from stdin...\n"), None);
+        assert_eq!(stderr_diagnostic(""), None);
     }
 
     // --- Full invoke() flow (offline: fake stream runner) -------------------

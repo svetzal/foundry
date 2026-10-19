@@ -60,7 +60,7 @@ agent_execution_block! {
     /// Mutator — sinks on `PlanCompleted`.
     /// Uses `AgentGateway` with `Coding` capability and `Full` access.
     /// Emits `ExecutionCompleted` with success status and `changes_detected` flag.
-    pub struct ExecutePlan
+    pub struct ExecutePlan with sleeper
 }
 
 /// Outcome of an execute-plan dry-run simulation.
@@ -134,6 +134,7 @@ impl TaskBlock for ExecutePlan {
         let entry = require_project!(self, project);
         let agent = Arc::clone(&self.agent);
         let shell = Arc::clone(&self.shell);
+        let sleeper = Arc::clone(&self.sleeper);
 
         let plan_payload = parse_payload!(trigger, PlanCompletedPayload);
 
@@ -222,7 +223,15 @@ impl TaskBlock for ExecutePlan {
                 correction_needed: plan_payload.correction_needed,
             };
 
-            Ok(super::execute_agent_block(&*agent, &*shell, &execution_entry, &ctx, prompt).await)
+            Ok(super::execute_agent_block(
+                &*agent,
+                &*shell,
+                &*sleeper,
+                &execution_entry,
+                &ctx,
+                prompt,
+            )
+            .await)
         })
     }
 }
@@ -266,6 +275,7 @@ fn workspace_failure_result(
                 detail: error.to_string(),
             },
             context: LoopContext::extract_from(payload),
+            failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
         },
     )
 }

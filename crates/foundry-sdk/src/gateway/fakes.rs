@@ -20,7 +20,8 @@ use crate::registry::Stack;
 
 use super::{
     AgentAccess, AgentGateway, AgentProvider, AgentRequest, AgentResponse, AuditResult,
-    CommandResult, ModelTier, ReasoningEffort, ScannerGateway, ShellGateway, Vulnerability,
+    CommandResult, ModelTier, ReasoningEffort, ScannerGateway, ShellGateway, Sleeper,
+    Vulnerability,
 };
 
 /// A recorded shell invocation for use in test assertions.
@@ -312,5 +313,36 @@ impl AgentGateway for FakeAgentGateway {
         self.invocations.lock().unwrap().push(inv);
         let result = self.next_result();
         Box::pin(async move { Ok(result) })
+    }
+}
+
+// --- RecordingSleeper --------------------------------------------------
+
+/// A [`Sleeper`] that records each requested pause and returns at once, so a
+/// test proves the backoff a block chose without waiting for it.
+#[derive(Default)]
+pub struct RecordingSleeper {
+    pauses: Mutex<Vec<Duration>>,
+}
+
+impl RecordingSleeper {
+    #[must_use]
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// Every pause requested so far, in order.
+    pub fn pauses(&self) -> Vec<Duration> {
+        self.pauses.lock().unwrap().clone()
+    }
+}
+
+impl Sleeper for RecordingSleeper {
+    fn sleep(
+        &self,
+        duration: Duration,
+    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        self.pauses.lock().unwrap().push(duration);
+        Box::pin(std::future::ready(()))
     }
 }

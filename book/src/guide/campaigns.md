@@ -133,6 +133,16 @@ The task formation:
    `blocked_on_decision`, or `runner_error`.
 5. Commits all task work before returning a terminal result.
 
+When the provider refuses the agent session as unavailable (a model at
+capacity, an overloaded or rate-limited API, or HTTP 429, 503 or 529), the
+executor waits and tries again: after 30 seconds, 2 minutes and 5 minutes. If
+the fourth attempt is also refused, the task ends as `runner_error` with a
+detail that starts `provider unavailable` and `failure_kind:
+provider_unavailable` on `task_run_completed`. No gate runs and no review
+session runs, so a run that never started is never reported as a defect or as
+missing proof. Terminal account failures (spend limit, disabled account,
+revoked authentication) also skip the review and end as `runner_error`.
+
 Two verdicts may fast-forward the registered trunk branch. A `complete` verdict
 with passing required gates lands, as does a `remainder` — the reviewer's term
 for a finite list of missing work on a _converging_ implementation — provided at
@@ -772,13 +782,28 @@ before giving up, and the resulting escalation names every attempt — a single
 transport blip no longer ends a healthy campaign. A malformed decision is not
 retried: the agent answered, so re-asking would only repeat it.
 
-When the provider itself is unusable — an exhausted account, revoked
-authentication, or an open circuit breaker — the campaign moves to `paused`
-rather than `escalated`, whether that surfaces during formation or as the
-executor's `runner_error` verdict. Nothing about the campaign's own work is
-wrong, so no cycle is consumed and the pending run result is preserved. Once the
-provider is usable again, `foundry campaign resume` continues from exactly where
-it stopped.
+When the provider itself is unusable (an exhausted account, revoked
+authentication, or an open circuit breaker), the campaign records a
+`runner_unavailable` recovery rather than escalating, whether that surfaces
+during formation or as the executor's `runner_error` verdict. Nothing about the
+campaign's own work is wrong, so the pending run result is preserved. Once the
+provider is usable again, `foundry campaign recover` rechecks the campaign.
+
+A cycle that the provider refused as unavailable (`provider_unavailable`) is
+different: it did no work, so the campaign does not form again. It dispatches
+the same objective again, from the same base and under the same cycle number,
+so it spends no cycle budget. The dispatch carries `not_before`, and the
+pacing scheduler holds it for 5, 15, 30 and then 60 minutes on successive
+repeats. The repeat carries the refused attempt's work item forward, so the
+outage does not wait in `foundry queue open`. When all four repeats are
+refused, the campaign records a `runner_unavailable` recovery. Its recheck
+dispatches the same objective at once instead of forming. A provider outage
+never records `capability_unavailable` and never needs an owner decision.
+
+Formation's `LAST TYPED RUN RESULT` starts with one line that says whether the
+last run started and why it ended, for example `last run: did not start
+(provider unavailable: ...)` or `last run: started, ended with verdict defect:
+...`.
 
 The stop emits a `campaign_paused` event carrying the reason. It is deliberately
 not a terminal event — it neither ends the campaign nor requires resurrection —

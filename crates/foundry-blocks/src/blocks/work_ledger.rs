@@ -928,6 +928,7 @@ mod tests {
                 task_worktree: worktree.map(str::to_string),
                 ..LoopContext::default()
             },
+            failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
         };
         Event::new(
             EventType::TaskRunCompleted,

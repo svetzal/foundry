@@ -185,7 +185,11 @@ The terminal event contains one structural verdict:
 | `blocked_on_decision` | A human choice is required; `finding` and `options[]` carry it                                              |
 | `runner_error`        | The agent, workspace, Git, or provider failed                                                               |
 
-Task execution has no retry route. All task work is committed before terminal
+Task execution has no gate retry route. A provider that refuses the session as
+unavailable (`provider_unavailable`: a model at capacity, overload, a rate
+limit, HTTP 429, 503 or 529) is tried again after 30 s, 2 min and 5 min. When
+every attempt is refused, the verdict is `runner_error` with a detail that
+starts `provider unavailable`, and no gate or review session runs. All task work is committed before terminal
 state. Non-complete work is preserved on a remote branch or, if push fails, in a
 Git bundle. For landed work, `preservation_ref` carries the landed commit SHA;
 otherwise it identifies the preserved branch or bundle artifact.
