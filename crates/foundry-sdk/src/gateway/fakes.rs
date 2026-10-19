@@ -228,6 +228,8 @@ pub struct AgentInvocation {
 enum AgentGatewayResponse {
     Fixed(AgentResponse),
     Sequence(Vec<AgentResponse>),
+    /// The agent cannot be invoked: every call returns this error.
+    Unavailable(String),
 }
 
 /// Fake agent gateway for use in tests.
@@ -274,20 +276,31 @@ impl FakeAgentGateway {
         Self::always(AgentResponse::failure(stderr))
     }
 
+    /// Fail every call with `error`, as a gateway does when the agent cannot
+    /// be invoked at all (a spawn failure, a stream timeout).
+    pub fn unavailable(error: impl Into<String>) -> Arc<Self> {
+        Arc::new(Self {
+            response: AgentGatewayResponse::Unavailable(error.into()),
+            invocations: Arc::new(Mutex::new(vec![])),
+            index: Mutex::new(0),
+        })
+    }
+
     /// Return a snapshot of all recorded invocations.
     pub fn invocations(&self) -> Vec<AgentInvocation> {
         self.invocations.lock().unwrap().clone()
     }
 
-    fn next_result(&self) -> AgentResponse {
+    fn next_result(&self) -> Result<AgentResponse> {
         match &self.response {
-            AgentGatewayResponse::Fixed(r) => r.clone(),
+            AgentGatewayResponse::Fixed(r) => Ok(r.clone()),
             AgentGatewayResponse::Sequence(seq) => {
                 let mut idx = self.index.lock().unwrap();
                 let r = seq[(*idx).min(seq.len() - 1)].clone();
                 *idx += 1;
-                r
+                Ok(r)
             }
+            AgentGatewayResponse::Unavailable(error) => Err(anyhow::anyhow!("{error}")),
         }
     }
 }
@@ -312,7 +325,7 @@ impl AgentGateway for FakeAgentGateway {
         };
         self.invocations.lock().unwrap().push(inv);
         let result = self.next_result();
-        Box::pin(async move { Ok(result) })
+        Box::pin(async move { result })
     }
 }
 

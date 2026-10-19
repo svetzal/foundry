@@ -226,6 +226,7 @@ pub(crate) fn dry_run_execution_event(
             changes_detected: None,
             files_changed: vec![],
             failure: AgentFailureMetadata::default(),
+            session_failure: None,
             context,
         },
     )]
@@ -635,6 +636,7 @@ mod tests {
             changes_detected: None,
             files_changed: vec![],
             failure: AgentFailureMetadata::default(),
+            session_failure: None,
             context: LoopContext::extract_from(&serde_json::json!({})),
         };
         let event = execution_completed_event("p", full(), &payload);
@@ -668,6 +670,7 @@ mod tests {
             changes_detected: Some(true),
             files_changed: vec![],
             failure: AgentFailureMetadata::default(),
+            session_failure: None,
             context: LoopContext::extract_from(&serde_json::json!({})),
         };
         let real_event = execution_completed_event("test-proj", full(), &real_payload);

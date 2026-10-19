@@ -485,26 +485,29 @@ impl TaskBlock for ReviewTask {
             let reviewed = needs_review_payload(&project, objective, reason, p.results, context);
             return stop_for_review(project, throttle, reviewed);
         }
-        if let Some(reviewed) = provider_refusal_review(&project, &objective, &p, &context) {
+        let working_dir = match context.task_worktree.clone() {
+            Some(worktree) => Some(PathBuf::from(worktree)),
+            None if throttle == Throttle::DryRun => Some(PathBuf::from(&entry.path)),
+            None => None,
+        };
+        if let Some(reviewed) =
+            failed_session_review(&project, &objective, &p, &context, working_dir.as_deref())
+        {
             return settle_without_review(project, throttle, reviewed);
         }
-        let working_dir = match context.task_worktree.clone() {
-            Some(worktree) => PathBuf::from(worktree),
-            None if throttle == Throttle::DryRun => PathBuf::from(&entry.path),
-            None => {
-                let detail = "task review missing isolated worktree".to_string();
-                let reviewed = early_review_payload(
-                    &project,
-                    objective,
-                    p.results,
-                    context,
-                    TaskVerdict::RunnerError {
-                        detail: detail.clone(),
-                    },
-                    detail,
-                );
-                return stop_for_review(project, throttle, reviewed);
-            }
+        let Some(working_dir) = working_dir else {
+            let detail = "task review missing isolated worktree".to_string();
+            let reviewed = early_review_payload(
+                &project,
+                objective,
+                p.results,
+                context,
+                TaskVerdict::RunnerError {
+                    detail: detail.clone(),
+                },
+                detail,
+            );
+            return stop_for_review(project, throttle, reviewed);
         };
         if let Some(reviewed) = campaign_proof_review(
             &working_dir,
@@ -587,29 +590,51 @@ fn review_outcome(outcome: crate::gateway::AgentOutcome) -> (String, TaskVerdict
     }
 }
 
-/// The review of a run whose execution session the provider refused, or
-/// `None` when the provider did not.
+/// The review of a run whose execution session did none of the objective's
+/// work, or `None` when the run is to be reviewed as usual.
 ///
-/// A classified provider failure (the provider unavailable, or a terminal
-/// account state) means no agent did the objective's work, so there is
-/// nothing to review and no proof to expect: the run settles as a runner
-/// error naming the provider failure, before the proof check and without a
-/// review session. Reporting missing `.foundry/proof.json` as a defect would
-/// tell campaign formation the work was wrong when it never ran (the
-/// 2026-10-19 Codex capacity outage).
-fn provider_refusal_review(
+/// There is nothing to review and no proof to expect, so the run settles as
+/// a runner error naming the session's failure, before the proof check and
+/// without a review session. Reporting missing `.foundry/proof.json` as a
+/// defect would tell campaign formation the work was wrong when it never ran
+/// (the 2026-10-19 Codex capacity outage). Two cases qualify:
+///
+/// - A classified provider failure (the provider unavailable, or a terminal
+///   account state): the provider refused the session. The detail names the
+///   failure kind (`provider unavailable: <message>`).
+/// - Any other failed session ([`GateVerificationCompletedPayload::session_failure`])
+///   that changed no project file and wrote no early evidence to the
+///   worktree. The detail is the session's own failure message. A failed
+///   session that changed files, or that wrote `.foundry/proof.json` or
+///   `.foundry/blocker.json`, did work and goes through the proof check and
+///   the reviewer as usual.
+fn failed_session_review(
     project: &str,
     objective: &str,
     verification: &GateVerificationCompletedPayload,
     context: &LoopContext,
+    working_dir: Option<&std::path::Path>,
 ) -> Option<TaskReviewedPayload> {
     let failure = &verification.failure;
-    failure.failure_kind?;
-    let detail = failure.execution_summary();
+    let (detail, review) = if failure.failure_kind.is_some() {
+        let detail = failure.execution_summary();
+        let review = format!("execution did not run the objective; review skipped: {detail}");
+        (detail, review)
+    } else {
+        let session = verification.session_failure.as_ref()?;
+        if session.left_work || working_dir.is_none_or(wrote_early_evidence) {
+            return None;
+        }
+        let detail = session.message.clone();
+        let review = format!(
+            "execution session failed before doing any of the objective's work; review skipped: {detail}"
+        );
+        (detail, review)
+    };
     Some(TaskReviewedPayload {
         project: project.to_string(),
         objective: objective.to_string(),
-        review: format!("execution did not run the objective; review skipped: {detail}"),
+        review,
         gate_results: verification.results.clone(),
         verdict: TaskVerdict::RunnerError { detail },
         failure: failure.clone(),
@@ -617,15 +642,24 @@ fn provider_refusal_review(
     })
 }
 
+/// Whether the executor left an early-evidence record (proof or blocker) in
+/// `directory`. An existence check that cannot be answered counts as one, so
+/// the proof check reads it and reports the fault.
+fn wrote_early_evidence(directory: &std::path::Path) -> bool {
+    [PROOF_FILE, BLOCKER_FILE]
+        .iter()
+        .any(|file| !matches!(directory.join(file).try_exists(), Ok(false)))
+}
+
 fn settle_without_review(
     project: String,
     throttle: Throttle,
     reviewed: TaskReviewedPayload,
 ) -> foundry_sdk::task_block::BlockFuture<'static> {
-    tracing::warn!(project = %project, reason = %reviewed.review, "provider refused the execution session; skipping the reviewer");
+    tracing::warn!(project = %project, reason = %reviewed.review, "execution session did none of the objective's work; skipping the reviewer");
     Box::pin(async move {
         super::emit_event_result(
-            format!("{project}: task not reviewed, execution did not run"),
+            format!("{project}: task not reviewed, execution session did no work"),
             false,
             EventType::TaskReviewed,
             &project,
@@ -802,6 +836,150 @@ mod tests {
         );
         assert_eq!(payload["failure_kind"], "provider_unavailable");
         assert!(!payload.to_string().contains("proof.json"), "{payload}");
+    }
+
+    /// Review a campaign cycle the way the task chain does: the execution
+    /// session ended with `outcome` having changed `changed` (as change
+    /// detection reports it), its result goes through Run Verify Gates, and
+    /// that verification triggers the review. `worktree` files are written
+    /// to the task worktree first. The reviewer would answer `complete` if
+    /// asked. Returns the `TaskReviewed` payload and how often it was asked.
+    async fn review_after_session(
+        outcome: crate::gateway::AgentOutcome,
+        changed: &[&str],
+        worktree: &[(&str, &str)],
+    ) -> (serde_json::Value, usize) {
+        use crate::blocks::execution::{
+            ExecutionContext, SessionEnd, build_agent_execution_result,
+        };
+        use crate::{blocks::test_helpers, gateway::fakes::FakeAgentGateway};
+        use foundry_sdk::task_block::TaskBlock;
+        use foundry_sdk::workflow::WorkflowType;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".foundry")).unwrap();
+        for (path, content) in worktree {
+            std::fs::write(dir.path().join(path), content).unwrap();
+        }
+        let registry = test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
+        let dispatch = serde_json::json!({
+            "project": "p", "workflow": "task", "prompt": "Parse the config file.",
+            "campaign": "c", "campaign_limits": {},
+            "task_worktree": dir.path().to_str().unwrap(),
+        });
+        let ctx = ExecutionContext {
+            project: "p",
+            trace_id: None,
+            workflow: WorkflowType::Task,
+            payload: &dispatch,
+            throttle: Throttle::Full,
+            label: "plan execution",
+            retry_count: None,
+            correction_needed: true,
+        };
+        let session = SessionEnd::of(&outcome);
+        let executed = build_agent_execution_result(
+            &ctx,
+            outcome,
+            session,
+            !changed.is_empty(),
+            changed.iter().map(ToString::to_string).collect(),
+        );
+        let verified = crate::blocks::RunVerifyGates::new(
+            crate::gateway::fakes::FakeShellGateway::success(),
+            registry.clone(),
+        )
+        .execute(&executed.events[0])
+        .await
+        .unwrap();
+        let agent = FakeAgentGateway::success_with("```json\n{\"verdict\":\"complete\"}\n```");
+        let reviewed = super::ReviewTask::new(agent.clone(), registry)
+            .execute(&verified.events[0])
+            .await
+            .unwrap();
+        (reviewed.events[0].payload.clone(), agent.invocations().len())
+    }
+
+    /// Cycles 3 and 5 of mojentic-py-no-network-tests on 2026-10-19: the
+    /// Codex session held only an error event that no gateway rule
+    /// recognised, and review reported missing proof as a defect. A failed
+    /// session that did no work, unclassified or unable to start at all, is
+    /// a runner error carrying the session's message, with no reviewer and
+    /// no proof check.
+    #[tokio::test]
+    async fn a_failed_session_that_did_no_work_is_a_runner_error_not_a_missing_proof_defect() {
+        use crate::gateway::{AgentFailureMetadata, AgentOutcome, AgentProvider};
+        let unrecognised = "unexpected error event from the model stream";
+        for (outcome, detail) in [
+            (
+                AgentOutcome::AgentFailed {
+                    stderr: "Reading additional input from stdin...".into(),
+                    failure: Some(
+                        AgentFailureMetadata::new(AgentProvider::Codex).with_message(unrecognised),
+                    ),
+                },
+                format!("plan execution failed: {unrecognised}"),
+            ),
+            (
+                AgentOutcome::Unavailable {
+                    error: "codex stream produced no output for 600s".into(),
+                },
+                "agent unavailable: codex stream produced no output for 600s".to_string(),
+            ),
+        ] {
+            let (payload, asked) =
+                review_after_session(outcome, &[".foundry/session.log"], &[]).await;
+
+            assert_eq!(asked, 0, "the reviewer must not be asked: {payload}");
+            assert_eq!(payload["verdict"], "runner_error", "{payload}");
+            assert_eq!(payload["detail"], detail);
+            assert!(payload.get("failure_kind").is_none(), "{payload}");
+            assert!(!payload.to_string().contains("proof.json"), "{payload}");
+        }
+    }
+
+    /// A session that finished normally but wrote no proof is still the
+    /// missing-proof defect: only a failed session is excused.
+    #[tokio::test]
+    async fn a_finished_session_without_proof_is_still_a_missing_proof_defect() {
+        let (payload, asked) = review_after_session(
+            crate::gateway::AgentOutcome::Success {
+                stdout: "done".into(),
+            },
+            &["src/config.rs"],
+            &[],
+        )
+        .await;
+
+        assert_eq!(asked, 0);
+        assert_eq!(payload["verdict"], "defect");
+        assert!(payload["diagnosis"].as_str().unwrap().contains("proof.json"), "{payload}");
+    }
+
+    /// A failed session that changed project files, or that wrote early
+    /// evidence, did work: it goes through the proof check as usual.
+    #[tokio::test]
+    async fn a_failed_session_that_did_work_still_goes_through_the_proof_path() {
+        let failed = || crate::gateway::AgentOutcome::AgentFailed {
+            stderr: "turn failed after editing".into(),
+            failure: None,
+        };
+
+        let (changed_source, asked) = review_after_session(failed(), &["src/config.rs"], &[]).await;
+        assert_eq!(asked, 0);
+        assert_eq!(changed_source["verdict"], "defect", "{changed_source}");
+        assert!(changed_source["diagnosis"].as_str().unwrap().contains("proof.json"));
+
+        let (wrote_proof, _) = review_after_session(
+            failed(),
+            &[],
+            &[(".foundry/proof.json", "{\"kind\":\"direct\"}")],
+        )
+        .await;
+        assert_eq!(wrote_proof["verdict"], "defect", "{wrote_proof}");
+        assert!(
+            wrote_proof["diagnosis"].as_str().unwrap().contains("early acceptance evidence"),
+            "{wrote_proof}"
+        );
     }
 
     /// Review a campaign cycle whose worktree holds `files`, with a reviewer

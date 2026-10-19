@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use foundry_sdk::gateway::AgentFailureMetadata;
-use foundry_sdk::payload::{ExecutionCompletedPayload, LoopContext, RunBase};
+use foundry_sdk::gateway::{AgentFailureMetadata, AgentProvider};
+use foundry_sdk::payload::{
+    ExecutionCompletedPayload, ExecutionSessionFailure, LoopContext, RunBase,
+};
 use foundry_sdk::registry::ProjectEntry;
 use foundry_sdk::task_block::TaskBlockResult;
 use foundry_sdk::throttle::Throttle;
@@ -12,7 +14,8 @@ use crate::gateway::{AgentGateway, AgentOutcome, ShellGateway, Sleeper};
 use super::agent_helpers::{CodingAgentSpec, invoke_coding_agent};
 use super::branch_guard::BranchGuard;
 use super::change_detection::{
-    capture_pre_execution_sha, detect_post_execution_changes, only_auxiliary_changes,
+    capture_pre_execution_sha, changes_project_files, detect_post_execution_changes,
+    only_auxiliary_changes,
 };
 use super::run_guard::{GuardedRun, OnSuppression, capture_run_base, guard_agent_run};
 
@@ -32,6 +35,30 @@ pub(crate) struct ExecutionContext<'a> {
     pub correction_needed: bool,
 }
 
+/// How the agent session itself ended, before Foundry's own checks after it.
+///
+/// Those checks can turn a finished session into a failed run (iterate's
+/// silent no-op, a suppression to retry, a branch that could not be put
+/// back), so the run's outcome alone cannot say whether the session failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionEnd {
+    /// The agent finished its turn.
+    Finished,
+    /// The provider reported a failure, or the agent could not run at all.
+    Failed,
+}
+
+impl SessionEnd {
+    /// How the session that produced `outcome` ended. Pass the outcome the
+    /// gateway returned, before any post-agent guard rewrote it.
+    pub(crate) fn of(outcome: &AgentOutcome) -> Self {
+        match outcome {
+            AgentOutcome::Success { .. } => Self::Finished,
+            AgentOutcome::AgentFailed { .. } | AgentOutcome::Unavailable { .. } => Self::Failed,
+        }
+    }
+}
+
 /// Build a `TaskBlockResult` for an agent-driven execution step, handling the
 /// response match, output trimming to 200 lines, tracing, `LoopContext` extraction,
 /// `ExecutionCompletedPayload` serialization, and `TaskBlockResult` construction.
@@ -45,9 +72,15 @@ pub(crate) struct ExecutionContext<'a> {
 /// with a "silent no-op" summary — unless `ctx.correction_needed` is `false`, in
 /// which case a clean tree is a legitimate no-op (plan agent said no work needed)
 /// and the result remains `success: true`.  The `Maintain` workflow is unaffected.
+///
+/// When `session` is [`SessionEnd::Failed`], the payload carries an
+/// [`ExecutionSessionFailure`] with the summary and whether the session
+/// changed project files, so review can settle a session that did no work
+/// as a runner error instead of asking for its proof.
 pub(crate) fn build_agent_execution_result(
     ctx: &ExecutionContext<'_>,
     outcome: AgentOutcome,
+    session: SessionEnd,
     changes_detected: bool,
     files_changed: Vec<String>,
 ) -> TaskBlockResult {
@@ -130,6 +163,10 @@ pub(crate) fn build_agent_execution_result(
 
     tracing::info!(project = %project, success = success, "{success_label} completed");
 
+    let session_failure = (session == SessionEnd::Failed).then(|| ExecutionSessionFailure {
+        message: summary.clone(),
+        left_work: changes_detected && changes_project_files(&files_changed),
+    });
     let context = LoopContext::extract_from(trigger_payload);
     TaskBlockResult {
         events: vec![super::execution_completed_event(
@@ -146,6 +183,7 @@ pub(crate) fn build_agent_execution_result(
                 changes_detected: Some(changes_detected),
                 files_changed,
                 failure: failure.unwrap_or_default(),
+                session_failure,
                 context,
             },
         )],
@@ -164,17 +202,19 @@ pub(crate) fn build_agent_execution_result(
 ///
 /// `pre_execution_sha` is the HEAD SHA captured immediately before agent
 /// invocation (via [`capture_pre_execution_sha`]); pass `None` only when no
-/// snapshot was taken.
+/// snapshot was taken. `session` is how the agent session ended, taken from
+/// the gateway's outcome before any guard rewrote it.
 pub(crate) async fn build_execution_outcome(
     shell: &dyn ShellGateway,
     project_path: &Path,
     ctx: &ExecutionContext<'_>,
     outcome: AgentOutcome,
+    session: SessionEnd,
     pre_execution_sha: Option<String>,
 ) -> foundry_sdk::task_block::TaskBlockResult {
     let (changes_detected, files_changed) =
         detect_post_execution_changes(shell, project_path, pre_execution_sha.as_deref()).await;
-    build_agent_execution_result(ctx, outcome, changes_detected, files_changed)
+    build_agent_execution_result(ctx, outcome, session, changes_detected, files_changed)
 }
 
 /// Execute the common agent-driven body shared by `ExecutePlan`, `ExecuteMaintain`,
@@ -264,8 +304,9 @@ async fn execute_agent_block_in_store(
         ctx.label,
     )
     .await;
+    let session = SessionEnd::of(&outcome);
     let Some(on_suppression) = on_suppression else {
-        return build_execution_outcome(shell, &project_path, ctx, outcome, pre_sha).await;
+        return build_execution_outcome(shell, &project_path, ctx, outcome, session, pre_sha).await;
     };
     let outcome = if ctx.workflow == WorkflowType::Maintain {
         guard_configured_branch(shell, &project_path, &entry.branch, outcome).await
@@ -295,7 +336,7 @@ async fn execute_agent_block_in_store(
         trace_id: ctx.trace_id.clone(),
         ..*ctx
     };
-    build_execution_outcome(shell, &project_path, &ctx, outcome, pre_sha).await
+    build_execution_outcome(shell, &project_path, &ctx, outcome, session, pre_sha).await
 }
 
 /// The pauses before each new attempt when the provider refused the agent
@@ -329,8 +370,12 @@ async fn invoke_while_provider_unavailable(
     label: &str,
 ) -> AgentOutcome {
     let mut attempts = 1;
+    let provider = spec.provider;
     loop {
-        let outcome = invoke_coding_agent(agent, project, spec.clone(), label).await;
+        let outcome = recognise_provider_unavailable(
+            invoke_coding_agent(agent, project, spec.clone(), label).await,
+            provider,
+        );
         if !provider_unavailable(&outcome) {
             return outcome;
         }
@@ -346,6 +391,76 @@ async fn invoke_while_provider_unavailable(
         sleeper.sleep(*pause).await;
         attempts += 1;
     }
+}
+
+/// The session's outcome, classified as provider unavailable when the gateway
+/// left it unclassified but its own words say so.
+///
+/// Gateways classify what they recognise in their CLI's output. A failure
+/// they did not classify (a message with no failure kind, or none at all),
+/// and an agent that could not run (`Unavailable`, which carries no failure
+/// metadata), reach here unclassified. When that text names a model at
+/// capacity, an overload or a rate limit ([`classify_provider_failure`]),
+/// the session is treated as the provider refusing it: the retries below
+/// apply, the run ends `provider unavailable`, and a campaign repeats the
+/// cycle instead of reading it as a failed objective. Only that transient
+/// kind is taken from here; terminal account states stay the gateways'
+/// call, made on their structured output.
+///
+/// [`classify_provider_failure`]: foundry_sdk::gateway::classify_provider_failure
+fn recognise_provider_unavailable(
+    outcome: AgentOutcome,
+    provider: Option<AgentProvider>,
+) -> AgentOutcome {
+    match outcome {
+        AgentOutcome::AgentFailed { stderr, failure }
+            if failure.as_ref().is_none_or(|failure| failure.failure_kind.is_none()) =>
+        {
+            let wording = failure
+                .as_ref()
+                .and_then(|failure| failure.message.as_deref())
+                .filter(|message| !message.trim().is_empty())
+                .unwrap_or(&stderr);
+            let failure =
+                provider_unavailable_failure(wording, provider, failure.as_ref()).or(failure);
+            AgentOutcome::AgentFailed { stderr, failure }
+        }
+        AgentOutcome::Unavailable { error } => {
+            match provider_unavailable_failure(&error, provider, None) {
+                Some(failure) => AgentOutcome::AgentFailed {
+                    stderr: error,
+                    failure: Some(failure),
+                },
+                None => AgentOutcome::Unavailable { error },
+            }
+        }
+        other => other,
+    }
+}
+
+/// `known` with the provider-unavailable classification of `wording`, or
+/// `None` when the wording does not name one.
+fn provider_unavailable_failure(
+    wording: &str,
+    provider: Option<AgentProvider>,
+    known: Option<&AgentFailureMetadata>,
+) -> Option<AgentFailureMetadata> {
+    let provider = known.and_then(|known| known.provider).or(provider);
+    let classified = foundry_sdk::gateway::classify_provider_failure(
+        provider.unwrap_or_default(),
+        known.and_then(|known| known.api_error_status),
+        wording,
+        None,
+        None,
+    )
+    .filter(AgentFailureMetadata::is_provider_unavailable)?;
+    let mut failure = known.cloned().unwrap_or_default();
+    failure.provider = provider;
+    failure.failure_kind = classified.failure_kind;
+    failure.terminal = classified.terminal;
+    failure.api_error_status = classified.api_error_status;
+    failure.message = classified.message;
+    Some(failure)
 }
 
 /// Add the number of attempts to a provider-unavailable failure's message.
@@ -517,7 +632,7 @@ mod tests {
     use crate::shell::CommandResult;
 
     use super::{
-        ExecutionContext, build_agent_execution_result, build_execution_outcome,
+        ExecutionContext, SessionEnd, build_agent_execution_result, build_execution_outcome,
         execution_environment,
     };
 
@@ -590,6 +705,126 @@ mod tests {
         assert_eq!(payload["failure_kind"], "provider_unavailable");
         assert!(payload.get("terminal").is_none(), "not terminal: {payload}");
         assert_eq!(payload["summary"], format!("provider unavailable: {CAPACITY} (4 attempts)"));
+    }
+
+    /// A gateway that did not classify capacity wording, and an agent that
+    /// could not run with that wording in its error, are both treated as the
+    /// provider refusing the session: retried after the same pauses, then
+    /// ended `provider unavailable` with the failure kind on the event.
+    #[tokio::test]
+    async fn capacity_wording_the_gateway_left_unclassified_is_provider_unavailable() {
+        use crate::gateway::AgentResponse;
+        use crate::gateway::fakes::{FakeAgentGateway, RecordingSleeper};
+        for agent in [
+            FakeAgentGateway::always(AgentResponse::failure(CAPACITY)),
+            FakeAgentGateway::unavailable(CAPACITY),
+        ] {
+            let sleeper = RecordingSleeper::new();
+
+            let result = execute_with(&agent, &sleeper).await;
+
+            assert!(!result.success);
+            assert_eq!(agent.invocations().len(), 4);
+            assert_eq!(sleeper.pauses(), super::PROVIDER_RETRY_DELAYS.to_vec());
+            let payload = &result.events[0].payload;
+            assert_eq!(payload["failure_kind"], "provider_unavailable", "{payload}");
+            assert_eq!(payload["provider"], "codex", "{payload}");
+            assert!(payload.get("terminal").is_none(), "not terminal: {payload}");
+            assert_eq!(
+                payload["summary"],
+                format!("provider unavailable: {CAPACITY} (4 attempts)")
+            );
+        }
+    }
+
+    /// Unclassified failures whose wording names no outage keep their own
+    /// summaries and are not retried.
+    #[tokio::test]
+    async fn other_unclassified_failures_are_left_as_they_are() {
+        use crate::gateway::fakes::{FakeAgentGateway, RecordingSleeper};
+        for (agent, summary) in [
+            (
+                FakeAgentGateway::failure("unexpected error event"),
+                "execution failed: unexpected error event",
+            ),
+            (
+                FakeAgentGateway::unavailable("codex stream produced no output for 600s"),
+                "agent unavailable: codex stream produced no output for 600s",
+            ),
+        ] {
+            let sleeper = RecordingSleeper::new();
+
+            let result = execute_with(&agent, &sleeper).await;
+
+            assert_eq!(agent.invocations().len(), 1);
+            assert!(sleeper.pauses().is_empty());
+            let payload = &result.events[0].payload;
+            assert!(payload.get("failure_kind").is_none(), "{payload}");
+            assert_eq!(payload["summary"], summary);
+            assert_eq!(payload["session_failure"]["message"], summary);
+        }
+    }
+
+    /// The execution result says when the agent session itself failed, with
+    /// its summary and whether it changed project files. A session that
+    /// finished carries no such signal, including iterate's silent no-op,
+    /// which Foundry fails after a session that finished.
+    #[test]
+    fn a_failed_session_is_signalled_with_whether_it_left_work() {
+        let payload = trigger_payload();
+        let ctx = |workflow| ExecutionContext {
+            trace_id: None,
+            project: "proj",
+            workflow,
+            payload: &payload,
+            throttle: Throttle::Full,
+            label: "plan execution",
+            retry_count: None,
+            correction_needed: true,
+        };
+        let failed = || AgentOutcome::AgentFailed {
+            stderr: "boom".into(),
+            failure: None,
+        };
+        let signal = |result: &foundry_sdk::task_block::TaskBlockResult| {
+            result.events[0].payload.get("session_failure").cloned()
+        };
+
+        let scratch_only = build_agent_execution_result(
+            &ctx(WorkflowType::Task),
+            failed(),
+            SessionEnd::Failed,
+            true,
+            vec![
+                ".foundry/session.log".into(),
+                ".claude/worktrees/x/y".into(),
+            ],
+        );
+        assert_eq!(
+            signal(&scratch_only),
+            Some(serde_json::json!({"message": "plan execution failed: boom", "left_work": false}))
+        );
+
+        let edited = build_agent_execution_result(
+            &ctx(WorkflowType::Task),
+            failed(),
+            SessionEnd::Failed,
+            true,
+            vec!["src/lib.rs".into()],
+        );
+        assert_eq!(signal(&edited).unwrap()["left_work"], true);
+
+        let silent_no_op = build_agent_execution_result(
+            &ctx(WorkflowType::Iterate),
+            AgentOutcome::Success {
+                stdout: "done".into(),
+            },
+            SessionEnd::Finished,
+            false,
+            vec![],
+        );
+        assert_eq!(silent_no_op.events[0].payload["success"], false);
+        assert_eq!(signal(&silent_no_op), None);
     }
 
     /// Only a provider refusal is retried: an ordinary agent failure and a
@@ -816,6 +1051,7 @@ mod tests {
             AgentOutcome::Success {
                 stdout: "done".to_string(),
             },
+            SessionEnd::Finished,
             false, // changes_detected = false
             vec![],
         );
@@ -856,6 +1092,7 @@ mod tests {
             AgentOutcome::Success {
                 stdout: "Reviewed; no changes needed.".to_string(),
             },
+            SessionEnd::Finished,
             false, // changes_detected = false
             vec![],
         );
@@ -889,6 +1126,7 @@ mod tests {
             AgentOutcome::Success {
                 stdout: "done".to_string(),
             },
+            SessionEnd::Finished,
             true,
             vec!["src/lib.rs".to_string()],
         );
@@ -923,6 +1161,7 @@ mod tests {
                 stderr: String::new(),
                 failure: Some(failure),
             },
+            SessionEnd::Failed,
             false,
             vec![],
         );
@@ -967,6 +1206,7 @@ mod tests {
                 stderr: "Reading additional input from stdin...".to_string(),
                 failure: Some(failure),
             },
+            SessionEnd::Failed,
             false,
             vec![],
         );
@@ -1001,6 +1241,7 @@ mod tests {
                 stderr: "boom\nsecond line".to_string(),
                 failure: None,
             },
+            SessionEnd::Failed,
             false,
             vec![],
         );
@@ -1029,6 +1270,7 @@ mod tests {
             AgentOutcome::Success {
                 stdout: "done".to_string(),
             },
+            SessionEnd::Finished,
             false, // clean tree
             vec![],
         );
@@ -1057,6 +1299,7 @@ mod tests {
             AgentOutcome::Success {
                 stdout: "done".to_string(),
             },
+            SessionEnd::Finished,
             true, // changes_detected=true but only aux files
             vec![".claude/worktrees/abc/foo".to_string()],
         );
@@ -1098,6 +1341,7 @@ mod tests {
             AgentOutcome::Success {
                 stdout: "done; commit pushed to origin/main".to_string(),
             },
+            SessionEnd::Finished,
             Some("abc123".to_string()),
         )
         .await;

@@ -105,6 +105,15 @@ pub(crate) fn only_auxiliary_changes(files: &[String]) -> bool {
     files.is_empty() || files.iter().all(|f| is_auxiliary_path(f))
 }
 
+/// Returns `true` when the file list holds a change to the project itself:
+/// a path that is neither auxiliary nor Foundry scratch under
+/// [`crate::workspace::FOUNDRY_DIR`], which never lands. A failed agent
+/// session that changed only those paths did no work worth reviewing.
+pub(crate) fn changes_project_files(files: &[String]) -> bool {
+    let scratch = format!("{}/", crate::workspace::FOUNDRY_DIR);
+    files.iter().any(|f| !is_auxiliary_path(f) && !f.starts_with(&scratch))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -112,7 +121,23 @@ mod tests {
     use crate::gateway::fakes::FakeShellGateway;
     use crate::shell::CommandResult;
 
-    use super::{capture_pre_execution_sha, detect_post_execution_changes, is_auxiliary_path};
+    use super::{
+        capture_pre_execution_sha, changes_project_files, detect_post_execution_changes,
+        is_auxiliary_path,
+    };
+
+    #[test]
+    fn only_project_paths_count_as_project_changes() {
+        let paths = |list: &[&str]| list.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert!(!changes_project_files(&[]));
+        assert!(!changes_project_files(&paths(&[
+            ".foundry/proof.json",
+            ".foundry/logs/red.log",
+            ".claude/worktrees/abc/foo.md",
+        ])));
+        assert!(changes_project_files(&paths(&[".foundry/proof.json", "src/lib.rs"])));
+        assert!(changes_project_files(&paths(&[".foundry-notes.md"])));
+    }
 
     // --- is_auxiliary_path ---
 

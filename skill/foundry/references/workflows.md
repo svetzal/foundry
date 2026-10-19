@@ -153,7 +153,10 @@ required mechanical gate with `complete`. When `ExecutionCompleted` carries a
 provider failure kind (`provider_unavailable` after `ExecutePlan`'s retries at
 30 s, 2 min and 5 min, or a terminal account kind), `ReviewTask` emits
 `runner_error` naming it without a review session or proof check, and
-`FinalizeTask` carries `failure_kind` onto `TaskRunCompleted`. `FinalizeTask` commits all work. It
+`FinalizeTask` carries `failure_kind` onto `TaskRunCompleted`. Any other failed
+session reaches `ReviewTask` as `session_failure` (`message`, `left_work`) on
+`GateVerificationCompleted`; with `left_work: false` and no early evidence in
+the worktree it also settles `runner_error` with that message. `FinalizeTask` commits all work. It
 lands `complete`, and also lands a converging `remainder` when at least one
 required gate ran and every required gate passed. Other results are preserved on
 a named remote branch or Git bundle. `RouteGateResult` rejects task workflows,

@@ -7,6 +7,32 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A failed execution session that did no work is no longer reviewed as
+  missing proof, whatever the failure. On 2026-10-19, cycles 3 and 5 of
+  `mojentic-py-no-network-tests` ran Codex sessions whose 297-byte logs held
+  only an error event and `turn.failed`. Review reported missing
+  `.foundry/proof.json` as a `defect`, and formation parked three campaigns
+  on `capability_unavailable` recoveries. 0.56.0 stopped that for failures
+  classified as a provider refusal. Any other failed session could
+  still reach the proof check. Now:
+  - `execution_completed` and `gate_verification_completed` carry
+    `session_failure` (`message`, `left_work`) when the agent session itself
+    failed, as opposed to a session Foundry failed afterwards such as
+    iterate's silent no-op. Older events without it still read.
+  - Review Task settles a failed session that changed no project file
+    (changes under `.foundry/` and auxiliary worktree paths do not count) and
+    left no `.foundry/proof.json` or `.foundry/blocker.json` as `runner_error`
+    with the session's message, without a review session or proof check. A
+    failed session that changed files or wrote early evidence is reviewed as
+    before. The campaign records a `runner_unavailable` recovery and does not
+    ask formation to judge the cycle.
+  - Execution classifies capacity, overload and rate-limit wording that the
+    gateway left unclassified, including the error of an agent that could not
+    start, as `provider_unavailable`. Such a run is retried, and its campaign
+    repeats the cycle, exactly like a classified refusal.
+
 ## [0.56.0] - 2026-10-19
 
 ### Fixed

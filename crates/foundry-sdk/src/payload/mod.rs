@@ -213,6 +213,7 @@ mod tests {
             changes_detected: None,
             files_changed: vec![],
             failure: crate::gateway::AgentFailureMetadata::default(),
+            session_failure: None,
             context,
         };
         let json = serde_json::to_value(&p).unwrap();
