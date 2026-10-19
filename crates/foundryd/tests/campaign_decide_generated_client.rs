@@ -166,6 +166,7 @@ fn escalated_campaign(name: &str) -> Campaign {
                 campaign: Some(name.to_string()),
                 ..LoopContext::default()
             },
+            failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
         }),
         objective_history: vec![],
         open_escalation: None,

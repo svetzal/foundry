@@ -149,7 +149,11 @@ ExecutionRequested {workflow: "task", admitted_work_item_id}   — started root
 
 `ReviewTask` emits one structural verdict: `complete`, `remainder`, `defect`,
 `blocked_on_decision`, or `runner_error`. A reviewer cannot override a failed
-required mechanical gate with `complete`. `FinalizeTask` commits all work. It
+required mechanical gate with `complete`. When `ExecutionCompleted` carries a
+provider failure kind (`provider_unavailable` after `ExecutePlan`'s retries at
+30 s, 2 min and 5 min, or a terminal account kind), `ReviewTask` emits
+`runner_error` naming it without a review session or proof check, and
+`FinalizeTask` carries `failure_kind` onto `TaskRunCompleted`. `FinalizeTask` commits all work. It
 lands `complete`, and also lands a converging `remainder` when at least one
 required gate ran and every required gate passed. Other results are preserved on
 a named remote branch or Git bundle. `RouteGateResult` rejects task workflows,
@@ -584,6 +588,9 @@ Use `campaign recover <name> --recovery <id> --evidence "<what changed>"` or
 An agent can request a recheck after an authorized operational correction.
 The daemon reassesses under existing gates, questions, holds and budgets;
 recovery records no owner decision and adds no cycles. A campaign pause stays.
+A provider outage needs no recovery while the campaign repeats the refused
+cycle by itself; the recheck of a `runner_unavailable` recovery left after
+those repeats dispatches the same objective without forming.
 New RPCs refuse older daemons without a decision or resume fallback.
 Standalone operational blockers preserve work; use `queue resume <id>` after
 correcting their prerequisite. `.foundry/blocker.json` can set `recovery_kind`

@@ -36,7 +36,10 @@ use super::work_ledger::{ledger_lock, load_ledger, save_ledger};
 /// stands, so a missed or reordered trigger is made good by the next one:
 ///
 /// - An open cycle is carried forward when a later-submitted cycle of the same
-///   campaign has a higher cycle number and was not itself cancelled. An open
+///   campaign has a higher cycle number and was not itself cancelled, or
+///   repeats its cycle number: a campaign repeats a cycle the provider refused
+///   as unavailable under the same number, and the repeat carries the refused
+///   attempt. An open
 ///   formation run is carried forward by the first such cycle submitted after
 ///   it. Only a cycle carries.
 /// - Every open cycle and formation run of a completed or cancelled campaign
@@ -198,8 +201,9 @@ fn cycle_of(item: &WorkItem, campaign: &str, project: &str) -> Option<u64> {
 /// settled items.
 ///
 /// The carrier is the most recently submitted cycle of the campaign that was
-/// not itself cancelled. An open cycle with a lower number, submitted no later,
-/// and an open formation run submitted before the carrier, settle `carried
+/// not itself cancelled. An open cycle with a lower number, or another
+/// attempt at the carrier's own number, submitted no later, and an open
+/// formation run submitted before the carrier, settle `carried
 /// forward by campaign <name> cycle <n> (<carrier id>)`. When `terminal` is
 /// set, every other open cycle and formation run settles with that reason.
 fn settle_campaign_cycles(
@@ -224,12 +228,16 @@ fn settle_campaign_cycles(
         if !item.state.is_open() {
             continue;
         }
-        let moved_past = |carried_by: u64, submitted_at: DateTime<Utc>| match role {
-            Role::Cycle(cycle) => cycle < carried_by && item.submitted_at <= submitted_at,
+        let moved_past = |carried_by: u64, submitted_at: DateTime<Utc>, carrier_id: &str| match role
+        {
+            Role::Cycle(cycle) => {
+                (cycle < carried_by || (cycle == carried_by && item.id != carrier_id))
+                    && item.submitted_at <= submitted_at
+            }
             Role::Formation => item.submitted_at < submitted_at,
         };
         let reason = match &carrier {
-            Some((carried_by, submitted_at, id)) if moved_past(*carried_by, *submitted_at) => {
+            Some((carried_by, submitted_at, id)) if moved_past(*carried_by, *submitted_at, id) => {
                 format!("carried forward by campaign {campaign} cycle {carried_by} ({id})")
             }
             _ => match terminal {

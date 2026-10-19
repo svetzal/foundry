@@ -233,6 +233,7 @@ fn active_campaign_with_pending_result(name: &str) -> Campaign {
                 campaign: Some(name.to_string()),
                 ..LoopContext::default()
             },
+            failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
         }),
         ..active_campaign(name)
     }

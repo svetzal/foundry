@@ -979,6 +979,7 @@ mod tests {
                 gaps: vec![gap.to_string()],
             },
             context: crate::payload::LoopContext::default(),
+            failure: crate::gateway::AgentFailureMetadata::default(),
         }
     }
 

@@ -189,7 +189,11 @@ impl std::str::FromStr for AgentProvider {
     }
 }
 
-/// Classified kind for a terminal provider/account failure.
+/// Classified kind of a provider failure.
+///
+/// Three kinds are terminal account states: another attempt returns the same
+/// refusal until a person changes the account. `ProviderUnavailable` is
+/// transient: the provider could not serve the session right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentFailureKind {
@@ -199,6 +203,11 @@ pub enum AgentFailureKind {
     AccountDisabled,
     /// Provider authentication was revoked or expired.
     Authentication,
+    /// The provider refused the session for now: the model is at capacity,
+    /// the API is overloaded or rate limited, or it answered HTTP 429, 503 or
+    /// 529. Worth another attempt after a pause, and never a reason to stop a
+    /// workflow.
+    ProviderUnavailable,
 }
 
 impl AgentFailureKind {
@@ -208,7 +217,14 @@ impl AgentFailureKind {
             AgentFailureKind::AccountLimit => "agent account limit reached",
             AgentFailureKind::AccountDisabled => "agent account disabled",
             AgentFailureKind::Authentication => "agent authentication revoked",
+            AgentFailureKind::ProviderUnavailable => "provider unavailable",
         }
+    }
+
+    /// Whether another attempt returns the same refusal until a person acts.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        !matches!(self, AgentFailureKind::ProviderUnavailable)
     }
 }
 
@@ -273,6 +289,14 @@ impl AgentFailureMetadata {
         self
     }
 
+    /// Record `kind`, terminal only when the kind is.
+    #[must_use]
+    pub fn classified(mut self, kind: AgentFailureKind) -> Self {
+        self.failure_kind = Some(kind);
+        self.terminal = kind.is_terminal();
+        self
+    }
+
     /// Mark the failure as needing review, with the reason a person reads.
     #[must_use]
     pub fn with_needs_review(mut self, reason: impl Into<String>) -> Self {
@@ -283,6 +307,12 @@ impl AgentFailureMetadata {
     #[must_use]
     pub fn is_terminal_provider_failure(&self) -> bool {
         self.terminal && self.failure_kind.is_some()
+    }
+
+    /// Whether the provider refused the session as unavailable for now.
+    #[must_use]
+    pub fn is_provider_unavailable(&self) -> bool {
+        self.failure_kind == Some(AgentFailureKind::ProviderUnavailable)
     }
 
     #[must_use]
@@ -306,10 +336,33 @@ impl AgentFailureMetadata {
     }
 }
 
-/// Classify a provider error message into terminal failure metadata when the
-/// wording indicates a non-retryable provider/account state.
+/// Wording that names a provider refusing a session for now.
+const PROVIDER_UNAVAILABLE_WORDING: &[&str] = &[
+    "at capacity",
+    "overloaded",
+    "rate limited",
+    "rate-limited",
+    "rate limit exceeded",
+    "too many requests",
+    "temporarily unavailable",
+    "service unavailable",
+];
+
+/// HTTP statuses a provider returns when it cannot serve a session for now:
+/// 429 (rate limited), 503 (unavailable) and 529 (Anthropic's overloaded).
+const PROVIDER_UNAVAILABLE_STATUSES: &[u16] = &[429, 503, 529];
+
+/// Classify a provider error message into failure metadata.
+///
+/// Terminal account wording (revoked authentication, a disabled account, an
+/// exhausted spend or quota) wins and yields a terminal kind. Otherwise
+/// capacity, overload and rate-limit wording, or an HTTP 429, 503 or 529,
+/// yields [`AgentFailureKind::ProviderUnavailable`], which is not terminal.
+/// `None` when the message names neither. When `api_error_status` is absent,
+/// a status the message itself names (`unexpected status 503`, `last status:
+/// 429`) is used and recorded.
 #[must_use]
-pub fn classify_terminal_provider_failure(
+pub fn classify_provider_failure(
     provider: AgentProvider,
     api_error_status: Option<u16>,
     message: &str,
@@ -322,9 +375,26 @@ pub fn classify_terminal_provider_failure(
     }
 
     let normalized = trimmed.to_ascii_lowercase();
+    let status = api_error_status.or_else(|| status_in_message(&normalized));
+    let failure_kind = terminal_failure_kind(&normalized, status)
+        .or_else(|| transient_failure_kind(&normalized, status))?;
 
+    let mut failure = AgentFailureMetadata::new(provider)
+        .classified(failure_kind)
+        .with_message(trimmed.to_string());
+    if let Some(status) = status {
+        failure = failure.with_api_error_status(status);
+    }
+    if let (Some(session_id), Some(source_log_path)) = (session_id, source_log_path) {
+        failure = failure.with_session(session_id.to_string(), source_log_path.to_path_buf());
+    }
+    Some(failure)
+}
+
+/// The terminal account kind the wording names, if any.
+fn terminal_failure_kind(normalized: &str, status: Option<u16>) -> Option<AgentFailureKind> {
     let failure_kind = if contains_any(
-        &normalized,
+        normalized,
         &[
             "authentication revoked",
             "authentication expired",
@@ -336,9 +406,9 @@ pub fn classify_terminal_provider_failure(
             "credentials expired",
         ],
     ) {
-        Some(AgentFailureKind::Authentication)
+        AgentFailureKind::Authentication
     } else if contains_any(
-        &normalized,
+        normalized,
         &[
             "billing disabled",
             "account disabled",
@@ -347,9 +417,9 @@ pub fn classify_terminal_provider_failure(
             "subscription disabled",
         ],
     ) {
-        Some(AgentFailureKind::AccountDisabled)
+        AgentFailureKind::AccountDisabled
     } else if contains_any(
-        &normalized,
+        normalized,
         &[
             "monthly spend limit",
             "spend limit",
@@ -361,18 +431,18 @@ pub fn classify_terminal_provider_failure(
             "no credits remaining",
         ],
     ) {
-        Some(AgentFailureKind::AccountLimit)
+        AgentFailureKind::AccountLimit
     } else {
-        None
-    }?;
+        return None;
+    };
 
     // A bare 429 / rate-limit wording is not terminal. Require explicit
-    // account/quota/auth/billing phrasing.
+    // account/quota/auth/billing phrasing; the transient check sees the rest.
     if failure_kind == AgentFailureKind::AccountLimit
-        && api_error_status == Some(429)
-        && contains_any(&normalized, &["rate limit exceeded", "retry later", "too many requests"])
+        && status == Some(429)
+        && contains_any(normalized, &["rate limit exceeded", "retry later", "too many requests"])
         && !contains_any(
-            &normalized,
+            normalized,
             &[
                 "monthly spend limit",
                 "spend limit",
@@ -385,20 +455,37 @@ pub fn classify_terminal_provider_failure(
     {
         return None;
     }
-
-    let mut failure = AgentFailureMetadata::new(provider)
-        .terminal(failure_kind)
-        .with_message(trimmed.to_string());
-    if let Some(status) = api_error_status {
-        failure = failure.with_api_error_status(status);
-    }
-    if let (Some(session_id), Some(source_log_path)) = (session_id, source_log_path) {
-        failure = failure.with_session(session_id.to_string(), source_log_path.to_path_buf());
-    }
-    Some(failure)
+    Some(failure_kind)
 }
 
-/// Parse a Claude JSON result record and classify terminal provider failures.
+/// `ProviderUnavailable` when the wording or the status says the provider
+/// could not serve the session for now.
+fn transient_failure_kind(normalized: &str, status: Option<u16>) -> Option<AgentFailureKind> {
+    (contains_any(normalized, PROVIDER_UNAVAILABLE_WORDING)
+        || status.is_some_and(|status| PROVIDER_UNAVAILABLE_STATUSES.contains(&status)))
+    .then_some(AgentFailureKind::ProviderUnavailable)
+}
+
+/// The three-digit HTTP status a message names after the word `status`, as
+/// codex reports it (`unexpected status 503 Service Unavailable`, `last
+/// status: 429`).
+fn status_in_message(normalized: &str) -> Option<u16> {
+    normalized.match_indices("status").find_map(|(index, word)| {
+        let rest = normalized[index + word.len()..].trim_start_matches([':', '=', ' ']);
+        let rest = rest
+            .strip_prefix("code")
+            .map_or(rest, |rest| rest.trim_start_matches([':', '=', ' ']));
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        if digits == 3 {
+            rest[..3].parse().ok()
+        } else {
+            None
+        }
+    })
+}
+
+/// Parse a Claude JSON result record and classify its provider failure,
+/// terminal and transient alike (see [`classify_provider_failure`]).
 #[must_use]
 pub fn classify_claude_result_record(
     raw_record: &str,
@@ -428,7 +515,7 @@ pub fn classify_claude_result_record(
         .and_then(Value::as_u64)
         .and_then(|status| u16::try_from(status).ok());
 
-    classify_terminal_provider_failure(
+    classify_provider_failure(
         AgentProvider::Claude,
         api_error_status,
         message,
@@ -662,6 +749,19 @@ impl AgentResponse {
             AgentFailureMetadata::new(provider).terminal(kind).with_message(message),
         )
     }
+
+    /// A session the provider refused as unavailable for now (exit 1).
+    #[must_use]
+    pub fn provider_unavailable(provider: AgentProvider, message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self::failure_with_metadata(
+            message.clone(),
+            1,
+            AgentFailureMetadata::new(provider)
+                .classified(AgentFailureKind::ProviderUnavailable)
+                .with_message(message),
+        )
+    }
 }
 
 /// The outcome of an agent invocation, abstracting over `Result<AgentResponse>`.
@@ -782,8 +882,7 @@ mod agent_failure_classifier_tests {
     use std::path::Path;
 
     use super::{
-        AgentFailureKind, AgentProvider, classify_claude_result_record,
-        classify_terminal_provider_failure,
+        AgentFailureKind, AgentProvider, classify_claude_result_record, classify_provider_failure,
     };
 
     #[test]
@@ -806,16 +905,174 @@ mod agent_failure_classifier_tests {
         );
     }
 
+    /// A generic 429 rate limit is not an account state: it is the provider
+    /// refusing the session for now, and must not stop a workflow.
     #[test]
-    fn agent_failure_classifier_does_not_mark_generic_rate_limit_terminal() {
-        let failure = classify_terminal_provider_failure(
+    fn agent_failure_classifier_marks_generic_rate_limit_unavailable_not_terminal() {
+        let failure = classify_provider_failure(
             AgentProvider::Claude,
             Some(429),
             "Rate limit exceeded; retry later",
             Some("session-123"),
             Some(Path::new("/tmp/session.jsonl")),
-        );
+        )
+        .expect("a 429 rate limit classifies");
 
-        assert!(failure.is_none());
+        assert_eq!(failure.failure_kind, Some(AgentFailureKind::ProviderUnavailable));
+        assert!(!failure.terminal);
+        assert!(!failure.is_terminal_provider_failure());
+        assert!(failure.is_provider_unavailable());
+    }
+
+    /// The 2026-10-19 production failure: codex exits 1 with zero tokens and
+    /// this message.
+    #[test]
+    fn codex_model_at_capacity_is_provider_unavailable() {
+        let failure = classify_provider_failure(
+            AgentProvider::Codex,
+            None,
+            "Selected model is at capacity. Please try a different model.",
+            None,
+            None,
+        )
+        .expect("capacity wording classifies");
+
+        assert_eq!(failure.provider, Some(AgentProvider::Codex));
+        assert_eq!(failure.failure_kind, Some(AgentFailureKind::ProviderUnavailable));
+        assert!(!failure.terminal);
+        assert_eq!(
+            failure.execution_summary(),
+            "provider unavailable: Selected model is at capacity. Please try a different model."
+        );
+    }
+
+    #[test]
+    fn transient_wording_classifies_as_provider_unavailable_for_both_providers() {
+        for provider in [AgentProvider::Codex, AgentProvider::Claude] {
+            for message in [
+                "Selected model is at capacity. Please try a different model.",
+                "Overloaded",
+                "You are being rate limited",
+                "Rate limit exceeded",
+                "429 Too Many Requests",
+                "The service is temporarily unavailable",
+                "503 Service Unavailable",
+            ] {
+                let failure = classify_provider_failure(provider, None, message, None, None)
+                    .unwrap_or_else(|| panic!("{provider} {message:?} must classify"));
+                assert_eq!(
+                    failure.failure_kind,
+                    Some(AgentFailureKind::ProviderUnavailable),
+                    "{provider} {message:?}"
+                );
+                assert!(!failure.terminal, "{provider} {message:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn statuses_429_503_and_529_alone_classify_as_provider_unavailable() {
+        for status in [429, 503, 529] {
+            let failure = classify_provider_failure(
+                AgentProvider::Claude,
+                Some(status),
+                "API Error",
+                None,
+                None,
+            )
+            .unwrap_or_else(|| panic!("status {status} must classify"));
+            assert_eq!(failure.failure_kind, Some(AgentFailureKind::ProviderUnavailable));
+            assert_eq!(failure.api_error_status, Some(status));
+            assert!(!failure.terminal);
+        }
+        assert!(
+            classify_provider_failure(AgentProvider::Claude, Some(500), "API Error", None, None)
+                .is_none(),
+            "an unrelated status names no provider state"
+        );
+    }
+
+    /// Codex names the status in its message rather than a field.
+    #[test]
+    fn codex_status_in_the_message_classifies_and_is_recorded() {
+        for (message, status) in [
+            ("unexpected status 503: upstream connect error", 503),
+            ("exceeded retry limit, last status: 429", 429),
+            ("stream error: status code 529", 529),
+        ] {
+            let failure =
+                classify_provider_failure(AgentProvider::Codex, None, message, None, None)
+                    .unwrap_or_else(|| panic!("{message:?} must classify"));
+            assert_eq!(failure.failure_kind, Some(AgentFailureKind::ProviderUnavailable));
+            assert_eq!(failure.api_error_status, Some(status), "{message:?}");
+        }
+    }
+
+    #[test]
+    fn claude_overloaded_error_record_is_provider_unavailable() {
+        let fixture = r#"{"type":"result","is_error":true,"api_error_status":529,"result":"API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}"}"#;
+        let failure = classify_claude_result_record(
+            fixture,
+            Some("session-529"),
+            Some(Path::new("/tmp/session.jsonl")),
+        )
+        .expect("an overloaded result record classifies");
+
+        assert_eq!(failure.failure_kind, Some(AgentFailureKind::ProviderUnavailable));
+        assert_eq!(failure.api_error_status, Some(529));
+        assert!(!failure.terminal);
+        assert_eq!(failure.session_id.as_deref(), Some("session-529"));
+    }
+
+    /// Terminal account wording wins over a transient status or wording.
+    #[test]
+    fn terminal_wording_still_wins_over_transient_signals() {
+        let cases = [
+            (
+                Some(429),
+                "Too many requests: you've hit your monthly spend limit",
+                AgentFailureKind::AccountLimit,
+            ),
+            (
+                Some(503),
+                "Service unavailable: billing account disabled",
+                AgentFailureKind::AccountDisabled,
+            ),
+            (Some(529), "Overloaded; access token expired", AgentFailureKind::Authentication),
+            (
+                None,
+                "Model at capacity, and your quota exhausted",
+                AgentFailureKind::AccountLimit,
+            ),
+        ];
+        for (status, message, kind) in cases {
+            let failure =
+                classify_provider_failure(AgentProvider::Codex, status, message, None, None)
+                    .unwrap_or_else(|| panic!("{message:?} must classify"));
+            assert_eq!(failure.failure_kind, Some(kind), "{message:?}");
+            assert!(failure.terminal, "{message:?}");
+        }
+    }
+
+    #[test]
+    fn unrelated_failure_wording_is_unclassified() {
+        assert!(
+            classify_provider_failure(
+                AgentProvider::Codex,
+                None,
+                "The 'x' model is not supported when using Codex with a ChatGPT account.",
+                None,
+                None,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn provider_unavailable_round_trips_as_snake_case() {
+        let json = serde_json::to_value(AgentFailureKind::ProviderUnavailable).unwrap();
+        assert_eq!(json, "provider_unavailable");
+        assert!(!AgentFailureKind::ProviderUnavailable.is_terminal());
+        assert!(AgentFailureKind::AccountLimit.is_terminal());
     }
 }

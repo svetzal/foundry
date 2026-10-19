@@ -26,8 +26,20 @@ pub use foundry_sdk::agent_config::ProviderModels;
 pub use foundry_sdk::gateway::{
     AgentAccess, AgentFailureKind, AgentFailureMetadata, AgentGateway, AgentOutcome, AgentProvider,
     AgentRequest, AgentResponse, AuditResult, CommandResult, ModelTier, ReasoningEffort,
-    ScannerGateway, ShellGateway, classify_claude_result_record,
+    ScannerGateway, ShellGateway, Sleeper, classify_claude_result_record,
 };
+
+/// Production [`Sleeper`]: waits on the tokio timer.
+pub struct TokioSleeper;
+
+impl Sleeper for TokioSleeper {
+    fn sleep(
+        &self,
+        duration: Duration,
+    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(tokio::time::sleep(duration))
+    }
+}
 
 // Shared generic gateway engine — the single `invoke()` lifecycle reused by all
 // CLI-backed agent provider implementations. Per-provider variation lives in
@@ -871,6 +883,55 @@ mod claude_agent_gateway_streaming_tests {
             ended.payload["message"],
             "You've hit your monthly spend limit - raise it at claude.ai/settings/usage"
         );
+    }
+
+    /// An overloaded API reaches the caller as `provider_unavailable`, not
+    /// terminal, and the session-ended event says so.
+    #[tokio::test]
+    async fn invoke_classifies_an_overloaded_api_as_provider_unavailable() {
+        let session_log_dir = super::test_support::tmp_dir("foundry-overloaded");
+        let (tx, mut rx) = broadcast::channel(16);
+        let runner = Arc::new(FakeAgentStreamRunner {
+            transcript: vec![r#"{"type":"result","is_error":true,"api_error_status":529,"result":"API Error: Repeated 529 Overloaded errors"}"#.to_string()],
+            outcome_template: AgentStreamOutcome {
+                exit_code: 1,
+                success: false,
+                stderr: String::new(),
+                bytes_written: 0,
+                lines: vec![],
+            },
+        });
+        let gateway = ClaudeAgentGateway::new_with_streaming(
+            FakeShellGateway::success(),
+            runner,
+            session_log_dir,
+            tx,
+        );
+        let request = AgentRequest {
+            prompt: "work".to_string(),
+            project: "demo-project".to_string(),
+            working_dir: PathBuf::from("/tmp"),
+            access: AgentAccess::Full,
+            tier: ModelTier::Balanced,
+            effort: ReasoningEffort::Medium,
+            agent_file: None,
+            provider: None,
+            env: Vec::new(),
+            timeout: Duration::from_secs(5),
+            trace_id: None,
+            requires_json: false,
+        };
+
+        let response = gateway.invoke(&request).await.expect("invoke ok");
+
+        assert!(!response.success);
+        let failure = response.failure.expect("classified failure metadata");
+        assert_eq!(failure.failure_kind, Some(AgentFailureKind::ProviderUnavailable));
+        assert!(!failure.terminal);
+        let _started = rx.recv().await.unwrap();
+        let ended = rx.recv().await.unwrap();
+        assert_eq!(ended.payload["failure_kind"], "provider_unavailable");
+        assert!(ended.payload.get("terminal").is_none(), "{}", ended.payload);
     }
 
     #[tokio::test]

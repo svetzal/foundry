@@ -7,7 +7,7 @@ use foundry_sdk::task_block::TaskBlockResult;
 use foundry_sdk::throttle::Throttle;
 use foundry_sdk::workflow::WorkflowType;
 
-use crate::gateway::{AgentGateway, AgentOutcome, ShellGateway};
+use crate::gateway::{AgentGateway, AgentOutcome, ShellGateway, Sleeper};
 
 use super::agent_helpers::{CodingAgentSpec, invoke_coding_agent};
 use super::branch_guard::BranchGuard;
@@ -72,10 +72,10 @@ pub(crate) fn build_agent_execution_result(
             (Some(out), true, format!("{success_label} completed"), exec_out, None)
         }
         AgentOutcome::AgentFailed { stderr, failure } => {
-            let summary = failure
-                .as_ref()
-                .filter(|failure| failure.is_terminal_provider_failure())
-                .map_or_else(
+            // A classified provider failure (terminal, or provider
+            // unavailable) names itself: "provider unavailable: <message>".
+            let summary =
+                failure.as_ref().filter(|failure| failure.failure_kind.is_some()).map_or_else(
                     || {
                         // Prefer a provider-reported failure message (e.g. codex's
                         // parsed `turn.failed`/`error` diagnostic) over stderr's
@@ -189,6 +189,7 @@ pub(crate) async fn build_execution_outcome(
 pub(crate) async fn execute_agent_block(
     agent: &dyn AgentGateway,
     shell: &dyn ShellGateway,
+    sleeper: &dyn Sleeper,
     entry: &ProjectEntry,
     ctx: &ExecutionContext<'_>,
     prompt: String,
@@ -196,6 +197,7 @@ pub(crate) async fn execute_agent_block(
     execute_agent_block_in_store(
         agent,
         shell,
+        sleeper,
         entry,
         ctx,
         prompt,
@@ -207,6 +209,7 @@ pub(crate) async fn execute_agent_block(
 async fn execute_agent_block_in_store(
     agent: &dyn AgentGateway,
     shell: &dyn ShellGateway,
+    sleeper: &dyn Sleeper,
     entry: &ProjectEntry,
     ctx: &ExecutionContext<'_>,
     prompt: String,
@@ -245,8 +248,9 @@ async fn execute_agent_block_in_store(
         env.push(("FOUNDRY_WRITABLE_ROOT".into(), project_path.to_string_lossy().into()));
     }
     let timeout = limits.map_or(entry.timeout(), |_| std::time::Duration::ZERO);
-    let outcome = invoke_coding_agent(
+    let outcome = invoke_while_provider_unavailable(
         agent,
+        sleeper,
         ctx.project,
         CodingAgentSpec {
             working_dir: project_path.clone(),
@@ -292,6 +296,74 @@ async fn execute_agent_block_in_store(
         ..*ctx
     };
     build_execution_outcome(shell, &project_path, &ctx, outcome, pre_sha).await
+}
+
+/// The pauses before each new attempt when the provider refused the agent
+/// session as unavailable (a model at capacity, an overloaded or rate-limited
+/// API). Four attempts in all, the last one about seven and a half minutes
+/// after the first; an outage that outlasts them settles the run as
+/// `provider unavailable` and is left to the caller (a campaign re-dispatches
+/// the same objective later).
+pub(crate) const PROVIDER_RETRY_DELAYS: [std::time::Duration; 3] = [
+    std::time::Duration::from_secs(30),
+    std::time::Duration::from_secs(120),
+    std::time::Duration::from_secs(300),
+];
+
+fn provider_unavailable(outcome: &AgentOutcome) -> bool {
+    matches!(
+        outcome,
+        AgentOutcome::AgentFailed { failure: Some(failure), .. } if failure.is_provider_unavailable()
+    )
+}
+
+/// Invoke the coding agent, and while the provider refuses the session as
+/// unavailable, pause through `sleeper` and try again, up to
+/// [`PROVIDER_RETRY_DELAYS`]. A refusal that outlasts every pause comes back
+/// as the last attempt's outcome, its message noting the attempts.
+async fn invoke_while_provider_unavailable(
+    agent: &dyn AgentGateway,
+    sleeper: &dyn Sleeper,
+    project: &str,
+    spec: CodingAgentSpec,
+    label: &str,
+) -> AgentOutcome {
+    let mut attempts = 1;
+    loop {
+        let outcome = invoke_coding_agent(agent, project, spec.clone(), label).await;
+        if !provider_unavailable(&outcome) {
+            return outcome;
+        }
+        let Some(pause) = PROVIDER_RETRY_DELAYS.get(attempts - 1) else {
+            return note_attempts(outcome, attempts);
+        };
+        tracing::warn!(
+            project,
+            attempt = attempts,
+            pause_secs = pause.as_secs(),
+            "agent provider unavailable; trying again after a pause"
+        );
+        sleeper.sleep(*pause).await;
+        attempts += 1;
+    }
+}
+
+/// Add the number of attempts to a provider-unavailable failure's message.
+fn note_attempts(outcome: AgentOutcome, attempts: usize) -> AgentOutcome {
+    match outcome {
+        AgentOutcome::AgentFailed {
+            stderr,
+            failure: Some(mut failure),
+        } => {
+            let message = failure.message.take().unwrap_or_default();
+            failure.message = Some(format!("{} ({attempts} attempts)", message.trim()));
+            AgentOutcome::AgentFailed {
+                stderr,
+                failure: Some(failure),
+            }
+        }
+        other => other,
+    }
 }
 
 /// Which workflows Foundry guards after the agent, and what a suppression
@@ -349,6 +421,7 @@ fn stopped_before_agent(ctx: &ExecutionContext<'_>, reason: String) -> TaskBlock
         uncommitted_artifacts: None,
         verdict: TaskVerdict::RunnerError { detail: reason },
         context: LoopContext::extract_from(ctx.payload),
+        failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
     };
     TaskBlockResult {
         success: false,
@@ -448,6 +521,100 @@ mod tests {
         execution_environment,
     };
 
+    const CAPACITY: &str = "Selected model is at capacity. Please try a different model.";
+
+    /// Run the execution body as `ExecutePlan` does, for an unguarded
+    /// workflow, over `agent` and a recording sleeper.
+    async fn execute_with(
+        agent: &crate::gateway::fakes::FakeAgentGateway,
+        sleeper: &crate::gateway::fakes::RecordingSleeper,
+    ) -> foundry_sdk::task_block::TaskBlockResult {
+        let shell = crate::blocks::test_helpers::passing_shell();
+        let entry = crate::blocks::test_helpers::project_entry("p", "/repo/worktree");
+        let payload =
+            serde_json::json!({"project":"p", "workflow":"prompt", "agent_provider":"codex"});
+        let context = ExecutionContext {
+            project: "p",
+            trace_id: None,
+            workflow: WorkflowType::Prompt,
+            payload: &payload,
+            throttle: Throttle::Full,
+            label: "execution",
+            retry_count: None,
+            correction_needed: true,
+        };
+        super::execute_agent_block(agent, &*shell, sleeper, &entry, &context, "work".into()).await
+    }
+
+    /// Scenario 1 of the 2026-10-19 outage: the provider is at capacity once,
+    /// then serves the session. Execution pauses and tries again, and the run
+    /// carries on as if nothing happened.
+    #[tokio::test]
+    async fn a_provider_at_capacity_is_retried_after_a_pause_and_the_run_succeeds() {
+        use crate::gateway::AgentResponse;
+        use crate::gateway::fakes::{FakeAgentGateway, RecordingSleeper};
+        let agent = FakeAgentGateway::sequence(vec![
+            AgentResponse::provider_unavailable(AgentProvider::Codex, CAPACITY),
+            AgentResponse::success("done"),
+        ]);
+        let sleeper = RecordingSleeper::new();
+
+        let result = execute_with(&agent, &sleeper).await;
+
+        assert!(result.success, "{}", result.summary);
+        assert_eq!(agent.invocations().len(), 2);
+        assert_eq!(sleeper.pauses(), vec![std::time::Duration::from_secs(30)]);
+        assert_eq!(result.events[0].payload["success"], true);
+        assert!(result.events[0].payload.get("failure_kind").is_none());
+    }
+
+    /// Scenario 2: the provider stays at capacity. Execution tries four times,
+    /// pausing 30 s, 2 min and 5 min, then reports the run as provider
+    /// unavailable with the failure kind on the event.
+    #[tokio::test]
+    async fn a_provider_that_stays_unavailable_ends_the_run_as_provider_unavailable() {
+        use crate::gateway::AgentResponse;
+        use crate::gateway::fakes::{FakeAgentGateway, RecordingSleeper};
+        let agent = FakeAgentGateway::always(AgentResponse::provider_unavailable(
+            AgentProvider::Codex,
+            CAPACITY,
+        ));
+        let sleeper = RecordingSleeper::new();
+
+        let result = execute_with(&agent, &sleeper).await;
+
+        assert!(!result.success);
+        assert_eq!(agent.invocations().len(), 4);
+        assert_eq!(sleeper.pauses(), super::PROVIDER_RETRY_DELAYS.to_vec());
+        let payload = &result.events[0].payload;
+        assert_eq!(payload["failure_kind"], "provider_unavailable");
+        assert!(payload.get("terminal").is_none(), "not terminal: {payload}");
+        assert_eq!(payload["summary"], format!("provider unavailable: {CAPACITY} (4 attempts)"));
+    }
+
+    /// Only a provider refusal is retried: an ordinary agent failure and a
+    /// terminal account state each end the run on the first attempt.
+    #[tokio::test]
+    async fn other_failures_are_not_retried() {
+        use crate::gateway::AgentResponse;
+        use crate::gateway::fakes::{FakeAgentGateway, RecordingSleeper};
+        for response in [
+            AgentResponse::failure("compile error"),
+            AgentResponse::terminal_failure(
+                AgentProvider::Claude,
+                AgentFailureKind::AccountLimit,
+                "monthly spend limit",
+            ),
+        ] {
+            let agent = FakeAgentGateway::always(response);
+            let sleeper = RecordingSleeper::new();
+            let result = execute_with(&agent, &sleeper).await;
+            assert!(!result.success);
+            assert_eq!(agent.invocations().len(), 1);
+            assert!(sleeper.pauses().is_empty());
+        }
+    }
+
     #[tokio::test]
     async fn executor_receives_its_provider_and_shared_brief_identity() {
         use crate::{blocks::test_helpers, gateway::fakes::FakeAgentGateway};
@@ -467,8 +634,15 @@ mod tests {
             retry_count: None,
             correction_needed: true,
         };
-        super::execute_agent_block(&*agent, &*shell, &entry, &context, "fix the diagnosis".into())
-            .await;
+        super::execute_agent_block(
+            &*agent,
+            &*shell,
+            &crate::gateway::fakes::RecordingSleeper::default(),
+            &entry,
+            &context,
+            "fix the diagnosis".into(),
+        )
+        .await;
         let requests = agent.invocations();
         assert_eq!(requests[0].provider, Some(AgentProvider::Codex));
         assert!(requests[0].prompt.contains("/brief/BRIEF.md"));
@@ -500,6 +674,7 @@ mod tests {
         super::execute_agent_block_in_store(
             &*agent,
             &*shell,
+            &crate::gateway::fakes::RecordingSleeper::default(),
             &entry,
             &context,
             "work".into(),
@@ -553,6 +728,7 @@ mod tests {
             let result = super::execute_agent_block_in_store(
                 &*agent,
                 &*shell,
+                &crate::gateway::fakes::RecordingSleeper::default(),
                 &entry,
                 &context,
                 "must not run".into(),
@@ -1166,6 +1342,7 @@ mod tests {
             let result = execute_agent_block(
                 &*agent,
                 &CleanProcessShellGateway,
+                &crate::gateway::fakes::RecordingSleeper::default(),
                 &entry,
                 &ctx,
                 String::new(),
@@ -1200,6 +1377,7 @@ mod tests {
             let result = execute_agent_block(
                 &*agent,
                 &CleanProcessShellGateway,
+                &crate::gateway::fakes::RecordingSleeper::default(),
                 &entry,
                 &ctx,
                 String::new(),
@@ -1249,6 +1427,7 @@ mod tests {
             let result = execute_agent_block(
                 &*allowlisting_agent(),
                 &CleanProcessShellGateway,
+                &crate::gateway::fakes::RecordingSleeper::default(),
                 &entry,
                 &ctx,
                 String::new(),
@@ -1275,6 +1454,7 @@ mod tests {
             let result = execute_agent_block(
                 &*allowlisting_agent(),
                 &CleanProcessShellGateway,
+                &crate::gateway::fakes::RecordingSleeper::default(),
                 &entry,
                 &ctx,
                 String::new(),
@@ -1322,6 +1502,7 @@ mod tests {
             let result = execute_agent_block(
                 &*agent,
                 &CleanProcessShellGateway,
+                &crate::gateway::fakes::RecordingSleeper::default(),
                 &entry,
                 &ctx,
                 String::new(),

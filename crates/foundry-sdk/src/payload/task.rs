@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::context::LoopContext;
 use crate::gates::GateResult;
+use crate::gateway::AgentFailureMetadata;
 
 /// Skeptical-review outcome for a one-shot task.
 ///
@@ -45,6 +46,14 @@ impl TaskRunCompletedPayload {
     pub fn is_unlanded_complete(&self) -> bool {
         self.verdict.is_complete() && !self.landed && self.land_blocked.is_some()
     }
+
+    /// Whether the run stopped as a runner error because the provider refused
+    /// its agent session as unavailable: no agent did the objective's work.
+    #[must_use]
+    pub fn provider_unavailable(&self) -> bool {
+        matches!(self.verdict, TaskVerdict::RunnerError { .. })
+            && self.failure.is_provider_unavailable()
+    }
 }
 
 impl TaskVerdict {
@@ -82,6 +91,11 @@ pub struct TaskReviewedPayload {
     pub gate_results: Vec<GateResult>,
     #[serde(flatten)]
     pub verdict: TaskVerdict,
+    /// The provider failure that ended the execution session, carried from
+    /// `execution_completed`. Empty (and absent on the wire) when the
+    /// provider did not refuse the session.
+    #[serde(default, flatten)]
+    pub failure: AgentFailureMetadata,
     #[serde(flatten)]
     pub context: LoopContext,
 }
@@ -194,6 +208,11 @@ pub struct TaskRunCompletedPayload {
     pub uncommitted_artifacts: Option<String>,
     #[serde(flatten)]
     pub verdict: TaskVerdict,
+    /// The provider failure that ended the execution session: `failure_kind`
+    /// `provider_unavailable` says the provider refused the session for now
+    /// and no agent did the work. Empty (and absent on the wire) otherwise.
+    #[serde(default, flatten)]
+    pub failure: AgentFailureMetadata,
     #[serde(flatten)]
     pub context: LoopContext,
 }
@@ -249,6 +268,7 @@ mod tests {
             }],
             verdict: TaskVerdict::Complete,
             context: super::LoopContext::default(),
+            failure: crate::gateway::AgentFailureMetadata::default(),
         };
         let json = serde_json::to_value(&payload).unwrap();
         assert_eq!(json["verdict"], "complete");
@@ -290,6 +310,7 @@ mod tests {
             trunk_arrivals: Vec::new(),
             verdict: TaskVerdict::Complete,
             context: super::LoopContext::default(),
+            failure: crate::gateway::AgentFailureMetadata::default(),
         };
         let json = serde_json::to_value(&payload).unwrap();
         assert_eq!(

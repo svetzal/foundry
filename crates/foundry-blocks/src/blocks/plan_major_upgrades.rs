@@ -911,6 +911,7 @@ mod tests {
             trunk_arrivals: Vec::new(),
             verdict,
             context: LoopContext::default(),
+            failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
         }
     }
 

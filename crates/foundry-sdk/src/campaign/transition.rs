@@ -1049,6 +1049,7 @@ mod tests {
             trunk_arrivals: Vec::new(),
             verdict: crate::payload::TaskVerdict::Complete,
             context: crate::payload::LoopContext::default(),
+            failure: crate::gateway::AgentFailureMetadata::default(),
         }
     }
 

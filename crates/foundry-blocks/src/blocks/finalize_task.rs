@@ -612,6 +612,7 @@ fn run_completed(
         trunk_arrivals: Vec::new(),
         verdict,
         context,
+        failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
     }
 }
 
@@ -710,6 +711,7 @@ impl SimulatedSuccess for FinalizeTask {
                     detail: error.to_string(),
                 },
                 context: LoopContext::default(),
+                failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
             }
         });
         let verdict = enforce_gate_truth(&payload);
@@ -725,6 +727,7 @@ impl SimulatedSuccess for FinalizeTask {
             trunk_arrivals: Vec::new(),
             verdict,
             context: payload.context,
+            failure: payload.failure,
         }
     }
 
@@ -760,11 +763,18 @@ impl TaskBlock for FinalizeTask {
                 .find_project(&project)
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("project '{project}' not found"))?;
+            // The provider failure that ended execution rides through to the
+            // run's result, so the campaign can tell a run that never started.
+            let carried = payload.failure.clone();
+            let finish = |mut result: TaskRunCompletedPayload| {
+                result.failure = carried.clone();
+                terminal_result(throttle, &result)
+            };
             let mut context = payload.context.clone();
             let (worktree, branch) = match task_location(&context) {
                 Ok(location) => location,
                 Err(detail) => {
-                    return terminal_result(throttle, &runner_error(&project, detail, context));
+                    return finish(runner_error(&project, detail, context));
                 }
             };
             let checkout = Path::new(&entry.path);
@@ -789,7 +799,7 @@ impl TaskBlock for FinalizeTask {
                 Err(error) => {
                     let mut result = runner_error(&project, error.to_string(), context);
                     result.proof_evidence = proof_evidence;
-                    return terminal_result(throttle, &result);
+                    return finish(result);
                 }
             };
 
@@ -826,7 +836,7 @@ impl TaskBlock for FinalizeTask {
                     result.trunk_arrivals = arrivals;
                     result.proof_evidence = proof_evidence;
                     result.uncommitted_artifacts = uncommitted_artifacts;
-                    return terminal_result(throttle, &result);
+                    return finish(result);
                 }
                 true
             } else {
@@ -849,7 +859,7 @@ impl TaskBlock for FinalizeTask {
             result.trunk_arrivals = arrivals;
             result.proof_evidence = proof_evidence;
             result.uncommitted_artifacts = uncommitted_artifacts;
-            terminal_result(throttle, &result)
+            finish(result)
         })
     }
 }
@@ -942,6 +952,7 @@ mod tests {
             }],
             verdict: TaskVerdict::Complete,
             context: LoopContext::default(),
+            failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
         };
         assert!(matches!(enforce_gate_truth(&payload), TaskVerdict::Defect { .. }));
     }
@@ -962,6 +973,7 @@ mod tests {
                     task_branch: Some(branch.to_string()),
                     ..LoopContext::default()
                 },
+                failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
             })
             .unwrap(),
         )
@@ -1002,6 +1014,7 @@ mod tests {
                     task_branch: Some(branch.to_string()),
                     ..LoopContext::default()
                 },
+                failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
             })
             .unwrap(),
         )

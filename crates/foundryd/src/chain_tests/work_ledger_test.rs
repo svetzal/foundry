@@ -1973,3 +1973,6 @@ mod campaign_carry_test;
 
 #[path = "continuation_test.rs"]
 mod continuation_test;
+
+#[path = "provider_outage_test.rs"]
+mod provider_outage_test;

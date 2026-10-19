@@ -210,6 +210,7 @@ before it started, and the local commits it did not push.
 | `workspace_base`   | object (optional)  | Where the task worktree started: `commit` (its first `HEAD`) and `trunk` (the trunk commit observed while preparing it). Absent for runs that failed before preparation and for runs that predate it |
 | `campaign`         | string (optional)  | Campaign that dispatched the task                                                          |
 | `campaign_cycle`   | integer (optional) | Campaign cycle that dispatched the task                                                    |
+| `failure_kind`     | string (optional)  | The provider failure that ended execution: `provider_unavailable` (transient: the session did not start), or the terminal `account_limit`, `account_disabled` or `authentication`. With `provider`, `message`, `api_error_status` and `terminal`. Absent when the provider did not refuse the session |
 
 Verdict-specific fields are `gaps[]`, `diagnosis`, `finding` plus `options[]`,
 or `detail`.

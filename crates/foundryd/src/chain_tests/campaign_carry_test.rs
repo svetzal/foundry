@@ -290,6 +290,7 @@ async fn a_gracefully_cancelled_campaigns_in_flight_cycle_settles_when_it_finish
                         gaps: vec!["one gap".into()],
                     },
                     context: foundry_sdk::payload::LoopContext::default(),
+                    failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
                 })
                 .unwrap(),
             )

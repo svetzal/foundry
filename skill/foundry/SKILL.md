@@ -204,6 +204,15 @@ resolves and verifies gates, and performs a skeptical read-only review. It ends
 with one structural verdict: `complete`, `remainder`, `defect`,
 `blocked_on_decision`, or `runner_error`.
 
+A provider that refuses the session as unavailable (model at capacity,
+overloaded, rate limited, HTTP 429/503/529) is retried after 30 s, 2 min and
+5 min. If every attempt is refused the task ends `runner_error` ("provider
+unavailable: ...", `failure_kind: provider_unavailable`) with no gates, no
+review and no proof check. A campaign repeats that cycle's objective under the
+same cycle number after 5, 15, 30 and 60 minutes, without forming and without
+spending budget; only after that does it record a `runner_unavailable`
+recovery, whose recheck dispatches the objective directly.
+
 Complete work with passing required gates lands on trunk. A converging
 `remainder` also lands when at least one required gate ran and every required
 gate passed; its reviewer gaps become the campaign's next objective. Every other
@@ -1062,6 +1071,9 @@ Use `campaign recover <name> --recovery <id> --evidence "<what changed>"` or
 An agent can request a recheck after an authorized operational correction.
 The daemon reassesses under existing gates, questions, holds and budgets;
 recovery records no owner decision and adds no cycles. A campaign pause stays.
+A provider outage needs no recovery while the campaign repeats the refused
+cycle by itself; the recheck of a `runner_unavailable` recovery left after
+those repeats dispatches the same objective without forming.
 New RPCs refuse older daemons without a decision or resume fallback.
 Standalone operational blockers preserve work; use `queue resume <id>` after
 correcting their prerequisite. `.foundry/blocker.json` can set `recovery_kind`

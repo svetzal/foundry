@@ -217,7 +217,59 @@ macro_rules! assert_block_meta {
 ///     pub struct MyBlock
 /// }
 /// ```
+///
+/// `with sleeper` adds a [`crate::gateway::Sleeper`] (the tokio timer in
+/// production) for blocks that pause before retrying an unavailable provider,
+/// and a `with_sleeper` builder that tests use to replace it.
 macro_rules! agent_execution_block {
+    ($(#[$meta:meta])* $vis:vis struct $name:ident with sleeper) => {
+        $(#[$meta])*
+        $vis struct $name {
+            registry: ::std::sync::Arc<::std::sync::RwLock<Registry>>,
+            agent: ::std::sync::Arc<dyn AgentGateway>,
+            shell: ::std::sync::Arc<dyn ShellGateway>,
+            sleeper: ::std::sync::Arc<dyn $crate::gateway::Sleeper>,
+        }
+
+        impl $name {
+            pub fn new(
+                agent: ::std::sync::Arc<dyn AgentGateway>,
+                registry: ::std::sync::Arc<::std::sync::RwLock<Registry>>,
+            ) -> Self {
+                Self {
+                    registry,
+                    agent,
+                    shell: ::std::sync::Arc::new(ProcessShellGateway),
+                    sleeper: ::std::sync::Arc::new($crate::gateway::TokioSleeper),
+                }
+            }
+
+            #[cfg(any(test, feature = "test-support"))]
+            pub fn with_gateways(
+                agent: ::std::sync::Arc<dyn AgentGateway>,
+                registry: ::std::sync::Arc<::std::sync::RwLock<Registry>>,
+                shell: ::std::sync::Arc<dyn ShellGateway>,
+            ) -> Self {
+                Self {
+                    registry,
+                    agent,
+                    shell,
+                    sleeper: ::std::sync::Arc::new($crate::gateway::TokioSleeper),
+                }
+            }
+
+            /// Replace the timer the block waits on between provider attempts.
+            #[cfg(any(test, feature = "test-support"))]
+            #[must_use]
+            pub fn with_sleeper(
+                mut self,
+                sleeper: ::std::sync::Arc<dyn $crate::gateway::Sleeper>,
+            ) -> Self {
+                self.sleeper = sleeper;
+                self
+            }
+        }
+    };
     ($(#[$meta:meta])* $vis:vis struct $name:ident) => {
         $(#[$meta])*
         $vis struct $name {
