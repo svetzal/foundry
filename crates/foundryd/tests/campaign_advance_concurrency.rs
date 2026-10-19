@@ -70,7 +70,15 @@ use tokio::sync::{Notify, Semaphore, broadcast};
 use tonic::Request;
 
 /// How long a control that must not wait on a formation may take.
-const PROMPT: Duration = Duration::from_secs(2);
+///
+/// A formation here parks on [`GatedAgent`] until the test releases it, so a
+/// control that wrongly waits on one never returns and trips this bound however
+/// long it is. The bound is generous so instrumented runs (`cargo tarpaulin`
+/// across the workspace) do not mistake a slow host for that deadlock.
+const PROMPT: Duration = Duration::from_secs(30);
+
+/// How long a condition the test is waiting on may take to become true.
+const SETTLE: Duration = Duration::from_secs(60);
 
 /// A decision agent that parks every invocation until the test releases it.
 struct GatedAgent {
@@ -467,7 +475,7 @@ fn landed_result(name: &str, summary: &str) -> TaskRunCompletedPayload {
 }
 
 async fn wait_until(what: &str, condition: impl Fn() -> bool) {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(SETTLE, async {
         while !condition() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
