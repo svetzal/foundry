@@ -79,7 +79,7 @@ mod release_payload_tests {
         let p: ReleaseCompletedPayload =
             serde_json::from_str(r#"{"release":"manual","new_tag":null,"success":false}"#)
                 .expect("a payload written before the field existed parses");
-        assert!(p.left_uncommitted.is_empty());
+        assert_eq!(p.left_uncommitted, [] as [String; 0]);
         let v = serde_json::to_value(&p).expect("serializable");
         assert!(
             !v.as_object().unwrap().contains_key("left_uncommitted"),

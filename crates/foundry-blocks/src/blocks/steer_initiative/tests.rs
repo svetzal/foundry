@@ -811,7 +811,7 @@ fn shared_readiness_never_admits_missing_or_skipped_registered_projects() {
         let readiness =
             admission::steering_readiness(&store, "shared", &WorkItemStore::default(), &registry)
                 .unwrap();
-        assert!(readiness.eligible.is_empty());
+        assert_eq!(readiness.eligible, [] as [std::string::String; 0]);
         assert!(!readiness.dispatch_open);
         assert!(readiness.readiness.iter().all(|member| {
             member

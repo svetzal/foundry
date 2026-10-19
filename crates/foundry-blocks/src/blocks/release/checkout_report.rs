@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn porcelain_of_a_clean_tree_is_empty() {
-        assert!(parse_porcelain_z("").is_empty());
+        assert_eq!(parse_porcelain_z(""), [] as [std::string::String; 0]);
     }
 
     #[test]

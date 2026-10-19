@@ -611,7 +611,7 @@ mod tests {
             let result = execute_with(&agent, &sleeper).await;
             assert!(!result.success);
             assert_eq!(agent.invocations().len(), 1);
-            assert!(sleeper.pauses().is_empty());
+            assert_eq!(sleeper.pauses(), [] as [std::time::Duration; 0]);
         }
     }
 
