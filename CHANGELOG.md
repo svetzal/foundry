@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.56.0] - 2026-10-19
+
 ### Fixed
 
 - A provider outage no longer stalls campaigns as if the work were wrong.
