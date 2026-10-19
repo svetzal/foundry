@@ -52,7 +52,6 @@ impl TaskBlock for RunVerifyGates {
 
         let p = parse_payload!(trigger, ExecutionCompletedPayload);
         let retry_count = p.retry_count.unwrap_or(0);
-        let failure = p.failure.clone();
 
         let workflow = WorkflowType::from_payload(&payload);
 
@@ -65,8 +64,11 @@ impl TaskBlock for RunVerifyGates {
                 .map_or_else(|| std::path::Path::new(&entry.path), std::path::Path::new);
 
             // Short-circuit: if the upstream execution block already failed (e.g. a
-            // silent no-op override), skip running the real gates and emit a synthetic
-            // failed verification so the retry / route logic fires correctly.
+            // silent no-op override, or a failed agent session), skip running the
+            // real gates and emit a synthetic failed verification so the retry /
+            // route logic fires correctly. The provider failure and the session
+            // failure ride along, so review can tell a session that never did the
+            // work from a session Foundry failed afterwards.
             if !p.success {
                 tracing::info!(
                     project = %project,
@@ -96,7 +98,7 @@ impl TaskBlock for RunVerifyGates {
                     &run_result,
                     &payload,
                     throttle,
-                    &failure,
+                    Some(&p),
                 ));
             }
 
@@ -121,6 +123,7 @@ impl TaskBlock for RunVerifyGates {
                         results: vec![],
                         execution_output: None,
                         failure: AgentFailureMetadata::default(),
+                        session_failure: None,
                         context,
                     },
                 );
@@ -136,7 +139,7 @@ impl TaskBlock for RunVerifyGates {
                 &run_result,
                 &payload,
                 throttle,
-                &AgentFailureMetadata::default(),
+                None,
             ))
         })
     }
@@ -149,7 +152,7 @@ fn build_verification_result(
     run_result: &foundry_sdk::gates::GatesRunResult,
     payload: &serde_json::Value,
     throttle: foundry_sdk::throttle::Throttle,
-    failure: &foundry_sdk::gateway::AgentFailureMetadata,
+    failed_execution: Option<&ExecutionCompletedPayload>,
 ) -> TaskBlockResult {
     let success = run_result.required_passed;
 
@@ -181,7 +184,8 @@ fn build_verification_result(
             retry_count,
             results,
             execution_output,
-            failure: failure.clone(),
+            failure: failed_execution.map(|p| p.failure.clone()).unwrap_or_default(),
+            session_failure: failed_execution.and_then(|p| p.session_failure.clone()),
             context,
         },
     )
@@ -193,7 +197,6 @@ mod tests {
 
     use foundry_sdk::event::{Event, EventType};
     use foundry_sdk::gates::{GateResult, GatesRunResult};
-    use foundry_sdk::gateway::AgentFailureMetadata;
     use foundry_sdk::registry::Registry;
     use foundry_sdk::task_block::TaskBlock;
     use foundry_sdk::throttle::Throttle;
@@ -333,7 +336,7 @@ mod tests {
             &run_result,
             &serde_json::json!({}),
             Throttle::DryRun,
-            &AgentFailureMetadata::default(),
+            None,
         );
 
         assert!(result.success);
@@ -434,6 +437,51 @@ mod tests {
         assert_eq!(result.events[0].payload["failure_kind"], "account_limit");
         assert_eq!(result.events[0].payload["terminal"], true);
         assert_eq!(result.events[0].payload["api_error_status"], 429);
+    }
+
+    /// A failed agent session reaches review as a typed signal, carrying
+    /// the session's message and whether it left work; a session Foundry
+    /// failed afterwards (iterate's silent no-op) carries none.
+    #[tokio::test]
+    async fn a_failed_session_is_forwarded_and_a_silent_no_op_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry =
+            test_helpers::registry_with_project("my-project", dir.path().to_str().unwrap());
+        let block = RunVerifyGates::with_shell(FakeShellGateway::success(), registry);
+        let failed_session = Event::new(
+            EventType::ExecutionCompleted,
+            "my-project".to_string(),
+            Throttle::Full,
+            serde_json::json!({
+                "project": "my-project", "workflow": "task", "success": false,
+                "summary": "agent unavailable: codex stream timed out",
+                "changes_detected": false,
+                "session_failure": {
+                    "message": "agent unavailable: codex stream timed out",
+                    "left_work": false
+                },
+            }),
+        );
+
+        let forwarded = block.execute(&failed_session).await.unwrap();
+
+        let payload = &forwarded.events[0].payload;
+        assert_eq!(
+            payload["session_failure"]["message"],
+            "agent unavailable: codex stream timed out"
+        );
+        assert_eq!(payload["session_failure"]["left_work"], false);
+
+        let silent = failed_execution_completed_event(
+            "my-project",
+            "agent did not modify any files (silent no-op)",
+        );
+        let not_forwarded = block.execute(&silent).await.unwrap();
+        assert!(
+            not_forwarded.events[0].payload.get("session_failure").is_none(),
+            "{}",
+            not_forwarded.events[0].payload
+        );
     }
 
     #[tokio::test]

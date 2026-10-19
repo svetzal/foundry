@@ -212,6 +212,12 @@ review and no proof check. A campaign repeats that cycle's objective under the
 same cycle number after 5, 15, 30 and 60 minutes, without forming and without
 spending budget; only after that does it record a `runner_unavailable`
 recovery, whose recheck dispatches the objective directly.
+Capacity wording the gateway left unclassified counts the same. Any other
+execution session that fails before changing a project file or writing
+`.foundry/proof.json` or `.foundry/blocker.json` also ends `runner_error` with
+the session's message, without a review or proof check; its campaign records
+a `runner_unavailable` recovery instead of forming. A failed session that did
+change files is reviewed as usual.
 
 Complete work with passing required gates lands on trunk. A converging
 `remainder` also lands when at least one required gate ran and every required

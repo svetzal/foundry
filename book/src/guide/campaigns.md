@@ -143,6 +143,22 @@ session runs, so a run that never started is never reported as a defect or as
 missing proof. Terminal account failures (spend limit, disabled account,
 revoked authentication) also skip the review and end as `runner_error`.
 
+The provider's wording counts even when the agent CLI's output was not
+classified. An unclassified failure, or an agent that could not start, whose
+message names a model at capacity, an overload or a rate limit is treated as
+`provider_unavailable` in the same way.
+
+Any other execution session that fails before it does work (an error the
+provider reports that no rule recognises, an agent that cannot start, a stream
+that times out) also ends as `runner_error`, without a review session or a
+proof check. The detail is the session's own message, for example `plan
+execution failed: <message>` or `agent unavailable: <error>`. "Before it does
+work" means the session changed no project file (changes under `.foundry/` and
+auxiliary worktree paths do not count) and left no `.foundry/proof.json` or
+`.foundry/blocker.json`. A failed session that did change files, or that wrote
+early evidence, is reviewed as usual: the proof check runs, then the reviewer.
+A session that finished but wrote no proof is still a `defect`.
+
 Two verdicts may fast-forward the registered trunk branch. A `complete` verdict
 with passing required gates lands, as does a `remainder` — the reviewer's term
 for a finite list of missing work on a _converging_ implementation — provided at
@@ -799,6 +815,11 @@ outage does not wait in `foundry queue open`. When all four repeats are
 refused, the campaign records a `runner_unavailable` recovery. Its recheck
 dispatches the same objective at once instead of forming. A provider outage
 never records `capability_unavailable` and never needs an owner decision.
+
+A cycle whose execution session failed for another reason before doing any
+work also records a `runner_unavailable` recovery, with the session's message
+as its detail. Formation is not asked to judge it, so the failure cannot turn
+into a `capability_unavailable` blocker for the objective.
 
 Formation's `LAST TYPED RUN RESULT` starts with one line that says whether the
 last run started and why it ended, for example `last run: did not start

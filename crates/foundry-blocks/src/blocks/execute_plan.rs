@@ -106,6 +106,7 @@ impl SimulatedSuccess for ExecutePlan {
                         changes_detected: Some(false),
                         files_changed: vec![],
                         failure: AgentFailureMetadata::default(),
+                        session_failure: None,
                         context,
                     },
                 )]
@@ -304,6 +305,7 @@ fn build_no_correction_result(
         changes_detected: Some(false),
         files_changed: vec![],
         failure: AgentFailureMetadata::default(),
+        session_failure: None,
         context,
     };
     tracing::info!(

@@ -399,6 +399,7 @@ See [Gate output and full logs](../guide/iteration-workflow.md#gate-output-and-f
 | `required_passed` | bool   | Whether all required gates passed                                                                 |
 | `retry_count`     | number | Current retry count (0 on first attempt)                                                          |
 | `results`         | array  | Per-gate results (name, command, passed, required, output, exit_code, duration_ms?, fix_applied?, logs?) |
+| `session_failure` | object (optional) | Present when the execution agent session itself failed: `message` (the execution summary, such as `plan execution failed: <message>` or `agent unavailable: <error>`) and `left_work` (whether the session changed files outside `.foundry/` and auxiliary worktree paths). Forwarded from `execution_completed`, which carries the same field. Absent when the session finished, including iterate's silent no-op, and on events persisted before the field was added |
 
 Each `results[]` entry includes an optional `duration_ms` field (unsigned
 integer) recording how long the gate command took in milliseconds. This field is
@@ -418,6 +419,11 @@ files under `~/.foundry/evidence/gate-logs/` that hold the complete stdout and
 stderr of each command the gate ran. The field is omitted when empty, so it is
 absent for passing gates and for events persisted before gate logs were added.
 See [Gate output and full logs](../guide/iteration-workflow.md#gate-output-and-full-logs).
+
+When the execution session failed, no gate command runs: `results` holds one
+synthetic `agent_execution` entry whose `output` is the execution summary. For a
+task, Review Task settles a failed session with `left_work: false` and no early
+evidence in the worktree as `runner_error` without a review session.
 
 **`retry_requested` payload**
 
