@@ -1220,7 +1220,10 @@ fn a_status_note_does_not_invalidate_an_inflight_assessment_or_grant_authority()
         .record_initiative_status("shared", "The verification worker is running", Utc::now())
         .unwrap();
     store.validate_steering(&snapshot).unwrap();
-    assert!(store.find_initiative("shared").unwrap().owner_decisions.is_empty());
+    assert_eq!(
+        store.find_initiative("shared").unwrap().owner_decisions,
+        [] as [crate::initiative::InitiativeOwnerDecision; 0]
+    );
     store
         .commit_steering(
             &snapshot,

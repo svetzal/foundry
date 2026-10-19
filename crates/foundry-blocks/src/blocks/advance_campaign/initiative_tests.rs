@@ -195,7 +195,7 @@ async fn initiative_status_arriving_during_formation_is_retained_without_reforma
     assert_eq!(agent.asked.load(std::sync::atomic::Ordering::SeqCst), 1);
     let store = CampaignStore::load(&path).unwrap();
     assert_eq!(store.find_initiative("both").unwrap().status_notes.len(), 1);
-    assert!(store.find_initiative("both").unwrap().owner_decisions.is_empty());
-    assert!(store.find("c").unwrap().owner_decisions.is_empty());
+    assert_eq!(store.find_initiative("both").unwrap().owner_decisions, [] as [foundry_sdk::initiative::InitiativeOwnerDecision; 0]);
+    assert_eq!(store.find("c").unwrap().owner_decisions, [] as [foundry_sdk::campaign::OwnerDecision; 0]);
     assert_eq!(store.find("c").unwrap().cycles_completed, 1);
 }

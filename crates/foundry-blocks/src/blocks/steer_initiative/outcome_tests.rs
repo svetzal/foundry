@@ -425,8 +425,14 @@ async fn premature_done_without_eligible_repairs_records_recovery_and_no_owner_q
     );
     let store = CampaignStore::load(&fixture.store).unwrap();
     let initiative = store.initiative_view("shared").unwrap();
-    assert!(initiative.open_questions.is_empty());
-    assert!(initiative.owner_decisions.is_empty());
+    assert_eq!(
+        initiative.open_questions,
+        [] as [foundry_sdk::initiative::InitiativeQuestion; 0]
+    );
+    assert_eq!(
+        initiative.owner_decisions,
+        [] as [foundry_sdk::initiative::InitiativeOwnerDecision; 0]
+    );
     let recovery = initiative.recovery.as_ref().unwrap();
     assert_ne!(
         recovery.id, "old-worker-wait",
@@ -487,8 +493,14 @@ async fn fresh_done_evidence_rechecks_a_previous_completion_precondition_without
         CampaignStore::load(&fixture.store).unwrap().initiative_view("shared").unwrap();
     assert!(initiative.completion_proposal.is_some());
     assert!(!initiative.recovery.unwrap().is_pending());
-    assert!(initiative.owner_decisions.is_empty());
-    assert!(initiative.open_questions.is_empty());
+    assert_eq!(
+        initiative.owner_decisions,
+        [] as [foundry_sdk::initiative::InitiativeOwnerDecision; 0]
+    );
+    assert_eq!(
+        initiative.open_questions,
+        [] as [foundry_sdk::initiative::InitiativeQuestion; 0]
+    );
     assert!(
         !initiative.status.is_terminal(),
         "owner completion confirmation is still required"

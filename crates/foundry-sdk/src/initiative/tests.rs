@@ -670,7 +670,7 @@ fn policy_decision_preserves_unrelated_questions_even_for_the_same_member() {
     let policy = store.initiative_view("sample").unwrap();
     assert_eq!(policy.open_questions, before.open_questions);
     assert_eq!(policy.deferred_questions, before.deferred_questions);
-    assert!(policy.owner_decisions[0].question_ids.is_empty());
+    assert_eq!(policy.owner_decisions[0].question_ids, [] as [String; 0]);
     store
         .decide_initiative_answering(
             "sample",
@@ -682,7 +682,7 @@ fn policy_decision_preserves_unrelated_questions_even_for_the_same_member() {
         .unwrap();
     let answered = store.initiative_view("sample").unwrap();
     assert_eq!(answered.open_questions, [first]);
-    assert!(answered.deferred_questions.is_empty());
+    assert_eq!(answered.deferred_questions, [] as [crate::initiative::InitiativeQuestion; 0]);
     assert_eq!(answered.owner_decisions[1].question_ids.len(), 1);
     assert!(store.enforce_can_form("one", &[]).is_err());
 }
@@ -721,7 +721,10 @@ fn answering_a_manual_question_never_clears_a_different_member_escalation() {
         .decide_initiative_answering("sample", "Use API v1", &[], &[api.id], at)
         .unwrap();
     assert_eq!(store.find("one").unwrap().status, CampaignStatus::Active);
-    assert!(store.initiative_view("sample").unwrap().open_questions.is_empty());
+    assert_eq!(
+        store.initiative_view("sample").unwrap().open_questions,
+        [] as [crate::initiative::InitiativeQuestion; 0]
+    );
 }
 
 #[test]
@@ -764,7 +767,10 @@ fn answering_escalation_keeps_other_questions_blocking_without_recreating_it() {
         .decide_initiative_answering("sample", "Use retry v2", &[], &[manual.id], at)
         .unwrap();
     assert_eq!(restored.find("one").unwrap().status, CampaignStatus::Active);
-    assert!(restored.initiative_view("sample").unwrap().open_questions.is_empty());
+    assert_eq!(
+        restored.initiative_view("sample").unwrap().open_questions,
+        [] as [crate::initiative::InitiativeQuestion; 0]
+    );
 }
 
 #[test]
@@ -811,7 +817,7 @@ fn status_notes_are_durable_context_without_authority_or_side_effects() {
     let restored = CampaignStore::load(&path).unwrap();
     let context = restored.formation_context("one", 4096).unwrap().unwrap();
     assert_eq!(context.status_notes, [note]);
-    assert!(context.owner_decisions.is_empty());
+    assert_eq!(context.owner_decisions, [] as [crate::initiative::InitiativeOwnerDecision; 0]);
     assert!(
         context
             .render_findings()

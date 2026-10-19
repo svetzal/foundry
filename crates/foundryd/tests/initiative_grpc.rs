@@ -1589,7 +1589,10 @@ async fn decisions_answer_exact_ids_and_preserve_other_questions_through_rpc() {
         .unwrap();
     assert_eq!(policy.open_questions[0].id, first.id);
     assert_eq!(policy.deferred_questions[0].id, second.id);
-    assert!(policy.owner_decisions.last().unwrap().question_ids.is_empty());
+    assert_eq!(
+        policy.owner_decisions.last().unwrap().question_ids,
+        [] as [std::string::String; 0]
+    );
     let before = std::fs::read(&path).unwrap();
     let error = client
         .record_initiative_decision(proto::DecideInitiativeRequest {
@@ -1618,7 +1621,7 @@ async fn decisions_answer_exact_ids_and_preserve_other_questions_through_rpc() {
     assert_eq!(answered.open_questions.len(), 1);
     assert_eq!(answered.open_questions[0].id, second.id);
     assert_eq!(answered.open_questions[0].opened_at, second.opened_at.to_rfc3339());
-    assert!(answered.deferred_questions.is_empty());
+    assert_eq!(answered.deferred_questions, [] as [foundryd::proto::InitiativeQuestion; 0]);
     assert_eq!(answered.owner_decisions.last().unwrap().members, ["first"]);
     assert_eq!(answered.owner_decisions.last().unwrap().question_ids, [first.id]);
     let reloaded = CampaignStore::load(&path).unwrap();
@@ -1809,7 +1812,7 @@ async fn typed_initiative_recheck_retains_questions_holds_budgets_and_records_no
         .await
         .unwrap()
         .into_inner();
-    assert!(!response.event_id.is_empty());
+    assert_ne!(response.event_id, "");
     assert_eq!(response.recovery.unwrap().kind, "missing_evidence");
     let mut restored = CampaignStore::load(&path).unwrap();
     restored
@@ -1914,8 +1917,8 @@ async fn readiness_reads_wait_for_the_outcome_and_preserve_all_controls_without_
         .initiatives;
     assert_eq!(listed[0].readiness.as_ref().unwrap().members, readiness.members);
     assert_eq!(std::fs::read(&path).unwrap(), before);
-    assert!(shown.open_questions.is_empty());
-    assert!(shown.owner_decisions.is_empty());
+    assert_eq!(shown.open_questions, [] as [foundryd::proto::InitiativeQuestion; 0]);
+    assert_eq!(shown.owner_decisions, [] as [foundryd::proto::InitiativeDecision; 0]);
     assert!(!home.path().join("work-items.json").exists());
     assert!(!home.path().join("events").exists());
 
@@ -1945,8 +1948,8 @@ async fn readiness_reads_wait_for_the_outcome_and_preserve_all_controls_without_
         .unwrap();
     assert!(consumer.ready, "{consumer:?}");
     assert!(consumer.dependencies[0].satisfied);
-    assert!(!consumer.dependencies[0].evidence.is_empty());
-    assert!(completed.open_questions.is_empty());
+    assert_ne!(consumer.dependencies[0].evidence, [] as [std::string::String; 0]);
+    assert_eq!(completed.open_questions, [] as [foundryd::proto::InitiativeQuestion; 0]);
     assert_eq!(completed.budget, shown.budget);
     assert_eq!(completed.holds, shown.holds);
     server.abort();

@@ -446,7 +446,10 @@ async fn initiative_show_reports_dependency_readiness_online_and_store_only_offl
         assert_eq!(member["ready"], false);
         assert_eq!(member["dependencies"][0]["milestone"], "completed");
         assert_eq!(member["dependencies"][0]["satisfied"], false);
-        assert!(shown["open_questions"].as_array().unwrap().is_empty());
+        assert_eq!(
+            shown["open_questions"].as_array().unwrap().as_slice(),
+            [] as [serde_json::Value; 0]
+        );
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
     let human = tokio::process::Command::new(env!("CARGO_BIN_EXE_foundry"))
