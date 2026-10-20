@@ -757,7 +757,7 @@ mod tests {
             let result = execute_with(&agent, &sleeper).await;
 
             assert_eq!(agent.invocations().len(), 1);
-            assert!(sleeper.pauses().is_empty());
+            assert_eq!(sleeper.pauses(), Vec::<std::time::Duration>::new());
             let payload = &result.events[0].payload;
             assert!(payload.get("failure_kind").is_none(), "{payload}");
             assert_eq!(payload["summary"], summary);
