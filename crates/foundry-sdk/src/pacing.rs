@@ -15,7 +15,10 @@
 //! 4. Every item in `depends_on` has settled `landed`. One that settled any
 //!    other way, or that is not in the ledger, moves the dependent to
 //!    `needs_decision` instead; that is decided before the rules above, since
-//!    no amount of waiting will change it.
+//!    waiting alone will not change it. When every dependency of such an
+//!    item is later landed, waiting or running again (a preserved dependency
+//!    whose resumed work landed, say), [`revivable_dependents`] names it and
+//!    the scheduler returns it to `queued` itself, with no owner action.
 //! 5. The item's lane is not paused.
 //!
 //! Candidates are taken in priority order: the `interactive` lane first,
@@ -464,6 +467,39 @@ pub fn evaluate(
     verdicts
 }
 
+/// The ids of the dependents a dependency decision no longer holds, in ledger
+/// order.
+///
+/// An item qualifies when the scheduler moved it to `needs_decision` for a
+/// dependency (rule 4): it never started, it still holds the root that starts
+/// it, and it waits on at least one item. It is revivable once every one of
+/// those dependencies is in the ledger and is now `landed`, waiting or
+/// running, so [`evaluate`] would no longer decide it `needs_decision`. A
+/// dependency missing from the ledger, or still settled any other way, keeps
+/// it where it is for the owner.
+#[must_use]
+pub fn revivable_dependents(items: &[WorkItem]) -> Vec<String> {
+    items
+        .iter()
+        .filter(|item| {
+            item.state == WorkItemState::NeedsDecision
+                && item.started_at.is_none()
+                && item.pending_root.is_some()
+                && !item.depends_on.is_empty()
+                && item.depends_on.iter().all(|dependency| {
+                    items.iter().find(|candidate| candidate.id == *dependency).is_some_and(
+                        |found| {
+                            found.state == WorkItemState::Landed
+                                || found.state.is_waiting()
+                                || found.is_running()
+                        },
+                    )
+                })
+        })
+        .map(|item| item.id.clone())
+        .collect()
+}
+
 /// One item as `pacing show` lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotItem {
@@ -899,6 +935,62 @@ mod tests {
                 Decision::NeedsDecision("waits on wi_gone, which is not in the ledger".to_string())
             )]
         );
+    }
+
+    fn blocked_dependent(id: &str, depends_on: &[&str]) -> WorkItem {
+        let mut item = queued(id, "beta", WorkLane::Interactive, 2);
+        item.depends_on = depends_on.iter().map(ToString::to_string).collect();
+        item.settle_needs_decision("waits on wi_a, which settled preserved", at(20));
+        item
+    }
+
+    #[test]
+    fn a_dependent_revives_once_every_dependency_is_landed_waiting_or_running() {
+        let items = vec![
+            settled("wi_a", WorkItemState::Landed),
+            queued("wi_q", "gamma", WorkLane::Interactive, 1),
+            running("wi_r", "delta", WorkItemKind::Task),
+            blocked_dependent("wi_b", &["wi_a", "wi_q", "wi_r"]),
+        ];
+        assert_eq!(revivable_dependents(&items), vec!["wi_b".to_string()]);
+    }
+
+    #[test]
+    fn a_dependent_stays_while_any_dependency_is_still_settled_otherwise_or_missing() {
+        for blocker in [
+            settled("wi_x", WorkItemState::Preserved),
+            settled("wi_x", WorkItemState::Failed),
+            settled("wi_x", WorkItemState::Cancelled),
+            settled("wi_x", WorkItemState::NeedsDecision),
+        ] {
+            let items = vec![
+                settled("wi_a", WorkItemState::Landed),
+                blocker,
+                blocked_dependent("wi_b", &["wi_a", "wi_x"]),
+            ];
+            assert!(revivable_dependents(&items).is_empty());
+        }
+        let missing = vec![blocked_dependent("wi_b", &["wi_gone"])];
+        assert!(revivable_dependents(&missing).is_empty());
+    }
+
+    #[test]
+    fn only_a_never_started_dependency_decision_with_its_root_revives() {
+        let mut started = blocked_dependent("wi_started", &["wi_a"]);
+        started.started_at = Some(at(10));
+        let mut rootless = blocked_dependent("wi_rootless", &["wi_a"]);
+        rootless.pending_root = None;
+        let independent = blocked_dependent("wi_independent", &[]);
+        let mut queued_dependent = queued("wi_queued", "beta", WorkLane::Interactive, 3);
+        queued_dependent.depends_on = vec!["wi_a".to_string()];
+        let items = vec![
+            settled("wi_a", WorkItemState::Landed),
+            started,
+            rootless,
+            independent,
+            queued_dependent,
+        ];
+        assert!(revivable_dependents(&items).is_empty());
     }
 
     #[test]

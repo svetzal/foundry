@@ -500,14 +500,21 @@ fn apply_verified(path: &Path, verified: &[(WorkItem, String)]) -> Result<Vec<Wo
     for (candidate, commit) in verified {
         // Only an item still exactly as inspected, and still open, settles. An
         // owner's close or cancel, or any other write, wins over the proof.
-        if let Some(item) = store.items.iter_mut().find(|item| **item == *candidate)
-            && item.state.is_open()
-            && let Some(disposition) = item.disposition.as_mut()
-        {
-            disposition.landed_commit = Some(commit.clone());
-            item.settle_landed(&format!("superseded by {commit}"), chrono::Utc::now());
-            settled.push(item.clone());
+        let Some(item) = store.items.iter_mut().find(|item| **item == *candidate) else {
+            continue;
+        };
+        if !item.state.is_open() {
+            continue;
         }
+        let Some(disposition) = item.disposition.as_mut() else {
+            continue;
+        };
+        disposition.landed_commit = Some(commit.clone());
+        item.settle_landed(&format!("superseded by {commit}"), chrono::Utc::now());
+        let superseded = item.id.clone();
+        settled.push(item.clone());
+        // What the superseded item resumed or continued is discharged too.
+        settled.extend(store.settle_lineage(&superseded, commit, chrono::Utc::now()));
     }
     if !settled.is_empty() {
         store.save(path)?;

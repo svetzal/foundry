@@ -987,8 +987,9 @@ message WorkItem {
     optional string not_before = 22;
     // Lineage: the open items this task follows up on (`foundry task
     // --continues`). When it lands, each one still open settles `landed` with
-    // reason `superseded by <commit> via <this id>`. Empty when it continues
-    // none. Additive.
+    // reason `superseded by <commit> via <this id>`, and so on through the
+    // lineage (`resumes` and `continues`) of every item settled that way.
+    // Empty when it continues none. Additive.
     repeated string continues = 23;
 }
 
