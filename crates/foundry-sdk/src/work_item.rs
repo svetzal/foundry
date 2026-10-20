@@ -16,6 +16,7 @@
 //! The daemon scheduler starts it when [`crate::pacing`] allows. Downstream
 //! work retains that slot until the traversal, including cleanup, completes.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -205,7 +206,7 @@ pub struct BranchCleanup {
 ///
 /// The trace id is deliberately *not* repeated here: it is known at submission
 /// and lives once, on [`WorkItem::trace_id`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkDisposition {
     /// The task branch owned by this item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -289,13 +290,16 @@ pub struct WorkItem {
     /// How it ended. `None` until it settles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disposition: Option<WorkDisposition>,
-    /// Exact preserved item this task continues.
+    /// Exact preserved item this task continues. When this item lands, that
+    /// item settles `landed` too, transitively (see
+    /// [`WorkItemStore::settle_lineage`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumes: Option<String>,
     /// Open items this task follows up on (`foundry task --continues`).
     /// Lineage only: it changes neither the task's base nor its objective.
     /// When this item lands, each one still open settles `landed` as
-    /// superseded by it.
+    /// superseded by it, and so on transitively through the lineage of every
+    /// item settled that way (see [`WorkItemStore::settle_lineage`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub continues: Vec<String>,
     /// Latest owner action. Absent on records predating owner controls.
@@ -818,7 +822,73 @@ impl WorkItemStore {
             .map(|(index, _)| index)?;
         self.items.get_mut(index)
     }
+
+    /// Settle `landed` everything the landing of `landed_id` discharges,
+    /// following lineage transitively, and return the items settled, in
+    /// settlement order (`landed_id` itself is not among them).
+    ///
+    /// The caller has already settled `landed_id` `landed` at `commit`. For it,
+    /// and then for every item this call settles, in turn:
+    ///
+    /// - its [`WorkItem::resumes`] parent settles `landed` with reason
+    ///   `resumed work landed` when it is `preserved` and has a disposition;
+    /// - each item in its [`WorkItem::continues`] that is still open settles
+    ///   `landed` with reason `superseded by <commit> via <id>`, naming the
+    ///   item that listed it (a disposition is created if it has none).
+    ///
+    /// Every item settled records `commit` as its landed commit. Only items in
+    /// `landed_id`'s project settle. Only open items ever settle, so a cycle
+    /// in the recorded lineage terminates, and an item an owner already closed
+    /// or cancelled stays exactly as it is. Preservation evidence is kept.
+    ///
+    /// Pure over the loaded store: callers apply it under
+    /// [`ledger_write_gate`] to the ledger as loaded there, so an owner's
+    /// close that reached the ledger first wins.
+    pub fn settle_lineage(
+        &mut self,
+        landed_id: &str,
+        commit: &str,
+        at: DateTime<Utc>,
+    ) -> Vec<WorkItem> {
+        let Some(project) = self.find(landed_id).map(|item| item.project.clone()) else {
+            return Vec::new();
+        };
+        let mut settled = Vec::new();
+        let mut worklist = VecDeque::from([landed_id.to_string()]);
+        while let Some(id) = worklist.pop_front() {
+            let Some((resumes, continues)) =
+                self.find(&id).map(|item| (item.resumes.clone(), item.continues.clone()))
+            else {
+                continue;
+            };
+            if let Some(parent) = resumes.as_deref().and_then(|parent| self.find_mut(parent))
+                && parent.project == project
+                && parent.state == WorkItemState::Preserved
+                && let Some(disposition) = parent.disposition.as_mut()
+            {
+                disposition.landed_commit = Some(commit.to_string());
+                parent.settle_landed(RESUMED_WORK_LANDED_REASON, at);
+                worklist.push_back(parent.id.clone());
+                settled.push(parent.clone());
+            }
+            let reason = format!("superseded by {commit} via {id}");
+            for item in self.items.iter_mut().filter(|item| {
+                continues.contains(&item.id) && item.project == project && item.state.is_open()
+            }) {
+                item.disposition.get_or_insert_with(WorkDisposition::default).landed_commit =
+                    Some(commit.to_string());
+                item.settle_landed(&reason, at);
+                worklist.push_back(item.id.clone());
+                settled.push(item.clone());
+            }
+        }
+        settled
+    }
 }
+
+/// The reason a preserved item settles `landed` with when the task that
+/// resumed it lands.
+const RESUMED_WORK_LANDED_REASON: &str = "resumed work landed";
 
 /// Whether a task run's terminal result is what settles items of `kind`.
 ///
@@ -1661,5 +1731,166 @@ mod tests {
             store.running_for_settlement(None, "alpha").is_none(),
             "no task-shaped item is running for this project"
         );
+    }
+
+    // --- lineage settlement -------------------------------------------------
+
+    fn lineage_item(id: &str, project: &str, state: WorkItemState) -> WorkItem {
+        let mut item = WorkItem::dispatched(
+            WorkItemSpec {
+                project: project.to_string(),
+                ..spec()
+            },
+            now(),
+        );
+        item.id = id.to_string();
+        item.state = state;
+        item.disposition = Some(WorkDisposition {
+            preservation_ref: Some(format!("foundry-task/{id}")),
+            ..WorkDisposition::default()
+        });
+        item
+    }
+
+    fn lineage_store(items: Vec<WorkItem>) -> WorkItemStore {
+        WorkItemStore {
+            version: WORK_ITEM_STORE_VERSION,
+            items,
+        }
+    }
+
+    fn settled_ids(settled: &[WorkItem]) -> Vec<&str> {
+        settled.iter().map(|item| item.id.as_str()).collect()
+    }
+
+    #[test]
+    fn lineage_settles_a_chain_of_resumes_and_continues_transitively() {
+        // A <- continued by B <- resumed as C <- continued by D (landed).
+        let a = lineage_item("wi_a", "alpha", WorkItemState::Failed);
+        let mut b = lineage_item("wi_b", "alpha", WorkItemState::Preserved);
+        b.continues = vec!["wi_a".to_string()];
+        let mut c = lineage_item("wi_c", "alpha", WorkItemState::NeedsDecision);
+        c.resumes = Some("wi_b".to_string());
+        let mut d = lineage_item("wi_d", "alpha", WorkItemState::Landed);
+        d.continues = vec!["wi_c".to_string()];
+        let mut store = lineage_store(vec![a, b, c, d]);
+        let at = now();
+
+        let settled = store.settle_lineage("wi_d", "abc123", at);
+
+        assert_eq!(settled_ids(&settled), vec!["wi_c", "wi_b", "wi_a"]);
+        for (id, reason) in [
+            ("wi_c", "superseded by abc123 via wi_d"),
+            ("wi_b", "resumed work landed"),
+            ("wi_a", "superseded by abc123 via wi_b"),
+        ] {
+            let item = store.find(id).unwrap();
+            assert_eq!(item.state, WorkItemState::Landed, "{id}");
+            assert_eq!(item.reason, reason, "{id}");
+            assert_eq!(item.settled_at, Some(at), "{id}");
+            let disposition = item.disposition.as_ref().unwrap();
+            assert_eq!(disposition.landed_commit.as_deref(), Some("abc123"), "{id}");
+            assert_eq!(
+                disposition.preservation_ref.as_deref(),
+                Some(format!("foundry-task/{id}").as_str()),
+                "preservation evidence is kept for {id}"
+            );
+        }
+        assert_eq!(
+            settled,
+            vec![
+                store.find("wi_c").unwrap().clone(),
+                store.find("wi_b").unwrap().clone(),
+                store.find("wi_a").unwrap().clone(),
+            ]
+        );
+    }
+
+    #[test]
+    fn lineage_creates_a_disposition_for_a_continued_item_that_has_none() {
+        let mut a = lineage_item("wi_a", "alpha", WorkItemState::Failed);
+        a.disposition = None;
+        let mut b = lineage_item("wi_b", "alpha", WorkItemState::Landed);
+        b.continues = vec!["wi_a".to_string()];
+        let mut store = lineage_store(vec![a, b]);
+
+        let settled = store.settle_lineage("wi_b", "abc123", now());
+
+        assert_eq!(settled_ids(&settled), vec!["wi_a"]);
+        let disposition = store.find("wi_a").unwrap().disposition.clone().unwrap();
+        assert_eq!(disposition.landed_commit.as_deref(), Some("abc123"));
+        assert_eq!(disposition.preservation_ref, None);
+    }
+
+    #[test]
+    fn lineage_terminates_on_a_cycle_and_settles_each_item_once() {
+        let mut a = lineage_item("wi_a", "alpha", WorkItemState::Preserved);
+        a.continues = vec!["wi_b".to_string(), "wi_c".to_string()];
+        let mut b = lineage_item("wi_b", "alpha", WorkItemState::Preserved);
+        b.continues = vec!["wi_a".to_string(), "wi_c".to_string()];
+        let mut c = lineage_item("wi_c", "alpha", WorkItemState::Landed);
+        c.continues = vec!["wi_a".to_string()];
+        c.resumes = Some("wi_b".to_string());
+        let mut store = lineage_store(vec![a, b, c]);
+
+        let settled = store.settle_lineage("wi_c", "abc123", now());
+
+        assert_eq!(settled_ids(&settled), vec!["wi_b", "wi_a"]);
+        assert_eq!(store.find("wi_b").unwrap().reason, "resumed work landed");
+        assert_eq!(store.find("wi_a").unwrap().reason, "superseded by abc123 via wi_c");
+        assert!(store.items.iter().all(|item| item.state == WorkItemState::Landed));
+    }
+
+    #[test]
+    fn lineage_leaves_a_cancelled_item_and_what_lies_behind_it_alone() {
+        let a = lineage_item("wi_a", "alpha", WorkItemState::Failed);
+        let mut b = lineage_item("wi_b", "alpha", WorkItemState::Cancelled);
+        b.continues = vec!["wi_a".to_string()];
+        let mut c = lineage_item("wi_c", "alpha", WorkItemState::Landed);
+        c.continues = vec!["wi_b".to_string()];
+        let mut store = lineage_store(vec![a.clone(), b.clone(), c]);
+
+        let settled = store.settle_lineage("wi_c", "abc123", now());
+
+        assert!(settled.is_empty());
+        assert_eq!(store.find("wi_b").unwrap(), &b, "an owner's cancel wins");
+        assert_eq!(store.find("wi_a").unwrap(), &a, "nothing landed through it");
+    }
+
+    #[test]
+    fn lineage_leaves_an_item_in_another_project_alone() {
+        let other = lineage_item("wi_other", "beta", WorkItemState::Preserved);
+        let mut c = lineage_item("wi_c", "alpha", WorkItemState::Landed);
+        c.continues = vec!["wi_other".to_string()];
+        c.resumes = Some("wi_other".to_string());
+        let mut store = lineage_store(vec![other.clone(), c]);
+
+        let settled = store.settle_lineage("wi_c", "abc123", now());
+
+        assert!(settled.is_empty());
+        assert_eq!(store.find("wi_other").unwrap(), &other);
+    }
+
+    #[test]
+    fn lineage_leaves_a_resume_parent_that_is_not_preserved_or_has_no_disposition_alone() {
+        let failed = lineage_item("wi_failed", "alpha", WorkItemState::Failed);
+        let mut bare = lineage_item("wi_bare", "alpha", WorkItemState::Preserved);
+        bare.disposition = None;
+        let mut one = lineage_item("wi_one", "alpha", WorkItemState::Landed);
+        one.resumes = Some("wi_failed".to_string());
+        let mut two = lineage_item("wi_two", "alpha", WorkItemState::Landed);
+        two.resumes = Some("wi_bare".to_string());
+        let mut store = lineage_store(vec![failed.clone(), bare.clone(), one, two]);
+
+        assert!(store.settle_lineage("wi_one", "abc123", now()).is_empty());
+        assert!(store.settle_lineage("wi_two", "abc123", now()).is_empty());
+        assert_eq!(store.find("wi_failed").unwrap(), &failed);
+        assert_eq!(store.find("wi_bare").unwrap(), &bare);
+    }
+
+    #[test]
+    fn lineage_of_an_unknown_item_settles_nothing() {
+        let mut store = lineage_store(vec![lineage_item("wi_a", "alpha", WorkItemState::Failed)]);
+        assert!(store.settle_lineage("wi_missing", "abc123", now()).is_empty());
     }
 }

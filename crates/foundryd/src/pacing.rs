@@ -9,7 +9,14 @@
 //! ## A tick
 //!
 //! 1. Under the shared ledger write gate, load the ledger, the limits and the
-//!    pause state, and [`foundry_sdk::pacing::evaluate`] every queued item.
+//!    pause state. Return to `queued` every item a dependency decision no
+//!    longer holds ([`foundry_sdk::pacing::revivable_dependents`]): one moved
+//!    to `needs_decision` because a dependency settled preserved, say, whose
+//!    dependencies have all since landed or are pending again. This is the
+//!    scheduler's own decision, so it records no operator action. Then
+//!    [`foundry_sdk::pacing::evaluate`] every queued item, the revived ones
+//!    included, so a revived item starts in the same tick when nothing else
+//!    holds it.
 //! 2. Apply the verdicts to the loaded ledger: a start moves the item to
 //!    `running` and takes its held root; a start without its optional
 //!    reservation also clears `reserved_projects`, so the running record
@@ -18,9 +25,9 @@
 //! 3. Save the ledger once. A save that fails dispatches nothing: the ledger
 //!    is the record of what started, and a start it does not record would be
 //!    a start the next restart could not see.
-//! 4. Outside the gate, announce each transition (`work_item_started`,
-//!    `work_item_settled`) through the engine, then hand each started root to
-//!    the dispatcher.
+//! 4. Outside the gate, announce each transition (`work_item_released`,
+//!    `work_item_settled`, `work_item_started`) through the engine, then hand
+//!    each started root to the dispatcher.
 //!
 //! ## When it ticks
 //!
@@ -76,6 +83,9 @@ const NO_ROOT_REASON: &str = "queued item carries no dispatch to start";
 /// What one tick changed in the ledger.
 #[derive(Debug, Default)]
 pub struct TickOutcome {
+    /// Items returned from a dependency decision to `queued` this tick, each
+    /// as released, carrying the reason the same tick's verdict gave it.
+    pub released: Vec<WorkItem>,
     /// Items moved to `running`, each with the root to dispatch.
     pub started: Vec<(WorkItem, Event)>,
     /// Items settled this tick (`needs_decision` for a dependency, or
@@ -184,6 +194,12 @@ impl PacingScheduler {
             TickOutcome::default()
         });
 
+        for item in &outcome.released {
+            self.ctx
+                .engine
+                .process(lifecycle_event(EventType::WorkItemReleased, item))
+                .await;
+        }
         for item in &outcome.settled {
             self.ctx.engine.process(lifecycle_event(EventType::WorkItemSettled, item)).await;
         }
@@ -274,14 +290,18 @@ fn apply_tick(
     };
     let limits = pacing::limits_in_force(&pacing.limits);
     let pauses = pacing::pauses_in_force(&pacing.state);
+    let revived = revive_dependents(&mut store);
     let verdicts = pacing::evaluate(&store.items, &limits, &pauses, now, repository_of);
 
     let mut outcome = TickOutcome::default();
-    let mut changed = false;
+    let mut changed = !revived.is_empty();
     for verdict in verdicts {
         let Some(item) = store.find_mut(&verdict.id) else {
             continue;
         };
+        if revived.contains(&item.id) {
+            outcome.released.push(released_record(item, &verdict.decision));
+        }
         match verdict.decision {
             decision @ (Decision::Start | Decision::StartWithoutReservation) => {
                 // The record names exactly what the running item holds: the
@@ -328,6 +348,33 @@ fn apply_tick(
         };
     }
     outcome
+}
+
+/// Return to `queued` every item a dependency decision no longer holds (see
+/// [`foundry_sdk::pacing::revivable_dependents`]), and name them.
+///
+/// The scheduler's own decision, not an owner's, so no operator action is
+/// recorded. Its dependencies are kept: each is landed or pending, and the
+/// same tick's verdict decides whether it starts or what it waits on.
+fn revive_dependents(store: &mut WorkItemStore) -> Vec<String> {
+    let revived = pacing::revivable_dependents(&store.items);
+    for id in &revived {
+        if let Some(item) = store.find_mut(id) {
+            item.release();
+        }
+    }
+    revived
+}
+
+/// How a revived item is announced: `queued`, with the reason this tick's
+/// `decision` gives it before that decision is applied.
+fn released_record(item: &WorkItem, decision: &Decision) -> WorkItem {
+    let mut released = item.clone();
+    released.reason = match decision {
+        Decision::Wait(reason) | Decision::NeedsDecision(reason) => reason.clone(),
+        Decision::Start | Decision::StartWithoutReservation => pacing::READY_REASON.to_string(),
+    };
+    released
 }
 
 /// The root that runs `item`: the admitted root's request, as a fresh event
@@ -673,6 +720,46 @@ mod tests {
             assert_eq!(announced[0].payload["state"], "needs_decision");
             assert_eq!(announced[0].payload["item_id"], "wi_b");
         }
+    }
+
+    #[tokio::test]
+    async fn a_dependent_held_for_a_decision_returns_to_the_queue_once_its_dependency_lands() {
+        let mut dependent = task("wi_b", "beta", 2);
+        dependent.depends_on = vec!["wi_a".to_string()];
+        let mut h = Harness::new(vec![task("wi_a", "alpha", 1), dependent]);
+        h.scheduler.tick().await;
+        h.settle("wi_a", WorkItemState::Preserved);
+        h.scheduler.tick().await;
+        assert_eq!(h.item("wi_b").state, WorkItemState::NeedsDecision);
+        h.drain_events();
+
+        let outcome = h.scheduler.tick().await;
+        assert!(outcome.released.is_empty(), "a still-preserved dependency holds it");
+        assert_eq!(h.item("wi_b").state, WorkItemState::NeedsDecision);
+
+        // Another item keeps beta's repository busy, so the revived dependent
+        // waits, and says why.
+        let mut store = h.ledger();
+        store.upsert(running("wi_busy", "beta", WorkItemKind::Task));
+        store.save(&h.ledger_path()).expect("save");
+        h.settle("wi_a", WorkItemState::Landed);
+        let outcome = h.scheduler.tick().await;
+
+        assert_eq!(outcome.released.len(), 1);
+        assert_eq!(outcome.released[0].state, WorkItemState::Queued);
+        assert_eq!(outcome.released[0].reason, "repository busy: wi_busy");
+        let item = h.item("wi_b");
+        assert_eq!(item.state, WorkItemState::Queued);
+        assert_eq!(item.reason, "repository busy: wi_busy");
+        assert_eq!(item.settled_at, None);
+        assert_eq!(item.operator_action, None, "the scheduler's decision, not an owner's");
+        assert_eq!(item.depends_on, vec!["wi_a".to_string()]);
+        let announced = h.drain_events();
+        assert_eq!(announced.len(), 1);
+        assert_eq!(announced[0].event_type, EventType::WorkItemReleased);
+        assert_eq!(announced[0].payload["item_id"], "wi_b");
+        assert_eq!(announced[0].payload["state"], "queued");
+        assert_eq!(h.dispatched_ids(), vec!["wi_a"]);
     }
 
     #[tokio::test]

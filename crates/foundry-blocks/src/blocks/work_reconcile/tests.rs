@@ -890,3 +890,82 @@ fn a_proof_never_settles_an_item_that_changed_after_inspection() {
     assert_eq!(store.find("wi_edited"), Some(&current[1]));
     assert_eq!(store.find("wi_unchanged").unwrap().state, WorkItemState::Landed);
 }
+
+#[test]
+fn a_superseded_item_also_settles_what_it_resumed_and_continued() {
+    use foundry_sdk::work_item::{WorkItemState, WorkItemStore};
+
+    let root = tempfile::tempdir().unwrap();
+    let ledger = root.path().join("ledger.json");
+    let earlier = chrono::Utc::now() - chrono::Duration::hours(1);
+    let reference = Some("foundry-task/preserved");
+    let original = open_item("wi_original", WorkItemState::NeedsDecision, earlier, None);
+    let parent = open_item("wi_parent", WorkItemState::Preserved, earlier, reference);
+    let mut child = open_item("wi_child", WorkItemState::Failed, earlier, reference);
+    child.resumes = Some("wi_parent".into());
+    let mut follow_up = open_item("wi_follow_up", WorkItemState::Preserved, earlier, reference);
+    follow_up.continues = vec!["wi_original".into()];
+    follow_up.settle_cancelled("owner closed", follow_up.disposition.clone(), earlier);
+    WorkItemStore {
+        version: 1,
+        items: vec![original, parent, child.clone(), follow_up.clone()],
+    }
+    .save(&ledger)
+    .unwrap();
+
+    let settled = super::apply_verified(&ledger, &[(child, "trunk-commit".to_string())]).unwrap();
+
+    assert_eq!(
+        settled.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+        vec!["wi_child", "wi_parent"]
+    );
+    let store = WorkItemStore::load(&ledger).unwrap();
+    let parent = store.find("wi_parent").unwrap();
+    assert_eq!(parent.state, WorkItemState::Landed);
+    assert_eq!(parent.reason, "resumed work landed");
+    assert_eq!(
+        parent.disposition.as_ref().unwrap().landed_commit.as_deref(),
+        Some("trunk-commit")
+    );
+    assert_eq!(
+        store.find("wi_original").unwrap().state,
+        WorkItemState::NeedsDecision,
+        "only a cancelled item names it, and nothing settles through a cancelled item"
+    );
+    assert_eq!(store.find("wi_follow_up"), Some(&follow_up));
+}
+
+#[test]
+fn a_superseded_follow_up_settles_the_items_it_continues() {
+    use foundry_sdk::work_item::{WorkItemState, WorkItemStore};
+
+    let root = tempfile::tempdir().unwrap();
+    let ledger = root.path().join("ledger.json");
+    let earlier = chrono::Utc::now() - chrono::Duration::hours(1);
+    let reference = Some("foundry-task/preserved");
+    let original = open_item("wi_original", WorkItemState::Failed, earlier, None);
+    let mut follow_up = open_item("wi_follow_up", WorkItemState::Preserved, earlier, reference);
+    follow_up.continues = vec!["wi_original".into()];
+    WorkItemStore {
+        version: 1,
+        items: vec![original, follow_up.clone()],
+    }
+    .save(&ledger)
+    .unwrap();
+
+    let settled =
+        super::apply_verified(&ledger, &[(follow_up, "trunk-commit".to_string())]).unwrap();
+
+    assert_eq!(
+        settled.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+        vec!["wi_follow_up", "wi_original"]
+    );
+    let store = WorkItemStore::load(&ledger).unwrap();
+    let original = store.find("wi_original").unwrap();
+    assert_eq!(original.state, WorkItemState::Landed);
+    assert_eq!(original.reason, "superseded by trunk-commit via wi_follow_up");
+    assert_eq!(
+        original.disposition.as_ref().unwrap().landed_commit.as_deref(),
+        Some("trunk-commit")
+    );
+}

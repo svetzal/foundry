@@ -24,8 +24,7 @@ use foundry_sdk::payload::{
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::work_item::{
-    WorkDisposition, WorkItem, WorkItemKind, WorkItemSpec, WorkItemStore, WorkLane,
-    ledger_write_gate,
+    WorkItem, WorkItemKind, WorkItemSpec, WorkItemStore, WorkLane, ledger_write_gate,
 };
 use foundry_sdk::workflow::WorkflowType;
 
@@ -407,9 +406,10 @@ impl SettleWorkItem {
                 return (Vec::new(), Vec::new());
             };
             // The exact resume parent and the items this run continues already
-            // settle through their recorded lineage when it lands. Supersession
-            // checks the remaining obligations: every open item that preserved
-            // work on a ref.
+            // settle through their recorded lineage when it lands (transitively,
+            // see `WorkItemStore::settle_lineage`). Supersession checks the
+            // remaining obligations: every open item that preserved work on a
+            // ref.
             let resumes = running.resumes.clone();
             let continues = running.continues.clone();
             store
@@ -452,7 +452,10 @@ impl SettleWorkItem {
         (verified, diagnostics)
     }
 
-    /// Settle the running item this result belongs to, and return it.
+    /// Settle the running item this result belongs to, and return it with
+    /// every other item its landing settled: its lineage (see
+    /// [`WorkItemStore::settle_lineage`]), each open item proved superseded
+    /// by trunk, and the lineage of each of those.
     ///
     /// `None` when the ledger holds no running item for the run — a task that
     /// started before the ledger existed, for one — or when the ledger cannot
@@ -469,98 +472,38 @@ impl SettleWorkItem {
         let item = store.running_for_settlement(trigger.trace_id.as_deref(), &trigger.project)?;
         item.settle_from_task_run(result, removed, Utc::now());
         let settled = item.clone();
-        let parent =
-            if result.landed && settled.state == foundry_sdk::work_item::WorkItemState::Landed {
-                settled
-                    .resumes
-                    .as_deref()
-                    .and_then(|id| {
-                        store.items.iter_mut().find(|item| {
-                            item.id == id
-                                && item.project == settled.project
-                                && item.state == foundry_sdk::work_item::WorkItemState::Preserved
-                        })
-                    })
-                    .and_then(|parent| {
-                        let commit = result
-                            .preservation_ref
-                            .as_ref()
-                            .filter(|commit| !commit.trim().is_empty())?;
-                        let disposition = parent.disposition.as_mut()?;
-                        disposition.landed_commit = Some(commit.clone());
-                        parent.settle_landed("resumed work landed", Utc::now());
-                        Some(parent.clone())
-                    })
-            } else {
-                None
-            };
-        let mut additional: Vec<_> = parent.into_iter().collect();
-        if result.landed && settled.state == foundry_sdk::work_item::WorkItemState::Landed {
-            additional.extend(settle_continued(&mut store, &settled, Utc::now()));
+        let mut additional = Vec::new();
+        let landed =
+            result.landed && settled.state == foundry_sdk::work_item::WorkItemState::Landed;
+        if landed
+            && let Some(commit) =
+                result.preservation_ref.as_ref().filter(|commit| !commit.trim().is_empty())
+        {
+            additional.extend(store.settle_lineage(&settled.id, commit, Utc::now()));
         }
-        for (candidate, commit) in verified.iter().filter(|_| {
-            result.landed
-                && settled.project == trigger.project
-                && settled.state == foundry_sdk::work_item::WorkItemState::Landed
-        }) {
+        for (candidate, commit) in
+            verified.iter().filter(|_| landed && settled.project == trigger.project)
+        {
             // Recheck the entire snapshot under the owner-controls write gate.
             // An owner cancellation or another writer must win over stale Git evidence.
-            if let Some(item) = store.items.iter_mut().find(|item| **item == *candidate)
-                && item.state.is_open()
-                && let Some(disposition) = item.disposition.as_mut()
-            {
-                disposition.landed_commit = Some(commit.clone());
-                item.settle_landed(&format!("superseded by {commit}"), Utc::now());
-                additional.push(item.clone());
+            let Some(item) = store.items.iter_mut().find(|item| **item == *candidate) else {
+                continue;
+            };
+            if !item.state.is_open() {
+                continue;
             }
+            let Some(disposition) = item.disposition.as_mut() else {
+                continue;
+            };
+            disposition.landed_commit = Some(commit.clone());
+            item.settle_landed(&format!("superseded by {commit}"), Utc::now());
+            let superseded = item.id.clone();
+            additional.push(item.clone());
+            // What the superseded item resumed or continued is discharged too.
+            additional.extend(store.settle_lineage(&superseded, commit, Utc::now()));
         }
         save_ledger(&store, &self.store_path).then_some((settled, additional))
     }
-}
-
-/// Settle `landed` every item `continuation` names in `continues` that is
-/// still open in `store`, as superseded by the continuation's landed commit,
-/// and return them.
-///
-/// Called under the ledger write gate on the ledger as loaded under it, so an
-/// owner's close or cancel that reached the ledger first wins: a continued
-/// item that is no longer open, or that belongs to another project, is left
-/// exactly as it is. Preservation evidence is kept.
-fn settle_continued(
-    store: &mut WorkItemStore,
-    continuation: &WorkItem,
-    at: chrono::DateTime<Utc>,
-) -> Vec<WorkItem> {
-    let Some(commit) = continuation
-        .disposition
-        .as_ref()
-        .and_then(|d| d.landed_commit.clone())
-        .filter(|commit| !commit.trim().is_empty())
-    else {
-        return Vec::new();
-    };
-    let reason = format!("superseded by {commit} via {}", continuation.id);
-    let mut settled = Vec::new();
-    for item in store.items.iter_mut().filter(|item| {
-        continuation.continues.contains(&item.id)
-            && item.project == continuation.project
-            && item.state.is_open()
-    }) {
-        item.disposition
-            .get_or_insert_with(|| WorkDisposition {
-                task_branch: None,
-                branch_cleanup: Vec::new(),
-                verdict: None,
-                landed_commit: None,
-                preservation_ref: None,
-                worktree: None,
-                worktree_removed: None,
-            })
-            .landed_commit = Some(commit.clone());
-        item.settle_landed(&reason, at);
-        settled.push(item.clone());
-    }
-    settled
 }
 
 /// Whether the run's isolated worktree is gone.

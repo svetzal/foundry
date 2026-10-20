@@ -1976,3 +1976,6 @@ mod continuation_test;
 
 #[path = "provider_outage_test.rs"]
 mod provider_outage_test;
+
+#[path = "lineage_settlement_test.rs"]
+mod lineage_settlement_test;
