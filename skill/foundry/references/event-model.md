@@ -227,6 +227,12 @@ and `--offline`, and all three are read-only.
 | ----------------- | ----------- |
 | `PipelineChecked` | Domain fact |
 
+### Trunk CI Watch
+
+| Event            | Category    |
+| ---------------- | ----------- |
+| `TrunkCiChecked` | Domain fact |
+
 ### Drift Scout
 
 | Event                      | Category      |
@@ -267,6 +273,7 @@ and `--offline`, and all three are read-only.
 | `ProjectMaintenanceCompleted` | `success`, `project`                                                                                                                            |
 | `MaintenanceCycleCompleted`   | `project_count`, `skipped_count`, `projects[]`, `root_event_id` (service-level fan-out only)                                                    |
 | `PipelineChecked`             | `passing`, `logs`                                                                                                                               |
+| `TrunkCiChecked`              | `project`, `item_id`, `commit`, `state` (`passed`/`failed`/`no_run`/`unavailable`), `run_url?`, `failing_jobs[]`, `follow_up?`                  |
 | `ReleaseCompleted`            | `release` ("patch"/"manual"), `new_tag`, `success`, `cve` (vuln path only), `left_uncommitted?` (failed release)                                |
 | `ReleasePipelineCompleted`    | `success`, `new_tag`                                                                                                                            |
 | `LocalInstallCompleted`       | `success`                                                                                                                                       |
