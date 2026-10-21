@@ -23,6 +23,12 @@ const TASK_SCRATCH_PROMPT: &str = "
 FOUNDRY SCRATCH: files under .foundry/ are Foundry scratch for execution evidence (logs, screenshots, harness output, proof). They never land in the repository; Foundry archives them to its evidence store. Put anything the project must keep in a normal project path, for example docs/ or the test tree, and do not make repository files reference .foundry/ paths as if they were committed.
 ";
 
+/// Every task execution gets this: Foundry, not the agent, owns what happens
+/// to the work after it lands, including the branch's CI.
+const TRUNK_CI_PROMPT: &str = "
+TRUNK CI: Foundry lands your work and then watches the branch's CI itself, so do not push, open pull requests, or poll or wait on CI.
+";
+
 const EARLY_PROOF_PROMPT: &str = r#"
 
 PROOF FIRST: before expanding fixtures, documentation, or running the full quality suite, exercise the hardest acceptance behavior through the project's public API, with its I/O boundary stubbed by an in-process test double as TEST DESIGN describes. Observe its rejecting case and corrected passing case. A marker toggle or count-only test is insufficient.
@@ -322,14 +328,15 @@ fn build_no_correction_result(
     })
 }
 
-/// What a task adds to the plan prompt: the `.foundry` scratch rule and the
-/// shared test-design rule for every task, then early proof for a campaign
+/// What a task adds to the plan prompt: the `.foundry` scratch rule, the
+/// trunk CI rule and the shared test-design rule for every task, then early proof for a campaign
 /// cycle. Iterate, maintain and prompt runs commit through other paths and get
 /// none of them.
 fn task_prompt_suffix(workflow: WorkflowType, campaign: bool) -> String {
     let mut suffix = String::new();
     if workflow == WorkflowType::Task {
         suffix.push_str(TASK_SCRATCH_PROMPT);
+        suffix.push_str(TRUNK_CI_PROMPT);
         suffix.push('\n');
         suffix.push_str(super::agent_helpers::TEST_DESIGN_GUIDANCE);
     }
@@ -931,8 +938,13 @@ mod tests {
         assert!(standalone.contains("never land in the repository"), "{standalone}");
         assert!(standalone.contains("docs/ or the test tree"), "{standalone}");
         assert!(!standalone.contains("PROOF FIRST"), "{standalone}");
+        assert!(
+            standalone.contains("watches the branch's CI itself, so do not push, open pull requests, or poll or wait on CI"),
+            "{standalone}"
+        );
 
         let campaign = super::task_prompt_suffix(WorkflowType::Task, true);
+        assert!(campaign.contains("TRUNK CI:"), "{campaign}");
         assert!(campaign.contains("files under .foundry/ are Foundry scratch"), "{campaign}");
         assert!(campaign.contains("PROOF FIRST"), "{campaign}");
         // A campaign executor that cannot reach the boundary has a recorded
