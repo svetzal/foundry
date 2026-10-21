@@ -425,7 +425,9 @@ work. Use campaign cancellation for an in-flight campaign, as described above;
 (`held`, reason `held by operator`); `foundry queue release <id>` returns a held
 item, or one in `needs_decision` over a dependency that settled some way other
 than landed, to `queued` with the scheduler's current verdict as its reason.
-They emit `work_item_held` / `work_item_released`. `foundry pacing show |
+They emit `work_item_held` / `work_item_released`. The scheduler also returns
+such an item to the queue by itself once every dependency is landed, waiting
+or running, and emits `work_item_released`. `release` refuses a `follow_up`. `foundry pacing show |
 pause | resume | drain` read and steer the stage itself; see the skill's
 "Pace the work" section.
 
@@ -443,7 +445,15 @@ action.
 
 The original obligation stays preserved until the linked task actually lands.
 Then Foundry records its landing commit and appends `work_item_settled` for the
-original. Failed, blocked, preserved and no-landing results leave it open.
+original and, transitively, for everything it resumed or continued. Failed,
+blocked, preserved and no-landing results leave it open.
+
+`queue resume` also accepts an open `follow_up` item: a standalone landing's
+remaining gaps (`obligation: remainder`, `needs_decision`) or red trunk CI
+after a landing (`obligation: trunk_ci`, `failed`, with failing jobs and the
+failed-log tail). It admits a task from current trunk whose `continues` names
+the follow-up, so its landing settles the follow-up. A later landing whose CI
+passes also settles a trunk CI follow-up.
 An original cancelled by its owner stays cancelled even if its child lands.
 Unknown ids return `NOT_FOUND`, blank inputs `INVALID_ARGUMENT`, ineligible
 states or unusable evidence `FAILED_PRECONDITION`, and persistence failures
