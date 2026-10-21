@@ -968,10 +968,10 @@ mod tests {
                 blocker,
                 blocked_dependent("wi_b", &["wi_a", "wi_x"]),
             ];
-            assert!(revivable_dependents(&items).is_empty());
+            assert_eq!(revivable_dependents(&items), Vec::<String>::new());
         }
         let missing = vec![blocked_dependent("wi_b", &["wi_gone"])];
-        assert!(revivable_dependents(&missing).is_empty());
+        assert_eq!(revivable_dependents(&missing), Vec::<String>::new());
     }
 
     #[test]
@@ -990,7 +990,7 @@ mod tests {
             independent,
             queued_dependent,
         ];
-        assert!(revivable_dependents(&items).is_empty());
+        assert_eq!(revivable_dependents(&items), Vec::<String>::new());
     }
 
     #[test]
@@ -1009,7 +1009,10 @@ mod tests {
         let items = vec![parent, follow_up];
 
         assert!(revivable_dependents(&items).is_empty(), "it holds no root to start from");
-        assert!(decisions(&items, &Limits::default(), &PauseState::default()).is_empty());
+        assert_eq!(
+            decisions(&items, &Limits::default(), &PauseState::default()),
+            Vec::<(String, Decision)>::new()
+        );
     }
 
     #[test]

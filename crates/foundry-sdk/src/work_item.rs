@@ -2398,7 +2398,7 @@ mod tests {
 
         let settled = store.settle_lineage("wi_c", "abc123", now());
 
-        assert!(settled.is_empty());
+        assert_eq!(settled, Vec::<WorkItem>::new());
         assert_eq!(store.find("wi_b").unwrap(), &b, "an owner's cancel wins");
         assert_eq!(store.find("wi_a").unwrap(), &a, "nothing landed through it");
     }
@@ -2413,7 +2413,7 @@ mod tests {
 
         let settled = store.settle_lineage("wi_c", "abc123", now());
 
-        assert!(settled.is_empty());
+        assert_eq!(settled, Vec::<WorkItem>::new());
         assert_eq!(store.find("wi_other").unwrap(), &other);
     }
 
@@ -2428,8 +2428,8 @@ mod tests {
         two.resumes = Some("wi_bare".to_string());
         let mut store = lineage_store(vec![failed.clone(), bare.clone(), one, two]);
 
-        assert!(store.settle_lineage("wi_one", "abc123", now()).is_empty());
-        assert!(store.settle_lineage("wi_two", "abc123", now()).is_empty());
+        assert_eq!(store.settle_lineage("wi_one", "abc123", now()), Vec::<WorkItem>::new());
+        assert_eq!(store.settle_lineage("wi_two", "abc123", now()), Vec::<WorkItem>::new());
         assert_eq!(store.find("wi_failed").unwrap(), &failed);
         assert_eq!(store.find("wi_bare").unwrap(), &bare);
     }
@@ -2437,7 +2437,7 @@ mod tests {
     #[test]
     fn lineage_of_an_unknown_item_settles_nothing() {
         let mut store = lineage_store(vec![lineage_item("wi_a", "alpha", WorkItemState::Failed)]);
-        assert!(store.settle_lineage("wi_missing", "abc123", now()).is_empty());
+        assert_eq!(store.settle_lineage("wi_missing", "abc123", now()), Vec::<WorkItem>::new());
     }
 
     // --- follow-ups ----------------------------------------------------------
@@ -2662,7 +2662,7 @@ mod tests {
         assert_eq!(watch.follow_up.as_deref(), Some(opened.id.as_str()));
         assert_eq!(watch.failing_jobs, vec!["test (macos)", "lint"]);
         assert_eq!(store.open_trunk_ci_follow_ups("alpha").len(), 1);
-        assert!(store.open_trunk_ci_follow_ups("beta").is_empty());
+        assert_eq!(store.open_trunk_ci_follow_ups("beta"), Vec::<&WorkItem>::new());
 
         let replay = store.apply_trunk_ci("wi_a", "aaaaaaa111", red(), fixed(70));
         assert_eq!(replay, TrunkCiApplied::default(), "a concluded watch is never applied twice");
@@ -2685,7 +2685,7 @@ mod tests {
                 "trunk CI already green at bbbbbbb (wi_b), which landed later; no follow-up opened"
             )
         );
-        assert!(store.open_trunk_ci_follow_ups("alpha").is_empty());
+        assert_eq!(store.open_trunk_ci_follow_ups("alpha"), Vec::<&WorkItem>::new());
     }
 
     #[test]
@@ -2759,11 +2759,11 @@ mod tests {
             let mut store = lineage_store(vec![watched("wi_a", "alpha", "aaaaaaa111", 0)]);
             let applied = store.apply_trunk_ci("wi_a", "aaaaaaa111", conclusion, fixed(60));
             assert_eq!(applied.opened, None);
-            assert!(applied.settled.is_empty());
+            assert_eq!(applied.settled, Vec::<WorkItem>::new());
             let watch = applied.concluded.unwrap().ci.unwrap();
             assert_eq!(watch.state, state);
             assert!(watch.detail.is_some());
-            assert!(store.trunk_ci_pending("alpha").is_empty());
+            assert_eq!(store.trunk_ci_pending("alpha"), Vec::<&WorkItem>::new());
         }
 
         let mut store = lineage_store(vec![watched("wi_a", "alpha", "aaaaaaa111", 0)]);
@@ -2857,6 +2857,6 @@ mod tests {
             store.campaigns_awaiting_trunk_ci("alpha"),
             vec![("tidy".to_string(), "wi_adv1".to_string())]
         );
-        assert!(store.campaigns_awaiting_trunk_ci("beta").is_empty());
+        assert_eq!(store.campaigns_awaiting_trunk_ci("beta"), Vec::<(String, String)>::new());
     }
 }
