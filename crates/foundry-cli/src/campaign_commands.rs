@@ -17,8 +17,8 @@ use foundry_sdk::registry::Registry;
 use crate::daemon::{connect_daemon_required, status_to_anyhow};
 use crate::proto::{
     AddCampaignRequest, AdvanceCampaignRequest, CancelCampaignRequest, CompleteCampaignRequest,
-    DecideCampaignRequest, GetCampaignRequest, ListCampaignsRequest, PauseCampaignRequest,
-    ResumeCampaignRequest, WatchRequest, foundry_client::FoundryClient,
+    DecideCampaignRequest, EditCampaignRequest, GetCampaignRequest, ListCampaignsRequest,
+    PauseCampaignRequest, ResumeCampaignRequest, WatchRequest, foundry_client::FoundryClient,
 };
 use crate::render;
 use crate::workflow_commands::WorkflowRunner;
@@ -51,23 +51,95 @@ pub async fn add_and_render(
         validate_campaign_definition(&campaign, registry_path)?;
         let mut guard = CampaignStore::lock_exclusive(store_path)?;
         let name = campaign.name.clone();
+        let note = render::campaign::gate_probes_offline_note(&campaign.done_evidence);
         guard.store.add(campaign)?;
         guard.save()?;
-        return Ok(format!("Added campaign '{name}'.\n"));
+        return Ok(format!("Added campaign '{name}'.\n{note}"));
     }
 
     let mut client =
         connect_daemon_required(addr, &campaign_offline_hint("add <definition.json>")).await?;
-    let detail = client
+    let response = client
         .add_campaign(AddCampaignRequest {
             definition_json: content,
         })
         .await
         .map_err(status_to_anyhow)?
-        .into_inner()
+        .into_inner();
+    let detail = response
         .campaign
         .ok_or_else(|| anyhow::anyhow!("daemon returned no campaign in AddCampaignResponse"))?;
-    Ok(render::campaign::campaign_detail_proto(&detail))
+    Ok(format!(
+        "{}{}",
+        render::campaign::campaign_detail_proto(&detail),
+        render::campaign::gate_probes_section(
+            &response.gate_probes,
+            response.gate_probe_error.as_deref()
+        )
+    ))
+}
+
+/// Replace a campaign's done evidence with the JSON array in `file`, the
+/// shape of a definition's `done_evidence`, recording `reason` as an owner
+/// decision. Online, the daemon also runs the new gates against trunk and the
+/// output ends with their results; `--offline` has no gate runner and says so.
+pub async fn edit_and_render(
+    store_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+    file: &Path,
+    reason: &str,
+) -> Result<String> {
+    let content = std::fs::read_to_string(file)
+        .with_context(|| format!("read done evidence {}", file.display()))?;
+    let evidence: Vec<DoneEvidence> = serde_json::from_str(&content)
+        .with_context(|| format!("parse done evidence {}", file.display()))?;
+    if reason.trim().is_empty() {
+        bail!("reason must be non-empty");
+    }
+    if offline {
+        return edit_offline_and_render(store_path, name, evidence, reason);
+    }
+
+    let mut client = connect_daemon_required(
+        addr,
+        &campaign_offline_hint(&format!("edit {name} --done-evidence <file> --reason <text>")),
+    )
+    .await?;
+    let response = client
+        .edit_campaign(EditCampaignRequest {
+            name: name.to_string(),
+            done_evidence_json: content,
+            reason: reason.to_string(),
+        })
+        .await
+        .map_err(status_to_anyhow)?
+        .into_inner();
+    let detail = response
+        .campaign
+        .ok_or_else(|| anyhow::anyhow!("daemon returned no campaign in EditCampaignResponse"))?;
+    Ok(format!(
+        "{}{}",
+        render::campaign::campaign_detail_proto(&detail),
+        render::campaign::gate_probes_section(
+            &response.gate_probes,
+            response.gate_probe_error.as_deref()
+        )
+    ))
+}
+
+pub async fn edit(
+    store_path: &Path,
+    addr: &str,
+    offline: bool,
+    name: &str,
+    file: &Path,
+    reason: &str,
+) -> Result<()> {
+    let output = edit_and_render(store_path, addr, offline, name, file, reason).await?;
+    print!("{output}");
+    Ok(())
 }
 
 pub async fn list(store_path: &Path, addr: &str, offline: bool) -> Result<()> {
@@ -222,30 +294,7 @@ pub(crate) fn detail_to_proto(campaign: &Campaign) -> crate::proto::CampaignDeta
         last_run_event_id: campaign.last_run_event_id.clone().unwrap_or_default(),
         intent_refs: campaign.intent_refs.clone(),
         context_paths: campaign.context_paths.clone(),
-        done_evidence: campaign
-            .done_evidence
-            .iter()
-            .map(|evidence| match evidence {
-                DoneEvidence::Gate {
-                    command,
-                    required,
-                    artifacts,
-                } => crate::proto::DoneEvidence {
-                    kind: "gate".to_string(),
-                    command: command.clone(),
-                    required: *required,
-                    statement: String::new(),
-                    artifacts: artifacts.clone(),
-                },
-                DoneEvidence::Review { statement } => crate::proto::DoneEvidence {
-                    kind: "review".to_string(),
-                    command: String::new(),
-                    required: false,
-                    statement: statement.clone(),
-                    artifacts: vec![],
-                },
-            })
-            .collect(),
+        done_evidence: done_evidence_to_proto(&campaign.done_evidence),
         escalation: campaign.escalation.clone(),
         owner_decisions: campaign
             .owner_decisions
@@ -254,6 +303,12 @@ pub(crate) fn detail_to_proto(campaign: &Campaign) -> crate::proto::CampaignDeta
                 decision: decision.decision.clone(),
                 authorized_by: decision.authorized_by.clone(),
                 decided_at: decision.decided_at.to_rfc3339(),
+                done_evidence_amendment: decision.done_evidence_amendment.as_ref().map(
+                    |amendment| crate::proto::DoneEvidenceAmendment {
+                        previous: done_evidence_to_proto(&amendment.previous),
+                        replacement: done_evidence_to_proto(&amendment.replacement),
+                    },
+                ),
             })
             .collect(),
         open_escalation: campaign
@@ -261,6 +316,33 @@ pub(crate) fn detail_to_proto(campaign: &Campaign) -> crate::proto::CampaignDeta
             .as_ref()
             .map(render::campaign::escalation_to_proto),
     }
+}
+
+/// Wire form of done evidence, matching what the daemon sends.
+fn done_evidence_to_proto(evidence: &[DoneEvidence]) -> Vec<crate::proto::DoneEvidence> {
+    evidence
+        .iter()
+        .map(|evidence| match evidence {
+            DoneEvidence::Gate {
+                command,
+                required,
+                artifacts,
+            } => crate::proto::DoneEvidence {
+                kind: "gate".to_string(),
+                command: command.clone(),
+                required: *required,
+                statement: String::new(),
+                artifacts: artifacts.clone(),
+            },
+            DoneEvidence::Review { statement } => crate::proto::DoneEvidence {
+                kind: "review".to_string(),
+                command: String::new(),
+                required: false,
+                statement: statement.clone(),
+                artifacts: vec![],
+            },
+        })
+        .collect()
 }
 
 /// Pause a campaign via the daemon (online path) or the campaign store
@@ -754,6 +836,24 @@ fn decide_offline_and_render(
     let rendered = render::campaign::campaign_detail(campaign);
     guard.save()?;
     Ok(rendered)
+}
+
+fn edit_offline_and_render(
+    store_path: &Path,
+    name: &str,
+    evidence: Vec<DoneEvidence>,
+    reason: &str,
+) -> Result<String> {
+    let mut guard = CampaignStore::lock_exclusive(store_path)?;
+    let campaign = guard
+        .store
+        .find_mut(name)
+        .ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
+    let note = render::campaign::gate_probes_offline_note(&evidence);
+    campaign.amend_done_evidence(evidence, reason, Utc::now())?;
+    let rendered = render::campaign::campaign_detail_proto(&detail_to_proto(campaign));
+    guard.save()?;
+    Ok(format!("{rendered}{note}"))
 }
 
 fn complete_offline_and_render(store_path: &Path, name: &str, reason: &str) -> Result<String> {
@@ -1598,6 +1698,71 @@ mod tests {
     }
 
     // -- operator origin on `foundry campaign advance` --
+
+    /// `--offline` edit applies the same transition as the daemon, renders
+    /// the amendment, and says the gates were not probed instead of
+    /// pretending they passed.
+    #[tokio::test]
+    async fn offline_edit_amends_reactivates_and_says_no_probe_ran() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("campaigns.json");
+        let mut seeded = CampaignStore::default();
+        seeded.campaigns.push(escalated_campaign_for_offline_decide());
+        seeded.save(&store).unwrap();
+        let file = dir.path().join("gates.json");
+        std::fs::write(
+            &file,
+            r#"[{"kind":"gate","command":"! rg -n 'Thread.sleep' src/test","required":true}]"#,
+        )
+        .unwrap();
+
+        let out = edit_and_render(
+            &store,
+            "http://127.0.0.1:0",
+            true,
+            "c",
+            &file,
+            "grep matched README text",
+        )
+        .await
+        .unwrap();
+
+        assert!(out.contains("Status:     active"), "{out}");
+        assert!(out.contains("Done evidence amended: grep matched README text"), "{out}");
+        assert!(
+            out.contains("    replacement: gate [required]: ! rg -n 'Thread.sleep' src/test"),
+            "{out}"
+        );
+        assert!(out.contains("not probed: --offline has no gate runner"), "{out}");
+        let campaign = CampaignStore::load(&store).unwrap().find("c").unwrap().clone();
+        assert_eq!(campaign.status, CampaignStatus::Active);
+        assert!(campaign.owner_decisions.last().unwrap().done_evidence_amendment.is_some());
+    }
+
+    /// The reason and the file are checked before the store is touched.
+    #[tokio::test]
+    async fn edit_refuses_a_blank_reason_or_unparsable_file_without_touching_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("campaigns.json");
+        let mut seeded = CampaignStore::default();
+        seeded.campaigns.push(escalated_campaign_for_offline_decide());
+        seeded.save(&store).unwrap();
+        let before = std::fs::read(&store).unwrap();
+        let good = dir.path().join("gates.json");
+        std::fs::write(&good, r#"[{"kind":"review","statement":"done"}]"#).unwrap();
+        let bad = dir.path().join("bad.json");
+        std::fs::write(&bad, r#"{"kind":"review"}"#).unwrap();
+
+        let blank = edit_and_render(&store, "http://127.0.0.1:0", true, "c", &good, " ")
+            .await
+            .unwrap_err();
+        assert!(blank.to_string().contains("reason must be non-empty"), "{blank}");
+        let unparsable = edit_and_render(&store, "http://127.0.0.1:0", true, "c", &bad, "why")
+            .await
+            .unwrap_err();
+        assert!(unparsable.to_string().contains("parse done evidence"), "{unparsable}");
+        assert_eq!(std::fs::read(&store).unwrap(), before);
+    }
 
     #[test]
     fn advance_request_carries_the_hostname_and_the_origin_text_verbatim() {

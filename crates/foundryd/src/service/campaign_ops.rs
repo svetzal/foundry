@@ -1,4 +1,4 @@
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use chrono::Utc;
@@ -20,13 +20,15 @@ use foundry_sdk::work_source::WorkSourceKind;
 use crate::workflow_tracker::ActiveWorkflow;
 
 use crate::proto::{
-    AddCampaignRequest, AddCampaignResponse, AdvanceCampaignRequest, AdvanceCampaignResponse,
-    Campaign as ProtoCampaign, CampaignDetail, CampaignEscalation as ProtoCampaignEscalation,
-    CampaignWorkInFlight, CancelCampaignRequest, CancelCampaignResponse, CompleteCampaignRequest,
-    CompleteCampaignResponse, DecideCampaignRequest, DecideCampaignResponse,
-    DoneEvidence as ProtoDoneEvidence, GetCampaignRequest, GetCampaignResponse,
-    ListCampaignsRequest, ListCampaignsResponse, OwnerDecision as ProtoOwnerDecision,
-    PauseCampaignRequest, PauseCampaignResponse, ResumeCampaignRequest, ResumeCampaignResponse,
+    AddCampaignRequest, AdvanceCampaignRequest, AdvanceCampaignResponse, Campaign as ProtoCampaign,
+    CampaignDetail, CampaignEscalation as ProtoCampaignEscalation,
+    CampaignGateProbe as ProtoCampaignGateProbe, CampaignWorkInFlight, CancelCampaignRequest,
+    CancelCampaignResponse, CompleteCampaignRequest, CompleteCampaignResponse,
+    DecideCampaignRequest, DecideCampaignResponse, DoneEvidence as ProtoDoneEvidence,
+    DoneEvidenceAmendment as ProtoDoneEvidenceAmendment, EditCampaignRequest, GetCampaignRequest,
+    GetCampaignResponse, ListCampaignsRequest, ListCampaignsResponse,
+    OwnerDecision as ProtoOwnerDecision, PauseCampaignRequest, PauseCampaignResponse,
+    ResumeCampaignRequest, ResumeCampaignResponse,
 };
 
 pub(super) fn campaign_to_proto(campaign: &foundry_sdk::campaign::Campaign) -> ProtoCampaign {
@@ -156,6 +158,12 @@ fn owner_decision_to_proto(decision: &OwnerDecision) -> ProtoOwnerDecision {
         decision: decision.decision.clone(),
         authorized_by: decision.authorized_by.clone(),
         decided_at: decision.decided_at.to_rfc3339(),
+        done_evidence_amendment: decision.done_evidence_amendment.as_ref().map(|amendment| {
+            ProtoDoneEvidenceAmendment {
+                previous: amendment.previous.iter().map(done_evidence_to_proto).collect(),
+                replacement: amendment.replacement.iter().map(done_evidence_to_proto).collect(),
+            }
+        }),
     }
 }
 
@@ -266,10 +274,12 @@ fn validate_context_path(
     Ok(())
 }
 
+/// Validate a definition against the registry and return its project's
+/// registered checkout path.
 fn validate_campaign_definition(
     campaign: &foundry_sdk::campaign::Campaign,
     registry: &Arc<RwLock<Registry>>,
-) -> Result<(), Status> {
+) -> Result<PathBuf, Status> {
     campaign.validate().map_err(|error| invalid_argument(error.to_string()))?;
     let registry = registry.read().map_err(|e| {
         tracing::error!(error = %e, "validate_campaign_definition: registry lock poisoned");
@@ -281,20 +291,87 @@ fn validate_campaign_definition(
             campaign.name, campaign.project
         ))
     })?;
-    validate_context_paths(campaign, Path::new(&project.path))
+    validate_context_paths(campaign, Path::new(&project.path))?;
+    Ok(PathBuf::from(&project.path))
 }
 
+/// What to probe once a campaign's done evidence is saved: its gates, and the
+/// registered checkout formation runs them in. `repo` is `None` when the
+/// project is not registered, so there is nowhere to run them.
+pub(super) struct GateProbeTarget {
+    campaign: String,
+    project: String,
+    repo: Option<PathBuf>,
+    evidence: Vec<DoneEvidence>,
+}
+
+/// Run a campaign's gate done evidence against its registered trunk checkout,
+/// through `shell`, the daemon's injected gateway, with the runner formation
+/// uses ([`foundry_blocks::campaign_gates::run_done_gates`]).
+///
+/// The results are advisory: they never refuse the add or edit that asked for
+/// them, which has already been saved. A fault that stops the probe is
+/// recorded in the second value rather than failing the RPC.
+pub(super) async fn probe_done_gates(
+    shell: &dyn foundry_blocks::gateway::ShellGateway,
+    target: &GateProbeTarget,
+) -> (Vec<ProtoCampaignGateProbe>, Option<String>) {
+    if !target.evidence.iter().any(|item| matches!(item, DoneEvidence::Gate { .. })) {
+        return (Vec::new(), None);
+    }
+    let Some(repo) = &target.repo else {
+        return (
+            Vec::new(),
+            Some(format!(
+                "project '{}' is not registered; the done gates were not probed",
+                target.project
+            )),
+        );
+    };
+    match foundry_blocks::campaign_gates::run_done_gates(shell, repo, &target.evidence).await {
+        Ok(results) => (results.iter().map(gate_probe_to_proto).collect(), None),
+        Err(error) => {
+            tracing::warn!(campaign = %target.campaign, %error, "done gate probe failed");
+            (Vec::new(), Some(format!("done gate probe failed: {error}")))
+        }
+    }
+}
+
+fn gate_probe_to_proto(result: &foundry_sdk::gates::GateResult) -> ProtoCampaignGateProbe {
+    let (output, truncated) = foundry_blocks::campaign_gates::probe_excerpt(&result.output);
+    ProtoCampaignGateProbe {
+        name: result.name.clone(),
+        command: result.command.clone(),
+        required: result.required,
+        passed: result.passed,
+        exit_code: result.exit_code,
+        output,
+        truncated,
+        logs: result.logs.clone(),
+    }
+}
+
+/// Add a campaign definition and return what to probe.
+///
+/// The store lock is held only to add and save; the caller runs the probe
+/// after it is released, so a slow gate never blocks other campaign work.
 pub(super) fn add(
     campaigns_path: &Path,
     registry: &Arc<RwLock<Registry>>,
     request: Request<AddCampaignRequest>,
-) -> Result<Response<AddCampaignResponse>, Status> {
+) -> Result<(CampaignDetail, GateProbeTarget), Status> {
     let definition_json = request.into_inner().definition_json;
     let campaign: foundry_sdk::campaign::Campaign = serde_json::from_str(&definition_json)
         .map_err(|source| {
             invalid_argument(format!("campaign definition JSON is invalid: {source}"))
         })?;
-    validate_campaign_definition(&campaign, registry)?;
+    let repo = validate_campaign_definition(&campaign, registry)?;
+    let target = GateProbeTarget {
+        campaign: campaign.name.clone(),
+        project: campaign.project.clone(),
+        repo: Some(repo),
+        evidence: campaign.done_evidence.clone(),
+    };
 
     let mut guard = lock_store_exclusive(campaigns_path)?;
     let name = campaign.name.clone();
@@ -309,9 +386,65 @@ pub(super) fn add(
             .ok_or_else(|| Status::internal("campaign disappeared before save"))?,
     );
     guard.save().map_err(map_save_error)?;
-    Ok(Response::new(AddCampaignResponse {
-        campaign: Some(detail),
-    }))
+    Ok((detail, target))
+}
+
+/// Replace a campaign's done evidence on its owner's authority, and return
+/// what to probe.
+///
+/// The rules live in [`foundry_sdk::campaign::Campaign::amend_done_evidence`].
+/// Replacement evidence a definition could not declare is `INVALID_ARGUMENT`,
+/// as it is for add; every other refusal is `FAILED_PRECONDITION` and saves
+/// nothing. `now` is the time the owner decision records. No event is
+/// emitted: like `decide`, this is a non-terminal owner action whose
+/// auditable record is the append-only owner decision on the campaign.
+pub(super) fn edit(
+    campaigns_path: &Path,
+    registry: &Arc<RwLock<Registry>>,
+    request: EditCampaignRequest,
+    now: chrono::DateTime<Utc>,
+) -> Result<(CampaignDetail, GateProbeTarget), Status> {
+    let reason = request.reason.trim().to_string();
+    if reason.is_empty() {
+        return Err(Status::invalid_argument("reason must be non-empty"));
+    }
+    let evidence: Vec<DoneEvidence> = serde_json::from_str(&request.done_evidence_json)
+        .map_err(|source| invalid_argument(format!("done evidence JSON is invalid: {source}")))?;
+    let name = request.name;
+
+    let mut guard = lock_store_exclusive(campaigns_path)?;
+    let campaign = guard
+        .store
+        .find_mut(&name)
+        .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
+    campaign
+        .amend_done_evidence(evidence.clone(), &reason, now)
+        .map_err(|error| match error {
+            TransitionError::InvalidDoneEvidence { .. } => invalid_argument(error.to_string()),
+            other => map_transition_error(&other),
+        })?;
+    let detail = campaign_to_detail(campaign);
+    let project = campaign.project.clone();
+    guard.save().map_err(map_save_error)?;
+    drop(guard);
+
+    let repo = registry
+        .read()
+        .map_err(|e| {
+            tracing::error!(error = %e, "edit: registry lock poisoned");
+            Status::internal("registry lock poisoned")
+        })?
+        .find_project(&project)
+        .map(|entry| PathBuf::from(&entry.path));
+    Ok((
+        detail,
+        GateProbeTarget {
+            campaign: name,
+            project,
+            repo,
+            evidence,
+        },
+    ))
 }
 
 /// Read one campaign's full detail by exact name.
@@ -1227,6 +1360,7 @@ mod tests {
             agent_provider: Some("claude".to_string()),
             last_run_event_id: Some("evt-99".to_string()),
             owner_decisions: vec![OwnerDecision {
+                done_evidence_amendment: None,
                 decision: "Proceed with the migration.".to_string(),
                 authorized_by: "alice".to_string(),
                 decided_at: chrono::DateTime::parse_from_rfc3339("2026-07-18T10:00:00Z")

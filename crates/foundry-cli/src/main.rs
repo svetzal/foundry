@@ -433,6 +433,25 @@ enum CampaignCommands {
         #[arg(long, default_value_t = 0)]
         add_cycles: u64,
     },
+    /// Replace a campaign's done evidence with an auditable owner reason
+    /// \[mutates\]
+    ///
+    /// The file holds a JSON array in the shape of a definition's
+    /// `done_evidence`. The change is recorded as an owner decision that keeps
+    /// the previous and the new evidence. An escalated campaign returns to
+    /// active, so its next advance re-forms against the new gates. Online, the
+    /// new gates run once against trunk and their results are printed
+    /// (example: `foundry campaign edit atlas --done-evidence gates.json --reason "grep matched README text"`)
+    Edit {
+        name: String,
+        /// JSON file with the replacement done-evidence array
+        #[arg(long, value_name = "FILE")]
+        done_evidence: std::path::PathBuf,
+        /// Why the evidence changes; formation reads it as a binding owner
+        /// decision
+        #[arg(long)]
+        reason: String,
+    },
     /// Mark an authorized campaign complete with an auditable reason
     Complete {
         name: String,
@@ -1000,6 +1019,14 @@ async fn handle_campaign_command(
             campaign_commands::decide(campaigns_path, addr, offline, &name, &decision, add_cycles)
                 .await
         }
+        CampaignCommands::Edit {
+            name,
+            done_evidence,
+            reason,
+        } => {
+            campaign_commands::edit(campaigns_path, addr, offline, &name, &done_evidence, &reason)
+                .await
+        }
         CampaignCommands::Complete { name, reason } => {
             campaign_commands::complete(campaigns_path, addr, offline, &name, &reason).await
         }
@@ -1227,6 +1254,46 @@ mod cli_surface_tests {
                 assert_eq!(origin.as_deref(), Some("by hand"));
             }
             _ => panic!("expected the campaign advance subcommand"),
+        }
+    }
+
+    #[test]
+    fn campaign_edit_requires_a_done_evidence_file_and_a_reason() {
+        let cli = Cli::try_parse_from([
+            "foundry",
+            "campaign",
+            "edit",
+            "atlas",
+            "--done-evidence",
+            "gates.json",
+            "--reason",
+            "the grep matched README text",
+        ])
+        .expect("parse");
+        match cli.command {
+            Commands::Campaign(CampaignCommands::Edit {
+                name,
+                done_evidence,
+                reason,
+            }) => {
+                assert_eq!(name, "atlas");
+                assert_eq!(done_evidence, std::path::PathBuf::from("gates.json"));
+                assert_eq!(reason, "the grep matched README text");
+            }
+            _ => panic!("expected the campaign edit subcommand"),
+        }
+        for missing in [
+            vec!["foundry", "campaign", "edit", "atlas", "--reason", "why"],
+            vec![
+                "foundry",
+                "campaign",
+                "edit",
+                "atlas",
+                "--done-evidence",
+                "gates.json",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(&missing).is_err(), "{missing:?} must be refused");
         }
     }
 

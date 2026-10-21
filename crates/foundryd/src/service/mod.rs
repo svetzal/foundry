@@ -15,19 +15,20 @@ use crate::proto::{
     AddCampaignRequest, AddCampaignResponse, AdvanceCampaignRequest, AdvanceCampaignResponse,
     CampaignReportResponse, CancelCampaignRequest, CancelCampaignResponse, CancelWorkItemRequest,
     CancelWorkItemResponse, CloseWorkItemRequest, CloseWorkItemResponse, CompleteCampaignRequest,
-    CompleteCampaignResponse, DecideCampaignRequest, DecideCampaignResponse, EmitRequest,
-    EmitResponse, GetCampaignRequest, GetCampaignResponse, GetPacingRequest, GetPacingResponse,
-    GetWorkItemRequest, GetWorkItemResponse, HistoryRequest, HistoryResponse, HoldWorkItemRequest,
-    HoldWorkItemResponse, ListCampaignsRequest, ListCampaignsResponse, ListWorkItemEventsRequest,
-    ListWorkItemEventsResponse, ListWorkItemsRequest, ListWorkItemsResponse, PauseCampaignRequest,
-    PauseCampaignResponse, PausePacingRequest, PausePacingResponse, RegistryAddRequest,
-    RegistryAddResponse, RegistryEditRequest, RegistryEditResponse, RegistryListRequest,
-    RegistryListResponse, RegistryRemoveRequest, RegistryRemoveResponse, RegistryShowRequest,
-    RegistryShowResponse, ReleaseWorkItemRequest, ReleaseWorkItemResponse, ResumeCampaignRequest,
-    ResumeCampaignResponse, ResumePacingRequest, ResumePacingResponse, SentinelDisableRequest,
-    SentinelDisableResponse, SentinelEnableRequest, SentinelEnableResponse, SentinelListRequest,
-    SentinelListResponse, SentinelShowRequest, SentinelShowResponse, SpanRequest, SpanResponse,
-    StatusRequest, StatusResponse, TraceRequest, TraceResponse, WatchRequest, WatchResponse,
+    CompleteCampaignResponse, DecideCampaignRequest, DecideCampaignResponse, EditCampaignRequest,
+    EditCampaignResponse, EmitRequest, EmitResponse, GetCampaignRequest, GetCampaignResponse,
+    GetPacingRequest, GetPacingResponse, GetWorkItemRequest, GetWorkItemResponse, HistoryRequest,
+    HistoryResponse, HoldWorkItemRequest, HoldWorkItemResponse, ListCampaignsRequest,
+    ListCampaignsResponse, ListWorkItemEventsRequest, ListWorkItemEventsResponse,
+    ListWorkItemsRequest, ListWorkItemsResponse, PauseCampaignRequest, PauseCampaignResponse,
+    PausePacingRequest, PausePacingResponse, RegistryAddRequest, RegistryAddResponse,
+    RegistryEditRequest, RegistryEditResponse, RegistryListRequest, RegistryListResponse,
+    RegistryRemoveRequest, RegistryRemoveResponse, RegistryShowRequest, RegistryShowResponse,
+    ReleaseWorkItemRequest, ReleaseWorkItemResponse, ResumeCampaignRequest, ResumeCampaignResponse,
+    ResumePacingRequest, ResumePacingResponse, SentinelDisableRequest, SentinelDisableResponse,
+    SentinelEnableRequest, SentinelEnableResponse, SentinelListRequest, SentinelListResponse,
+    SentinelShowRequest, SentinelShowResponse, SpanRequest, SpanResponse, StatusRequest,
+    StatusResponse, TraceRequest, TraceResponse, WatchRequest, WatchResponse,
     foundry_server::Foundry,
 };
 use crate::trace_store::TraceStore;
@@ -93,6 +94,10 @@ pub struct FoundryService {
     /// Poked after an admission whose ledger write follows its own
     /// announcement, so the scheduler ticks at once (see `crate::pacing`).
     pacing_wake: Arc<Notify>,
+    /// Runs campaign done gates against trunk when an owner adds a campaign
+    /// or edits its done evidence. The process shell unless
+    /// [`Self::with_shell`] injects another.
+    shell: Arc<dyn foundry_blocks::gateway::ShellGateway>,
 }
 
 impl FoundryService {
@@ -147,7 +152,17 @@ impl FoundryService {
             scheduler_reload: stores.scheduler_reload,
             pacing: PacingPaths::from_env(),
             pacing_wake: Arc::new(Notify::new()),
+            shell: Arc::new(foundry_blocks::gateway::ProcessShellGateway),
         }
+    }
+
+    /// Run campaign done-gate probes through `shell` instead of the process
+    /// shell. Tests inject a fake; the daemon passes the gateway its blocks
+    /// use.
+    #[must_use]
+    pub fn with_shell(mut self, shell: Arc<dyn foundry_blocks::gateway::ShellGateway>) -> Self {
+        self.shell = shell;
+        self
     }
 
     /// Read and write the pacing files at `pacing`, and poke `wake` (the
@@ -736,8 +751,36 @@ impl Foundry for FoundryService {
         &self,
         request: Request<AddCampaignRequest>,
     ) -> Result<Response<AddCampaignResponse>, Status> {
-        self.campaign_operation(move |path, ctx| campaign_ops::add(path, &ctx.registry, request))
-            .await
+        let (detail, target) = self
+            .campaign_operation(move |path, ctx| campaign_ops::add(path, &ctx.registry, request))
+            .await?;
+        let (gate_probes, gate_probe_error) =
+            campaign_ops::probe_done_gates(&*self.shell, &target).await;
+        Ok(Response::new(AddCampaignResponse {
+            campaign: Some(detail),
+            gate_probes,
+            gate_probe_error,
+        }))
+    }
+
+    async fn edit_campaign(
+        &self,
+        request: Request<EditCampaignRequest>,
+    ) -> Result<Response<EditCampaignResponse>, Status> {
+        let request = request.into_inner();
+        let now = chrono::Utc::now();
+        let (detail, target) = self
+            .campaign_operation(move |path, ctx| {
+                campaign_ops::edit(path, &ctx.registry, request, now)
+            })
+            .await?;
+        let (gate_probes, gate_probe_error) =
+            campaign_ops::probe_done_gates(&*self.shell, &target).await;
+        Ok(Response::new(EditCampaignResponse {
+            campaign: Some(detail),
+            gate_probes,
+            gate_probe_error,
+        }))
     }
 
     async fn list_campaigns(

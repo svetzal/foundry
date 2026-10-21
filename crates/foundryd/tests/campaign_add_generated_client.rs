@@ -359,3 +359,115 @@ async fn generated_client_add_persist_failure_returns_internal_and_store_unchang
     assert!(!err.message().contains(&campaigns_path.display().to_string()));
     assert_eq!(std::fs::read(&campaigns_path).expect("read campaigns after failure"), before);
 }
+
+// -- done-gate probes at add --
+
+fn gate_definition_json(name: &str) -> String {
+    serde_json::json!({
+        "name": name,
+        "project": "daemon-project",
+        "mission": "Remove real timeouts from the test suite",
+        "authorized_by": "owner",
+        "done_evidence": [
+            {"kind": "gate", "command": "! rg -n Timeout src", "required": true},
+            {"kind": "review", "statement": "tests use an injected clock"},
+            {"kind": "gate", "command": "cargo test", "required": false}
+        ]
+    })
+    .to_string()
+}
+
+fn command_result(stdout: &str, exit_code: i32) -> foundry_blocks::shell::CommandResult {
+    foundry_blocks::shell::CommandResult {
+        stdout: stdout.to_string(),
+        stderr: String::new(),
+        exit_code,
+        success: exit_code == 0,
+    }
+}
+
+/// The author sees each gate's verdict and the lexical gate's matches in the
+/// add response, run through the injected shell in the registered checkout
+/// formation uses. A failing gate does not refuse the add.
+#[tokio::test]
+async fn add_returns_each_done_gate_probed_against_the_registered_checkout() {
+    let repo_root = tempfile::tempdir().expect("repo tempdir");
+    let shell = foundry_sdk::gateway::fakes::FakeShellGateway::sequence(vec![
+        command_result("src/net.rs:3: java.net.SocketTimeoutException", 1),
+        command_result("test result: ok", 0),
+    ]);
+    let (service, tmp_campaigns, _tmp_traces) = make_service(repo_root.path());
+    let addr = start_server(service.with_shell(shell.clone())).await;
+
+    let mut client = FoundryClient::connect(addr).await.expect("connect");
+    let response = client
+        .add_campaign(AddCampaignRequest {
+            definition_json: gate_definition_json("alpha"),
+        })
+        .await
+        .expect("a failing done gate does not refuse the add")
+        .into_inner();
+
+    assert_eq!(response.gate_probe_error, None);
+    let probes = response.gate_probes;
+    assert_eq!(probes.len(), 2, "{probes:?}");
+    assert_eq!(probes[0].name, "campaign_done_1");
+    assert_eq!(probes[0].command, "! rg -n Timeout src");
+    assert!(probes[0].required);
+    assert!(!probes[0].passed);
+    assert_eq!(probes[0].exit_code, 1);
+    assert!(
+        probes[0].output.contains("java.net.SocketTimeoutException"),
+        "the matches reach the author: {}",
+        probes[0].output
+    );
+    assert_eq!(probes[1].name, "campaign_done_3", "review items keep their position");
+    assert!(!probes[1].required);
+    assert!(probes[1].passed);
+
+    let invocations = shell.invocations();
+    assert_eq!(invocations.len(), 2);
+    for (invocation, command) in invocations.iter().zip(["! rg -n Timeout src", "cargo test"]) {
+        assert_eq!(invocation.working_dir, repo_root.path().display().to_string());
+        assert_eq!(invocation.args, vec!["-c".to_string(), command.to_string()]);
+    }
+
+    let stored = CampaignStore::load(tmp_campaigns.path()).expect("load campaigns");
+    assert_eq!(stored.find("alpha").expect("stored campaign").status, CampaignStatus::Staged);
+}
+
+/// Review-only evidence has nothing to run, and a refused add probes nothing.
+#[tokio::test]
+async fn add_probes_nothing_without_gates_or_when_refused() {
+    let repo_root = tempfile::tempdir().expect("repo tempdir");
+    let shell = foundry_sdk::gateway::fakes::FakeShellGateway::success();
+    let (service, _tmp_campaigns, _tmp_traces) = make_service(repo_root.path());
+    let addr = start_server(service.with_shell(shell.clone())).await;
+    let mut client = FoundryClient::connect(addr).await.expect("connect");
+
+    let review_only = client
+        .add_campaign(AddCampaignRequest {
+            definition_json: add_definition_json("review-only"),
+        })
+        .await
+        .expect("add review-only campaign")
+        .into_inner();
+    assert!(review_only.gate_probes.is_empty(), "{:?}", review_only.gate_probes);
+    assert_eq!(review_only.gate_probe_error, None);
+
+    client
+        .add_campaign(AddCampaignRequest {
+            definition_json: gate_definition_json("gated"),
+        })
+        .await
+        .expect("first add");
+    let probed = shell.invocations().len();
+    let err = client
+        .add_campaign(AddCampaignRequest {
+            definition_json: gate_definition_json("gated"),
+        })
+        .await
+        .expect_err("duplicate add is refused");
+    assert_eq!(err.code(), Code::AlreadyExists);
+    assert_eq!(shell.invocations().len(), probed, "a refused add runs no gate");
+}

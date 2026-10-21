@@ -229,6 +229,7 @@ foundry campaign advance <name> [--origin <text>]
 foundry campaign pause <name>
 foundry campaign decide <name> --decision "Use the generated tonic client path."
 foundry campaign decide <name> --decision "Keep the current design." --add-cycles 1
+foundry campaign edit <name> --done-evidence <evidence.json> --reason "The grep matched a timeout class name."
 foundry campaign complete <name> --reason "Production evidence confirms the mission shipped."
 foundry campaign cancel <name> --reason "Superseded by the new architecture."
 foundry campaign cancel <name> --reason "Wrong approach." --now --discard-work
@@ -238,12 +239,13 @@ foundry campaign resume <name> --add-cycles 2
 
 | Subcommand | Daemon required?       | Description                                                                 |
 | ---------- | ---------------------- | --------------------------------------------------------------------------- |
-| `add`      | Yes unless `--offline` | Validate and atomically add one JSON definition                             |
+| `add`      | Yes unless `--offline` | Validate and atomically add one JSON definition, then run each done gate once against trunk and print the result and output |
 | `list`     | Yes unless `--offline` | Show campaign status and cycle counts                                       |
 | `show`     | Yes unless `--offline` | Show the complete stored campaign record; for an escalated campaign, why it waits on its owner; the owner's options as command lines; then its ledger cycles. `--json` emits one object |
 | `advance`  | Yes                    | Re-evaluate done evidence and dispatch one next task, complete, or escalate. `--origin <text>` records a free-text note, beside this machine's hostname, on the work item of the cycle it dispatches |
 | `pause`    | Yes unless `--offline` | Halt future automatic and manual advancement                                |
 | `decide`   | Yes unless `--offline` | Record a binding owner decision on an active, paused or escalated campaign. An escalated campaign also returns to active, and `--add-cycles <n>` extends its budget |
+| `edit`     | Yes unless `--offline` | Replace an authorized campaign's done evidence with a JSON array, as an auditable owner decision. An escalated campaign returns to active. The new gates run once against trunk and print |
 | `complete` | Yes unless `--offline` | Mark an authorized campaign complete with an auditable owner reason         |
 | `cancel`   | Yes unless `--offline` | Stop a campaign permanently, optionally killing the in-flight cycle         |
 | `resume`   | Yes unless `--offline` | Return an authorized paused or escalated campaign to active state           |
@@ -251,7 +253,7 @@ foundry campaign resume <name> --add-cycles 2
 The store defaults to `~/.foundry/campaigns.json` and can be overridden with
 `FOUNDRY_CAMPAIGNS_PATH`. A definition requires non-empty `name`, `project`, and
 `mission` fields plus at least one `done_evidence` item. `authorized_by` is
-required before `decide`, `complete`, or `resume`. `decide` appends an owner
+required before `decide`, `edit`, `complete`, or `resume`. `decide` appends an owner
 decision record, and every later formation run treats it as binding. On an
 `active` or `paused` campaign it changes nothing else: the status, budget and
 any stored run result stay as they are. `--add-cycles` is refused there; use
@@ -263,7 +265,7 @@ completed or cancelled campaign, and when its text and owner repeat the
 campaign's latest decision, so a retry records nothing twice.
 `resume --add-cycles N` is required when an exhausted budget needs an explicit
 positive extension.
-Without `--offline`, all nine campaign subcommands are daemon-authoritative:
+Without `--offline`, all ten campaign subcommands are daemon-authoritative:
 they require a reachable `foundryd` daemon, fail without touching the
 client-side `FOUNDRY_CAMPAIGNS_PATH` if the daemon is unreachable, and render
 the daemon's typed response or workflow output directly rather than re-reading

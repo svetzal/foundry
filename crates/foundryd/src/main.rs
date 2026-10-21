@@ -290,7 +290,8 @@ async fn main() -> Result<()> {
             scheduler_reload,
         },
     )
-    .with_pacing(pacing, pacing_wake);
+    .with_pacing(pacing, pacing_wake)
+    .with_shell(Arc::new(foundry_blocks::gateway::ProcessShellGateway));
 
     tracing::info!("foundryd listening on {addr}");
 

@@ -39,7 +39,9 @@ cmx-core = { version = "0.4", features = ["test-support"] }
 foundryd = { path = "../foundryd" }
 foundry-sdk = { workspace = true, features = ["test-support"] }
 foundry-engine = { workspace = true }
-foundry-blocks = { workspace = true }
+# test-support sends failed-gate logs from in-process daemon tests to the
+# temp directory instead of the real ~/.foundry/evidence.
+foundry-blocks = { workspace = true, features = ["test-support"] }
 tokio-stream = { workspace = true }
 
 [lints]

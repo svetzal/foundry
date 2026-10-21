@@ -114,6 +114,7 @@ fn render_review_prompt(objective: &str, gates: &str) -> String {
          MECHANICAL GATE RESULTS:\n{gates}\n\n\
          Decide exactly one typed verdict. COMPLETE requires every objective and evidence requirement to be satisfied and all REQUIRED gates to pass. OPTIONAL gate failures are advisory and must not block COMPLETE unless the objective itself explicitly makes that result acceptance evidence. This review runs before Finalize Task: tracked modifications and untracked new files are both valid deliverable changes and Finalize Task commits them after a COMPLETE verdict, so do not reject work merely because it is untracked or uncommitted. Files under .foundry/ are Foundry scratch and never land, so a deliverable that cites .foundry/ paths as repository content, or that leaves durable project material only under .foundry/, is a defect. Tests that mask identifiers, compare only counts, bypass the project's public API, or otherwise cannot detect the stated defect do not count. When the objective requires proof through a public or generated boundary, at least one test must drive that boundary the way a caller does and assert its observable request or response, with I/O stubbed in process at the transport or gateway; a double that replaces the code under test or mocks library internals is insufficient. Do not demand real servers, sockets, live services or wall-clock timing as proof. Use REMAINDER only for a finite list of missing work on a converging implementation. Use DEFECT for a faulty approach or regression. Use BLOCKED_ON_RECOVERY for a missing operational capability, access, environment or evidence, with a typed recovery kind and exact missing prerequisite. Use BLOCKED_ON_DECISION when reality exposes a genuine product/policy choice that makes the objective unsatisfiable as written.\n\n\
          {test_design}\n\n\
+         {seam_review}\n\n\
          End with exactly one JSON object in a fenced json block, using one of these shapes:\n\
          {{\"verdict\":\"complete\"}}\n\
          {{\"verdict\":\"remainder\",\"gaps\":[\"specific gap\"]}}\n\
@@ -121,8 +122,15 @@ fn render_review_prompt(objective: &str, gates: &str) -> String {
          {{\"verdict\":\"blocked_on_recovery\",\"kind\":\"capability_unavailable\",\"detail\":\"missing prerequisite\"}}\n\
          {{\"verdict\":\"blocked_on_decision\",\"finding\":\"finding\",\"options\":[\"option\"]}}",
         test_design = super::agent_helpers::TEST_DESIGN_GUIDANCE,
+        seam_review = SEAM_REVIEW_RULE,
     ))
 }
+
+/// How review applies the shared rule's seam pre-authorization. The shared
+/// rule tells executors they may add a seam; without this sentence a reviewer
+/// could still read a new constructor parameter or initializer as scope creep,
+/// or read the pre-authorization as permission to change the public API.
+const SEAM_REVIEW_RULE: &str = "SEAMS IN REVIEW: accept an internal (non-public) injection seam for a clock, sleeper, transport or scheduler that removes real network or temporal or ordering coupling, when the public API and default production behaviour are unchanged and no dependency is added. It is in scope; never return DEFECT or BLOCKED_ON_DECISION for it. A public API change the objective does not license is a DEFECT, even when it was made for testability.";
 
 fn build_review_prompt(objective: &str, gate_results: &[foundry_sdk::gates::GateResult]) -> String {
     let gates = render_gates(gate_results);
@@ -1278,6 +1286,31 @@ mod tests {
             ),
             "{campaign}"
         );
+    }
+
+    /// Campaigns stopped on owner questions about clock and transport seams.
+    /// Every review carries the shared pre-authorization and states how to
+    /// apply it: accept an internal seam, and still reject an unlicensed public
+    /// API change as a defect.
+    #[test]
+    fn every_task_review_accepts_internal_seams_and_rejects_unlicensed_public_api_changes() {
+        for campaign in [false, true] {
+            let prompt = super::task_review_prompt("ship the slice", &[], campaign);
+            for phrase in super::super::agent_helpers::SEAM_AUTHORIZATION_PHRASES {
+                assert!(prompt.contains(phrase), "missing {phrase}: {prompt}");
+            }
+            assert!(prompt.contains(super::SEAM_REVIEW_RULE), "{prompt}");
+            assert!(
+                prompt.contains("never return DEFECT or BLOCKED_ON_DECISION for it"),
+                "{prompt}"
+            );
+            assert!(
+                prompt.contains(
+                    "A public API change the objective does not license is a DEFECT, even when it was made for testability"
+                ),
+                "{prompt}"
+            );
+        }
     }
 
     /// Finalize Task commits nothing under `.foundry/`, so every task review,
