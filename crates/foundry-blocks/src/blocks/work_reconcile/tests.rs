@@ -747,9 +747,23 @@ async fn assert_open_items_settle_when_superseded(squashed: bool) {
     );
     // Dependency-blocked before it ever ran: nothing preserved, not broken.
     let unrun = open_item("wi_never_ran", WorkItemState::NeedsDecision, earlier, None);
+    // A follow-up holds an obligation, not work on a ref: nothing to prove.
+    let follow_up = foundry_sdk::work_item::FollowUp {
+        of: "wi_landed_parent".into(),
+        commit: Some(trunk.clone()),
+        obligation: foundry_sdk::work_item::FollowUpObligation::Remainder {
+            gaps: vec!["one gap".into()],
+        },
+    }
+    .into_item(&open_item("wi_landed_parent", WorkItemState::Landed, earlier, None), earlier);
     let ledger = root.path().join("ledger.json");
     let mut items = settling.to_vec();
-    items.extend([cancelled.clone(), blocked.clone(), unrun.clone()]);
+    items.extend([
+        cancelled.clone(),
+        blocked.clone(),
+        unrun.clone(),
+        follow_up.clone(),
+    ]);
     WorkItemStore { version: 1, items }.save(&ledger).unwrap();
     let block = ReconcileWork::new(
         registry_with_project("regression", checkout.to_str().unwrap()),
@@ -795,15 +809,13 @@ async fn assert_open_items_settle_when_superseded(squashed: bool) {
     assert_eq!(store.find(&cancelled.id), Some(&cancelled));
     assert_eq!(store.find(&blocked.id), Some(&blocked));
     assert_eq!(store.find(&unrun.id), Some(&unrun));
+    assert_eq!(store.find(&follow_up.id), Some(&follow_up), "a follow-up is left alone");
     assert!(report.findings.iter().any(|f| f.identity == blocked.id
         && f.category == "unresolved"
         && f.detail.contains("no commit made after the item started")));
-    assert!(
-        !report
-            .findings
-            .iter()
-            .any(|f| f.identity == unrun.id || f.identity == cancelled.id)
-    );
+    assert!(!report.findings.iter().any(|f| f.identity == unrun.id
+        || f.identity == cancelled.id
+        || f.identity == follow_up.id));
     assert_eq!(report.broken_items, 0);
 }
 

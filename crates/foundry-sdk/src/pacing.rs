@@ -994,6 +994,25 @@ mod tests {
     }
 
     #[test]
+    fn an_open_follow_up_is_never_revived_or_scheduled() {
+        let parent = settled("wi_parent", WorkItemState::Landed);
+        let follow_up = crate::work_item::FollowUp {
+            of: "wi_parent".to_string(),
+            commit: Some("landedcommit".to_string()),
+            obligation: crate::work_item::FollowUpObligation::Remainder {
+                gaps: vec!["one gap".to_string()],
+            },
+        }
+        .into_item(&parent, at(2));
+        assert_eq!(follow_up.state, WorkItemState::NeedsDecision);
+        assert_eq!(follow_up.started_at, None);
+        let items = vec![parent, follow_up];
+
+        assert!(revivable_dependents(&items).is_empty(), "it holds no root to start from");
+        assert!(decisions(&items, &Limits::default(), &PauseState::default()).is_empty());
+    }
+
+    #[test]
     fn a_paused_lane_holds_only_its_own_items() {
         let items = vec![
             queued("wi_i", "alpha", WorkLane::Interactive, 1),

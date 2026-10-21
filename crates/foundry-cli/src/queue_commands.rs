@@ -531,6 +531,22 @@ fn item_to_proto(item: &WorkItem) -> ProtoWorkItem {
         depends_on: item.depends_on.clone(),
         not_before: item.not_before.map(|at| at.to_rfc3339()),
         continues: item.continues.clone(),
+        follow_up: item.follow_up.as_ref().map(follow_up_to_proto),
+    }
+}
+
+/// Wire form of a follow-up's obligation, matching what the daemon would have sent.
+fn follow_up_to_proto(
+    follow_up: &foundry_sdk::work_item::FollowUp,
+) -> crate::proto::WorkItemFollowUp {
+    let gaps = match &follow_up.obligation {
+        foundry_sdk::work_item::FollowUpObligation::Remainder { gaps } => gaps.clone(),
+    };
+    crate::proto::WorkItemFollowUp {
+        of: follow_up.of.clone(),
+        commit: follow_up.commit.clone(),
+        obligation: follow_up.obligation.tag().to_string(),
+        gaps,
     }
 }
 
@@ -594,7 +610,8 @@ pub async fn cancel_item(
     Ok(())
 }
 
-/// Resume preserved work via the daemon; never read or write client stores.
+/// Resume preserved work, or an open follow-up, via the daemon; never read or
+/// write client stores.
 ///
 /// `after` and `not_before` are the owner's pacing constraints for the new
 /// item: the ids it waits on, and the earliest time (RFC 3339, or a duration
@@ -893,6 +910,35 @@ mod tests {
         assert_eq!(wire.settled_at, None);
         assert_eq!(wire.verdict, None);
         assert_eq!(wire.worktree_removed, None);
+    }
+
+    #[test]
+    fn offline_load_carries_a_follow_ups_obligation_and_none_for_other_items() {
+        let parent = item("wi_parent", "alpha", WorkItemState::Landed, 5);
+        let follow_up = foundry_sdk::work_item::FollowUp {
+            of: "wi_parent".to_string(),
+            commit: Some("landedcommit".to_string()),
+            obligation: foundry_sdk::work_item::FollowUpObligation::Remainder {
+                gaps: vec!["one gap".to_string()],
+            },
+        }
+        .into_item(&parent, at(6));
+        let tmp = NamedTempFile::new().expect("tempfile");
+        store(vec![parent, follow_up]).save(tmp.path()).expect("save ledger");
+
+        let items = load_offline(tmp.path()).expect("load ledger");
+        let wire = items.iter().find(|item| item.kind == "follow_up").expect("the follow-up");
+        assert_eq!(
+            wire.follow_up,
+            Some(crate::proto::WorkItemFollowUp {
+                of: "wi_parent".to_string(),
+                commit: Some("landedcommit".to_string()),
+                obligation: "remainder".to_string(),
+                gaps: vec!["one gap".to_string()],
+            })
+        );
+        let parent = items.iter().find(|item| item.id == "wi_parent").expect("the parent");
+        assert_eq!(parent.follow_up, None);
     }
 
     // ── offline command paths ─────────────────────────────────────────────────

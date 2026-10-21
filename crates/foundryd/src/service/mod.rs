@@ -47,7 +47,7 @@ mod registry_ops;
 mod sentinel_ops;
 mod session_recovery;
 mod tracing_ops;
-mod work_item_ops;
+pub(crate) mod work_item_ops;
 pub(crate) mod work_ledger;
 
 /// The Arc cluster shared between `spawn_workflow`, `spawn_scheduler`, and
@@ -2308,6 +2308,7 @@ mod tests {
             operator_action: None,
             resumes: None,
             continues: Vec::new(),
+            follow_up: None,
             depends_on: Vec::new(),
             not_before: None,
             pending_root: None,
@@ -2695,6 +2696,7 @@ mod tests {
             operator_action: None,
             resumes: None,
             continues: Vec::new(),
+            follow_up: None,
             depends_on: Vec::new(),
             not_before: None,
             pending_root: None,

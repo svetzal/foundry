@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use tonic::{Request, Response, Status};
 
 use foundry_sdk::error::StoreError;
-use foundry_sdk::work_item::{WorkItem, WorkItemState, WorkItemStore};
+use foundry_sdk::work_item::{WorkItem, WorkItemKind, WorkItemState, WorkItemStore};
 use foundry_sdk::work_item_events::{WorkItemEventRecord, read_work_item_events};
 use foundry_sdk::work_source::{WorkSource, WorkSourceKind};
 
@@ -188,6 +188,22 @@ fn item_to_proto(item: &WorkItem) -> ProtoWorkItem {
         depends_on: item.depends_on.clone(),
         not_before: item.not_before.map(|at| at.to_rfc3339()),
         continues: item.continues.clone(),
+        follow_up: item.follow_up.as_ref().map(follow_up_to_proto),
+    }
+}
+
+/// Wire form of a follow-up's obligation.
+fn follow_up_to_proto(
+    follow_up: &foundry_sdk::work_item::FollowUp,
+) -> crate::proto::WorkItemFollowUp {
+    let gaps = match &follow_up.obligation {
+        foundry_sdk::work_item::FollowUpObligation::Remainder { gaps } => gaps.clone(),
+    };
+    crate::proto::WorkItemFollowUp {
+        of: follow_up.of.clone(),
+        commit: follow_up.commit.clone(),
+        obligation: follow_up.obligation.tag().to_string(),
+        gaps,
     }
 }
 
@@ -448,10 +464,36 @@ pub(super) async fn hold_item(
 
 /// Whether an owner may release `item` back to the queue: it is held, or the
 /// scheduler moved it to `needs_decision` before it ever started (a
-/// dependency settled some way other than `landed`).
+/// dependency settled some way other than `landed`) and it still holds the
+/// root the scheduler would start it from.
+///
+/// A follow-up is `needs_decision` and never started too, but it holds no
+/// root: released, the scheduler could only fail it. It is resumed instead.
 fn releasable(item: &WorkItem) -> bool {
     item.state == WorkItemState::Held
-        || (item.state == WorkItemState::NeedsDecision && item.started_at.is_none())
+        || (item.state == WorkItemState::NeedsDecision
+            && item.started_at.is_none()
+            && item.pending_root.is_some())
+}
+
+/// Refuse to release `item` unless [`releasable`], naming the remedy for a
+/// follow-up.
+fn require_releasable(item: &WorkItem) -> Result<(), Status> {
+    let id = &item.id;
+    if item.kind == WorkItemKind::FollowUp {
+        return Err(Status::failed_precondition(format!(
+            "work item '{id}' is a follow-up, which is not released; \
+             `foundry queue resume {id}` admits a task that continues it"
+        )));
+    }
+    if !releasable(item) {
+        return Err(Status::failed_precondition(format!(
+            "work item '{id}' cannot be released from {}; only a held item, or one \
+             waiting on a decision about a dependency, can",
+            item.state.tag()
+        )));
+    }
+    Ok(())
 }
 
 /// Owner release: a held item, or one waiting on a decision about a
@@ -492,13 +534,7 @@ pub(super) async fn release_item(
             .iter_mut()
             .find(|item| item.id == id)
             .ok_or_else(|| Status::not_found(format!("work item '{id}' not found")))?;
-        if !releasable(item) {
-            return Err(Status::failed_precondition(format!(
-                "work item '{id}' cannot be released from {}; only a held item, or one \
-                 waiting on a decision about a dependency, can",
-                item.state.tag()
-            )));
-        }
+        require_releasable(item)?;
         item.operator_action = Some(foundry_sdk::work_item::WorkItemOperatorAction {
             command: "release".to_string(),
             origin: operator_origin,
@@ -518,7 +554,7 @@ pub(super) async fn release_item(
         store.save(&path).map_err(|error| {
             Status::internal(format!("failed to persist work-item state: {error}"))
         })?;
-        Ok(item)
+        Ok::<_, Status>(item)
     })
     .await
     .map_err(|error| Status::internal(format!("work-item mutation did not finish: {error}")))??;
@@ -669,7 +705,7 @@ pub(super) enum ResumeSource {
 /// What an owner asked the scheduler to respect for a new item: the items it
 /// waits on and the earliest time it may start.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct ScheduleHints {
+pub(crate) struct ScheduleHints {
     pub(super) depends_on: Vec<String>,
     pub(super) not_before: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -755,8 +791,11 @@ pub(super) fn require_open_continuations(
 }
 
 /// Admit a continuation to the queue; the pacing scheduler starts it.
+///
+/// `id` is preserved work (resumed from its preservation ref) or an open
+/// follow-up (continued from current trunk); see [`admit_resume_with_campaigns`].
 #[tracing::instrument(skip_all, fields(item_id = %id))]
-pub(super) async fn resume_item(
+pub(crate) async fn resume_item(
     path: &Path,
     campaigns_path: &Path,
     ctx: &super::RuntimeContext,
@@ -801,6 +840,9 @@ pub(super) async fn admit_resume(
     .await
 }
 
+/// Durable admission of the task that continues the open item `id`: a
+/// preserved item (resumed from its preservation ref) or an open follow-up
+/// (continued from current trunk). See [`continuation_child`].
 pub(super) async fn admit_resume_with_campaigns(
     path: &Path,
     campaigns_path: &Path,
@@ -838,47 +880,7 @@ pub(super) async fn admit_resume_with_campaigns(
         let parent = store
             .find(&id)
             .ok_or_else(|| Status::not_found(format!("work item '{id}' not found")))?;
-        if parent.state != WorkItemState::Preserved {
-            return Err(Status::failed_precondition("only preserved work can be resumed"));
-        }
-        if parent.objective.trim().is_empty() {
-            return Err(Status::failed_precondition("preserved work has no objective"));
-        }
-        if let ResumeSource::Nightly {
-            project,
-            package,
-            target,
-        } = &source
-            && (parent.project != *project
-                || foundry_blocks::dependency_updates::majors::parse_objective(&parent.objective)
-                    != Some((package.clone(), target.clone(), project.clone())))
-        {
-            return Err(Status::failed_precondition(
-                "preserved upgrade identity changed since planning",
-            ));
-        }
-        let entry = registry
-            .read()
-            .map_err(|_| Status::internal("registry lock poisoned"))?
-            .find_project(&parent.project)
-            .cloned()
-            .ok_or_else(|| Status::failed_precondition("project is no longer registered"))?;
-        let base = parent
-            .disposition
-            .as_ref()
-            .and_then(|d| d.preservation_ref.as_ref())
-            .filter(|reference| !reference.trim().is_empty())
-            .ok_or_else(|| Status::failed_precondition("preserved work has no preservation ref"))?
-            .clone();
-        validate_preservation(&entry.path, &base)?;
-        let mut child = resume_child(
-            parent,
-            &base,
-            match source {
-                ResumeSource::Owner(origin) => Some(origin),
-                ResumeSource::Nightly { .. } => None,
-            },
-        );
+        let mut child = continuation_child(parent, source, &registry)?;
         attach_initiative_context(parent, &campaigns, &mut child)?;
         child.depends_on.clone_from(&hints.depends_on);
         child.not_before = hints.not_before;
@@ -888,7 +890,7 @@ pub(super) async fn admit_resume_with_campaigns(
         store.save(&path).map_err(|error| {
             Status::internal(format!("failed to persist work-item state: {error}"))
         })?;
-        Ok(child)
+        Ok::<_, Status>(child)
     })
     .await
     .map_err(|error| Status::internal(format!("resume admission did not finish: {error}")))??;
@@ -898,6 +900,80 @@ pub(super) async fn admit_resume_with_campaigns(
         .await
         .map_err(|error| Status::internal(format!("resume admission did not finish: {error}")))??;
     Ok(item)
+}
+
+/// Whether `parent` is a follow-up an owner may continue: one still open in
+/// `needs_decision` or `failed`.
+fn is_resumable_follow_up(parent: &WorkItem) -> bool {
+    parent.kind == WorkItemKind::FollowUp
+        && matches!(parent.state, WorkItemState::NeedsDecision | WorkItemState::Failed)
+}
+
+/// The queued task that continues `parent`, or why it cannot be continued.
+///
+/// Preserved work resumes from its preservation ref: the child records
+/// `resumes`, and the ref must still be usable. An open follow-up has no ref:
+/// its child starts from current trunk and records `continues`, so its
+/// landing settles the follow-up through lineage. Only an owner continues a
+/// follow-up; the nightly majors lane resumes preserved upgrades alone.
+fn continuation_child(
+    parent: &WorkItem,
+    source: ResumeSource,
+    registry: &std::sync::Arc<std::sync::RwLock<foundry_sdk::registry::Registry>>,
+) -> Result<WorkItem, Status> {
+    let follow_up = is_resumable_follow_up(parent);
+    if parent.state != WorkItemState::Preserved && !follow_up {
+        return Err(Status::failed_precondition(
+            "only preserved work or an open follow-up can be resumed",
+        ));
+    }
+    if parent.objective.trim().is_empty() {
+        return Err(Status::failed_precondition(if follow_up {
+            "the follow-up has no objective"
+        } else {
+            "preserved work has no objective"
+        }));
+    }
+    if let ResumeSource::Nightly {
+        project,
+        package,
+        target,
+    } = &source
+    {
+        if follow_up {
+            return Err(Status::failed_precondition("only an owner can resume a follow-up"));
+        }
+        if parent.project != *project
+            || foundry_blocks::dependency_updates::majors::parse_objective(&parent.objective)
+                != Some((package.clone(), target.clone(), project.clone()))
+        {
+            return Err(Status::failed_precondition(
+                "preserved upgrade identity changed since planning",
+            ));
+        }
+    }
+    let entry = registry
+        .read()
+        .map_err(|_| Status::internal("registry lock poisoned"))?
+        .find_project(&parent.project)
+        .cloned()
+        .ok_or_else(|| Status::failed_precondition("project is no longer registered"))?;
+    let operator_origin = match source {
+        ResumeSource::Owner(origin) => Some(origin),
+        ResumeSource::Nightly { .. } => None,
+    };
+    if follow_up {
+        return Ok(follow_up_child(parent, operator_origin));
+    }
+    let base = parent
+        .disposition
+        .as_ref()
+        .and_then(|d| d.preservation_ref.as_ref())
+        .filter(|reference| !reference.trim().is_empty())
+        .ok_or_else(|| Status::failed_precondition("preserved work has no preservation ref"))?
+        .clone();
+    validate_preservation(&entry.path, &base)?;
+    Ok(resume_child(parent, &base, operator_origin))
 }
 
 /// Claim the queued continuation only after its lifecycle events are durable.
@@ -1014,22 +1090,67 @@ fn staged_rejection(child: &WorkItem) -> WorkItem {
     rejected
 }
 
-/// The task-workflow root a continuation `item` is started from: the
-/// original objective, run from the preservation ref `base`, carrying the
+/// The task-workflow root a continuation `item` is started from: its
+/// objective, run from the preservation ref `base` when there is one and from
+/// current trunk otherwise, naming the items it `continues`, and carrying the
 /// item's typed source so the chain below it says what dispatched the work.
 ///
 /// It is held on the queued item; the scheduler's started root names the
 /// item, so the admission block records nothing for it.
-fn continuation_root(item: &WorkItem, base: &str) -> foundry_sdk::event::Event {
+fn continuation_root(item: &WorkItem, base: Option<&str>) -> foundry_sdk::event::Event {
+    let mut payload = serde_json::json!({"project": item.project, "prompt": item.objective,
+        "workflow": "task"});
+    if let Some(base) = base {
+        payload["base_ref"] = serde_json::json!(base);
+    }
+    if !item.continues.is_empty() {
+        payload["continues"] = serde_json::json!(item.continues);
+    }
     foundry_sdk::event::Event::new(
         foundry_sdk::event::EventType::ExecutionRequested,
         item.project.clone(),
         foundry_sdk::throttle::Throttle::Full,
-        serde_json::json!({"project": item.project, "prompt": item.objective,
-            "workflow": "task", "base_ref": base}),
+        payload,
     )
     .with_trace_id(item.trace_id.clone())
     .with_source(item.source.clone())
+}
+
+/// The owner's `resume` action on a child continuing `parent`.
+fn resume_action(
+    parent: &WorkItem,
+    origin: String,
+) -> foundry_sdk::work_item::WorkItemOperatorAction {
+    foundry_sdk::work_item::WorkItemOperatorAction {
+        command: "resume".to_string(),
+        origin,
+        previous_state: parent.state,
+        previous_reason: parent.reason.clone(),
+        previous_settled_at: parent.settled_at,
+    }
+}
+
+/// The task that discharges the open follow-up `parent`: its objective, in the
+/// interactive lane, started from current trunk, continuing the follow-up so
+/// that its landing settles it. The follow-up itself is left as it is.
+fn follow_up_child(parent: &WorkItem, operator_origin: Option<String>) -> WorkItem {
+    let mut child = WorkItem::submitted(
+        foundry_sdk::work_item::WorkItemSpec {
+            project: parent.project.clone(),
+            objective: parent.objective.clone(),
+            kind: WorkItemKind::Task,
+            lane: foundry_sdk::work_item::WorkLane::Interactive,
+            origin: parent.origin.clone(),
+            trace_id: Some(foundry_sdk::event::mint_trace_id()),
+        },
+        chrono::Utc::now(),
+    )
+    .with_source(Some(WorkSource::work_item(parent.id.clone())));
+    child.queue();
+    child.continues = vec![parent.id.clone()];
+    child.pending_root = Some(continuation_root(&child, None));
+    child.operator_action = operator_origin.map(|origin| resume_action(parent, origin));
+    child
 }
 
 /// Submission identity reflects who is continuing the obligation, while the
@@ -1067,16 +1188,9 @@ fn resume_child(parent: &WorkItem, base: &str, operator_origin: Option<String>) 
     )
     .with_source(Some(WorkSource::work_item(parent.id.clone())));
     child.queue();
-    child.pending_root = Some(continuation_root(&child, base));
+    child.pending_root = Some(continuation_root(&child, Some(base)));
     child.resumes = Some(parent.id.clone());
-    child.operator_action =
-        operator_origin.map(|origin| foundry_sdk::work_item::WorkItemOperatorAction {
-            command: "resume".to_string(),
-            origin,
-            previous_state: parent.state,
-            previous_reason: parent.reason.clone(),
-            previous_settled_at: parent.settled_at,
-        });
+    child.operator_action = operator_origin.map(|origin| resume_action(parent, origin));
     child
 }
 
@@ -1391,11 +1505,155 @@ mod tests {
         assert!(super::releasable(&held));
         let mut blocked = item("wi_d", "alpha", WorkItemState::NeedsDecision);
         blocked.started_at = None;
+        blocked.pending_root = Some(task_root("alpha"));
         assert!(super::releasable(&blocked), "a dependency decision never started the item");
+        blocked.pending_root = None;
+        assert!(!super::releasable(&blocked), "without a root the scheduler could only fail it");
         let mut reviewed = item("wi_r", "alpha", WorkItemState::NeedsDecision);
         reviewed.started_at = Some(at(5));
         assert!(!super::releasable(&reviewed), "a verdict's decision is not the scheduler's");
         assert!(!super::releasable(&item("wi_q", "alpha", WorkItemState::Queued)));
+    }
+
+    fn task_root(project: &str) -> foundry_sdk::event::Event {
+        foundry_sdk::event::Event::new(
+            foundry_sdk::event::EventType::ExecutionRequested,
+            project.into(),
+            foundry_sdk::throttle::Throttle::Full,
+            serde_json::json!({"project": project, "workflow": "task", "prompt": "o"}),
+        )
+    }
+
+    /// An open follow-up of the landed `wi_parent`, holding two gaps.
+    fn follow_up(state: WorkItemState) -> WorkItem {
+        let mut parent = item("wi_parent", "alpha", WorkItemState::Landed);
+        parent.objective = "Add a --quiet flag.".into();
+        let mut follow_up = foundry_sdk::work_item::FollowUp {
+            of: "wi_parent".into(),
+            commit: Some("landedcommit".into()),
+            obligation: foundry_sdk::work_item::FollowUpObligation::Remainder {
+                gaps: vec!["Document it.".into(), "Test it.".into()],
+            },
+        }
+        .into_item(&parent, at(10));
+        follow_up.id = "wi_follow".into();
+        follow_up.state = state;
+        follow_up
+    }
+
+    fn registry_with(
+        project: &str,
+    ) -> std::sync::Arc<std::sync::RwLock<foundry_sdk::registry::Registry>> {
+        let entry: foundry_sdk::registry::ProjectEntry =
+            serde_json::from_value(serde_json::json!({
+            "name": project, "path": "/nonexistent/checkout", "stack": "rust",
+            "agent": "rust-craftsperson", "repo": "", "branch": "main",
+            "skip": null, "notes": null, "actions": {}}))
+            .unwrap();
+        std::sync::Arc::new(std::sync::RwLock::new(foundry_sdk::registry::Registry {
+            version: 2,
+            projects: vec![entry],
+        }))
+    }
+
+    #[test]
+    fn a_follow_up_is_never_released_however_it_waits() {
+        for state in [WorkItemState::NeedsDecision, WorkItemState::Failed] {
+            let mut open = follow_up(state);
+            assert!(!super::releasable(&open), "{state:?}: it holds no root");
+            open.pending_root = Some(task_root("alpha"));
+            let status = super::require_releasable(&open).expect_err("a follow-up is resumed");
+            assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+            assert!(status.message().contains("foundry queue resume wi_follow"), "{status:?}");
+        }
+    }
+
+    #[test]
+    fn an_open_follow_up_is_continued_from_trunk_by_a_task_that_continues_it() {
+        let open = follow_up(WorkItemState::NeedsDecision);
+
+        let child = super::continuation_child(
+            &open,
+            super::ResumeSource::Owner("desk (picking it up)".into()),
+            &registry_with("alpha"),
+        )
+        .expect("an open follow-up can be resumed");
+
+        assert_eq!(child.kind, WorkItemKind::Task);
+        assert_eq!(child.lane, WorkLane::Interactive);
+        assert_eq!(child.project, "alpha");
+        assert_eq!(child.objective, open.objective);
+        assert_eq!(child.origin, "follow-up of wi_parent");
+        assert_eq!(child.source, Some(WorkSource::work_item("wi_follow")));
+        assert_eq!(child.continues, vec!["wi_follow".to_string()]);
+        assert_eq!(child.resumes, None, "no exact preserved ref is continued");
+        assert_eq!(child.state, WorkItemState::Queued);
+        assert_eq!(child.started_at, None);
+        assert_ne!(child.trace_id, open.trace_id, "a run of its own");
+        let action = child.operator_action.as_ref().expect("the owner's resume");
+        assert_eq!(action.command, "resume");
+        assert_eq!(action.origin, "desk (picking it up)");
+        assert_eq!(action.previous_state, WorkItemState::NeedsDecision);
+        assert_eq!(action.previous_reason, open.reason);
+        let root = child.pending_root.as_ref().expect("the child holds its root");
+        assert!(root.payload.get("base_ref").is_none(), "started from current trunk");
+        assert_eq!(root.payload["continues"], serde_json::json!(["wi_follow"]));
+        assert_eq!(root.payload["prompt"], open.objective);
+        assert_eq!(root.trace_id, child.trace_id);
+        assert_eq!(root.source, child.source);
+        let typed: foundry_sdk::payload::ExecutionRequestedPayload =
+            root.parse_payload().expect("a task dispatch root");
+        assert_eq!(typed.continues, vec!["wi_follow".to_string()]);
+
+        let failed = follow_up(WorkItemState::Failed);
+        assert!(
+            super::continuation_child(
+                &failed,
+                super::ResumeSource::Owner("desk".into()),
+                &registry_with("alpha")
+            )
+            .is_ok(),
+            "a failed follow-up is open too"
+        );
+    }
+
+    #[test]
+    fn a_settled_follow_up_a_nightly_resume_or_an_unregistered_project_is_refused() {
+        let owner = || super::ResumeSource::Owner("desk".into());
+        for state in [WorkItemState::Landed, WorkItemState::Cancelled] {
+            let status =
+                super::continuation_child(&follow_up(state), owner(), &registry_with("alpha"))
+                    .expect_err("settled");
+            assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+            assert_eq!(status.message(), "only preserved work or an open follow-up can be resumed");
+        }
+        let nightly = super::ResumeSource::Nightly {
+            project: "alpha".into(),
+            package: "serde".into(),
+            target: "2".into(),
+        };
+        let status = super::continuation_child(
+            &follow_up(WorkItemState::NeedsDecision),
+            nightly,
+            &registry_with("alpha"),
+        )
+        .expect_err("owners only");
+        assert_eq!(status.message(), "only an owner can resume a follow-up");
+        let status = super::continuation_child(
+            &follow_up(WorkItemState::NeedsDecision),
+            owner(),
+            &registry_with("beta"),
+        )
+        .expect_err("unregistered");
+        assert_eq!(status.message(), "project is no longer registered");
+        let mut task = item("wi_task", "alpha", WorkItemState::NeedsDecision);
+        task.objective = "x".into();
+        assert_eq!(
+            super::continuation_child(&task, owner(), &registry_with("alpha"))
+                .expect_err("not a follow-up")
+                .message(),
+            "only preserved work or an open follow-up can be resumed"
+        );
     }
 
     #[test]
@@ -1642,6 +1900,59 @@ mod owner_stop_tests {
         .unwrap();
 
         assert_eq!(item.state, WorkItemState::Cancelled);
+    }
+
+    #[test]
+    fn closing_an_open_follow_up_settles_it_cancelled_and_keeps_its_obligation() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = dir.path().join("work-items.json");
+        let mut parent = WorkItem::dispatched(
+            WorkItemSpec {
+                project: "sample".into(),
+                objective: "Owner task".into(),
+                kind: WorkItemKind::Task,
+                lane: WorkLane::Interactive,
+                origin: "cli".into(),
+                trace_id: None,
+            },
+            Utc::now(),
+        );
+        parent.settle_landed("landed", Utc::now());
+        let follow_up = foundry_sdk::work_item::FollowUp {
+            of: parent.id.clone(),
+            commit: None,
+            obligation: foundry_sdk::work_item::FollowUpObligation::Remainder {
+                gaps: vec!["Document it.".into()],
+            },
+        }
+        .into_item(&parent, Utc::now());
+        let id = follow_up.id.clone();
+        WorkItemStore {
+            items: vec![parent, follow_up.clone()],
+            ..WorkItemStore::default()
+        }
+        .save(&ledger)
+        .unwrap();
+
+        let closed = settle_owner_stop(
+            &ledger,
+            std::path::Path::new(""),
+            &id,
+            "not needed",
+            "cli".into(),
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(closed.state, WorkItemState::Cancelled);
+        assert_eq!(closed.reason, "not needed");
+        assert_eq!(closed.follow_up, follow_up.follow_up, "the obligation stays on record");
+        let action = closed.operator_action.as_ref().unwrap();
+        assert_eq!(
+            (action.command.as_str(), action.previous_state),
+            ("close", WorkItemState::NeedsDecision)
+        );
+        assert_eq!(WorkItemStore::load(&ledger).unwrap().find(&id), Some(&closed));
     }
 
     #[test]
