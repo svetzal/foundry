@@ -41,7 +41,7 @@ through a same-directory temp-file rename.
 | `release` | A release | `ReleaseRequested` | Release, pipeline and installation traversal |
 | `remediation` | Pipeline or vulnerability work | Pipeline and vulnerability roots | Whole remediation traversal |
 | `workflow` | Other engineering work, including agents | Iteration, validation, formation, digest, summary and scan roots | Whole traversal |
-| `follow_up` | Work a landed item still owes (see [Remaining gaps become a follow-up](#remaining-gaps-become-a-follow-up)) | None: it opens settled and never runs | A task that continues it lands, or the owner closes it |
+| `follow_up` | Work a landed item still owes: its remaining gaps or red trunk CI (see [Remaining gaps become a follow-up](#remaining-gaps-become-a-follow-up) and [Trunk CI after landing](#trunk-ci-after-landing)) | None: it opens settled and never runs | A task that continues it lands, a later green trunk CI (for red CI), or the owner closes it |
 
 Task settlement retains its typed verdict. Its execution slot stays occupied
 until task cleanup finishes. Other kinds settle after the whole traversal.
@@ -548,6 +548,72 @@ lands, lineage settles the follow-up `landed`. If it lands with its own
 remainder, it opens its own follow-up. Only an owner resumes a follow-up.
 `queue release` refuses one, because there is nothing for the scheduler to
 start.
+
+### Trunk CI after landing
+
+A task's gates run on the Foundry host. GitHub's runners can lack a tool the
+host has, and only CI covers platforms such as macOS, so a landing that passed
+every gate can still turn the branch's CI red. Foundry now watches that CI
+itself; task agents never push or watch CI.
+
+When a task, campaign cycle or major upgrade settles `landed` at a commit, and
+its project has a registered GitHub `repo`, its item gets a `ci` record in
+state `pending` with the repo, branch, commit and request time. Items settled
+through lineage or supersession are not watched, and nothing landed before
+this change is watched.
+
+The daemon's trunk CI watcher concludes pending records. It wakes on every
+`work_item_settled`, at the next deadline of a pending watch, and at least
+every 60 seconds, and asks GitHub (`gh run list --commit`) for the runs on that
+commit and branch:
+
+| State | When |
+|-------|------|
+| `pending` | A run is still going, or no run has appeared yet, or GitHub could not be reached (the error is kept in `detail`) |
+| `failed` | Any completed run concluded `failure`, `timed_out`, `startup_failure` or `action_required` |
+| `passed` | Every relevant run completed `success` or `neutral` (`cancelled` and `skipped` runs are ignored) |
+| `no_run` | No run appeared within 15 minutes of the landing |
+| `unavailable` | Still pending 2 hours after the landing |
+
+`no_run` and `unavailable` are recorded but are not red. Each concluded watch
+emits `trunk_ci_checked` (project, item, commit, state, run URL, failing jobs,
+follow-up).
+
+A `failed` watch fetches the failing jobs (`gh run view --json jobs`) and the
+last 80 lines (at most 8 KB) of the failed-job log (`gh run view
+--log-failed`), records them on the watch, and opens a `follow_up` item with
+`obligation: trunk_ci` in state `failed`. Its reason reads `trunk CI red at
+<short commit> after <id>: <jobs>`, and its objective asks for the branch's CI
+to be made green without weakening, skipping or deleting CI or tests. If a
+later landing on the same project has already passed CI, the red result is
+recorded without a follow-up, because trunk is green again.
+
+A `passed` watch settles every open trunk CI follow-up of the project that an
+earlier landing opened: `landed`, reason `trunk CI green at <commit>`.
+
+`foundry queue show` prints a watched item's CI on one line, then any detail
+and follow-up:
+
+```text
+Trunk CI:         failed at 4f2c9a1d7e3b8c605f1a2e9d4b7c3a8e6f0d1b25 on main https://github.com/acme/tool/actions/runs/123
+CI follow-up:     wi_0f1e2d3c4b5a69788796a5b4
+```
+
+and a trunk CI follow-up's red run, failing jobs and log tail:
+
+```text
+Obligation:       trunk_ci
+Red run:          https://github.com/acme/tool/actions/runs/123
+Failing jobs:     - test (macos-latest)
+Log tail:
+    error[E0432]: unresolved import `nix::sys`
+```
+
+`--json` carries `ci` and the follow-up's `failing_jobs`, `log_tail` and
+`run_url`, each absent when unset. Discharge a red follow-up as any other:
+`queue resume` runs a task from trunk that continues it, or `queue close`. A
+campaign waits on its project's trunk CI and cannot complete while it is red
+(see [Trunk CI holds the campaign](./campaigns.md#trunk-ci-holds-the-campaign)).
 
 ### Resume preserved work
 

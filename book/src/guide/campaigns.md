@@ -695,6 +695,36 @@ statement such as "with passing unit tests" is judged from that evidence and
 from the code. Being unable to run a command in the sandbox is not a reason to
 escalate.
 
+### Trunk CI holds the campaign
+
+Done gates and task gates run on the Foundry host. GitHub's runners can lack a
+tool the host has, or cover a platform the host cannot. On 2026-10-19 the
+`mojentic-ex` and `mojentic-sw` no-network campaigns completed while CI on
+their `main` was red. Foundry now watches the branch's CI after every landing
+(see [Trunk CI after landing](./work-queue.md#trunk-ci-after-landing)), and a
+campaign answers to it:
+
+- **Pending.** While any landing on the campaign's project still waits for its
+  CI verdict, an advance records the arriving run result and stands down before
+  formation, with the reason `awaiting trunk CI on <short commit> (<item>)`. No
+  agent runs, no status changes, no cycle is counted. When no watch on the
+  project is pending any more, the watcher asks that campaign to advance again
+  (operator origin `trunk CI watch`), and that advance forms from the recorded
+  result.
+- **Red.** Formation's prompt gains a `TRUNK CI` section listing each open
+  trunk CI follow-up: commit, failing jobs, log tail and follow-up id. A `done`
+  decided while one is open becomes an `advance` whose objective makes trunk CI
+  green without weakening CI, tests or the mission, the same way a failing done
+  gate does. The follow-up settles when a later landing's CI passes.
+- **Owner completion.** `foundry campaign complete` refuses with
+  `FAILED_PRECONDITION` while the project has an open trunk CI follow-up, and
+  names it. Resume it (`foundry queue resume <id>`) or close it (`foundry queue
+  close <id> --reason …`) first. The rule lives in the campaign transition
+  rules, so `--offline` refuses the same way.
+
+Task agents are told that Foundry lands their work and watches CI, so they do
+not push, open pull requests or wait on CI themselves.
+
 ## Managing a Campaign
 
 ```bash
@@ -1205,6 +1235,9 @@ This is an owner-authorized terminal transition. Foundry retains the reason and
 timestamp, clears any stale pending result, and emits the same completion event
 used by an internally completed campaign. Use `--offline` only while the daemon
 is stopped; the direct-file path cannot emit the terminal event.
+
+Completion is refused while trunk CI on the campaign's project is red; see
+[Trunk CI holds the campaign](#trunk-ci-holds-the-campaign).
 
 ## Cancelling a Campaign
 

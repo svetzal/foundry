@@ -49,6 +49,28 @@ project adheres to [Semantic Versioning](https://semver.org/).
   (`gate_probes`, `gate_probe_error`), and the CLI prints them, so the author
   sees false positives before any cycle runs. A failing gate does not refuse
   the add.
+- Foundry now watches GitHub CI on trunk after every landing. On 2026-10-19
+  the `mojentic-ex` and `mojentic-sw` no-network campaigns completed while CI
+  on their `main` was red: gates ran only on the Foundry host, which has tools
+  the GitHub runners lack and cannot show macOS failures.
+  - A task, campaign cycle or major upgrade that lands at a commit, in a
+    project with a registered `repo`, records `ci: pending`. The daemon's
+    trunk CI watcher polls `gh run list --commit` (every 60 s and on each
+    settlement) and concludes `passed`, `failed`, `no_run` (no run within 15
+    minutes) or `unavailable` (still pending after 2 hours). Each conclusion
+    emits the new `trunk_ci_checked` event.
+  - Red opens a `follow_up` item with `obligation: trunk_ci` in `failed`,
+    holding the failing jobs, the last 80 lines of the failed-job log and the
+    run URL. `queue show` prints them and a `Trunk CI:` line; `--json` carries
+    `ci` and the follow-up's fields. `queue resume` runs a fix task from trunk;
+    a later landing whose CI passes settles it.
+  - A campaign advance stands down before formation, without an agent call,
+    while CI on its project is pending, and the watcher advances it again
+    when nothing is pending. While a red follow-up is open, formation sees it,
+    a `done` becomes an advance that fixes CI, and `campaign complete` is
+    refused with `FAILED_PRECONDITION`.
+  - Task agents are told that Foundry lands their work and watches CI, so
+    they do not push, open pull requests or wait on CI.
 
 ### Changed
 

@@ -171,7 +171,7 @@ All event types follow a disciplined taxonomy with four suffix categories:
 | Command | `*Requested` | Intent — someone or something wants action taken | `ProjectIterationRequested`, `ProjectMaintenanceRequested`, `ReleaseRequested`, `PipelineCheckRequested`, `MaintenanceSummaryRequested` |
 | Lifecycle start | `*Started` | A multi-step operation began | `MaintenanceCycleStarted`, `ProjectRunStarted`, `StrategicCycleStarted`, `InnerIterationStarted`, `RemediationStarted` |
 | Lifecycle end | `*Completed` | An operation finished (check payload for success/failure) | `MaintenanceCycleCompleted`, `ProjectRunCompleted`, `ProjectIterationCompleted`, `PreflightCompleted`, `GateResolutionCompleted`, `MaintenanceTriageCompleted` |
-| Domain fact | Specific past participle | A meaningful domain event where the verb adds clarity over `*Completed` | `VulnerabilityDetected`, `MainBranchAudited`, `ProjectChangesPushed`, `PipelineChecked`, `WorkItemSettled` |
+| Domain fact | Specific past participle | A meaningful domain event where the verb adds clarity over `*Completed` | `VulnerabilityDetected`, `MainBranchAudited`, `ProjectChangesPushed`, `PipelineChecked`, `WorkItemSettled`, `TrunkCiChecked` |
 
 Rules:
 
@@ -489,7 +489,7 @@ are legal.
 | `foundry campaign resume <name>` | Yes (or `--offline`) | Mutates via `ResumeCampaign`; unreachable daemon is an error unless `--offline` is set |
 | `foundry campaign decide <name> …` | Yes (or `--offline`) | Mutates via `DecideCampaign`; unreachable daemon is an error unless `--offline` is set. Records a binding owner decision on an active, paused or escalated campaign. Active and paused keep their status and refuse `--add-cycles`; escalated returns to active and may add cycles. A repeat of the latest decision is refused (retry safety); staged and terminal campaigns refuse |
 | `foundry campaign edit <name> --done-evidence <file> --reason "<text>"` | Yes (or `--offline`) | Mutates via `EditCampaign` (`Campaign::amend_done_evidence`). The file is a JSON `done_evidence` array; it must pass `Campaign::validate` (invalid: INVALID_ARGUMENT). Needs a non-empty reason and `authorized_by`; completed and cancelled refuse, and evidence equal to the current evidence is refused (retry safety). Appends an owner decision `Done evidence amended: <reason>` whose `done_evidence_amendment` keeps the previous and replacement evidence. Escalated returns to active with no cycles added; other statuses keep theirs. No event is emitted, as for `decide`. Returns trunk gate probes exactly as `add` does |
-| `foundry campaign complete <name> …` | Yes (or `--offline`) | Mutates via `CompleteCampaign`; unreachable daemon is an error unless `--offline` is set |
+| `foundry campaign complete <name> …` | Yes (or `--offline`) | Mutates via `CompleteCampaign`; unreachable daemon is an error unless `--offline` is set; refused (FAILED_PRECONDITION) while the project has an open trunk CI follow-up |
 | `foundry campaign cancel <name> --reason … [--now] [--discard-work]` | Yes (or `--offline`) | Mutates via `CancelCampaign`. Terminal and non-resumable, and unlike `complete` it does **not** require `authorized_by`. `--now` aborts the in-flight workflow and kills the running agent; `--discard-work` requires `--now`. `--offline` is graceful-only — `--offline --now` is refused, not downgraded |
 
 > **Note for scripts/automation**: without `--offline`, online `foundry campaign add/list/show/advance/pause/resume/decide/edit/complete/cancel` commands do not silently fall back and surface stable typed gRPC status errors instead. `list` and `show` render the daemon response directly, never read the client-side campaign file, and if `FOUNDRY_CAMPAIGNS_PATH` is absent the online path leaves it absent. If `foundryd` is not listening, the online commands fail and leave any existing client-side campaign file untouched byte-for-byte. Online `pause`/`resume`/`decide`/`edit`/`complete`/`cancel` are also persistence-atomic: if the daemon cannot save the campaign store, the RPC returns `INTERNAL`, leaves the daemon-owned store unchanged in memory and on disk, and `CompleteCampaign`/`CancelCampaign` do not emit a terminal event.
@@ -588,6 +588,27 @@ it, so lineage settles it on landing) or `queue close`. The scheduler revives
 a dependency-blocked `needs_decision` item (never started, still holding its
 root) once every dependency is landed, waiting or running
 (`pacing::revivable_dependents`), and announces `work_item_released`.
+
+Foundry, never the agent, watches trunk CI after landing. `SettleWorkItem`
+records `ci: pending` (`foundry_sdk::trunk_ci::TrunkCiWatch`) on the run's own
+item when it lands at a commit and its project has a registered GitHub `repo`;
+lineage and supersession settlements are not watched, and nothing is
+back-filled. The daemon's `TrunkCiWatcher` (`crates/foundryd/src/ci_watch.rs`,
+injected clock and `TrunkCiGateway`; production uses `gh`) reads pending
+watches under the ledger gate, asks GitHub outside it, and applies under it
+again (`WorkItemStore::apply_trunk_ci`). `trunk_ci::conclude` is the whole
+rule: red (`failure`, `timed_out`, `startup_failure`, `action_required`),
+pending, green, `no_run` after `TRUNK_CI_GRACE` (15 min), `unavailable` after
+`TRUNK_CI_LIMIT` (2 h). Red opens a `follow_up` with `obligation: trunk_ci`
+in `failed`, holding failing jobs, the failed-log tail and the run URL; a later
+green landing on the project settles it `landed`. Each concluded watch emits
+`trunk_ci_checked`. A campaign advance stands down before formation while any
+watch on its project is pending (reason prefix `trunk_ci::AWAITING_TRUNK_CI`);
+the watcher re-advances it once nothing on the project is pending. While a red
+follow-up is open, `enforce_trunk_ci_truth` turns formation's `done` into a
+fix `advance`, and `Campaign::complete` refuses with `TransitionError::TrunkCiRed`.
+Tests drive `TrunkCiWatcher::tick` with `FakeTrunkCiGateway`; never real `gh`
+or real time.
 
 ### Registry commands
 
