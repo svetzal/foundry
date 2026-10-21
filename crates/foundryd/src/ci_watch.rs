@@ -610,7 +610,7 @@ mod tests {
         assert_eq!(h.watcher.tick().await.concluded.len(), 1);
         let second = h.watcher.tick().await;
 
-        assert!(second.concluded.is_empty());
+        assert_eq!(second.concluded, Vec::<foundry_sdk::work_item::WorkItem>::new());
         assert_eq!(h.gateway.calls(), vec!["runs o/r aaaaaaa1"], "one question per pending watch");
         assert_eq!(second.next_deadline, None, "nothing pending, nothing due");
     }

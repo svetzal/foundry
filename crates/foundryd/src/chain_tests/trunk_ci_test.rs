@@ -396,7 +396,7 @@ async fn no_run_waits_out_the_grace_and_a_run_still_going_after_two_hours_is_una
 
     let store = f.ledger();
     assert!(red_follow_ups(&store).is_empty(), "neither is red");
-    assert!(f.open_items().await.is_empty());
+    assert_eq!(f.open_items().await, Vec::<crate::proto::WorkItem>::new());
 }
 
 #[tokio::test]

@@ -346,7 +346,7 @@ async fn edit_of_an_unregistered_project_applies_and_reports_the_probe_was_not_r
         .into_inner();
 
     assert_eq!(response.campaign.expect("detail").status, "active");
-    assert!(response.gate_probes.is_empty());
+    assert_eq!(response.gate_probes, Vec::<foundryd::proto::CampaignGateProbe>::new());
     assert!(
         response
             .gate_probe_error
