@@ -24,7 +24,7 @@ use foundry_sdk::payload::{
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::work_item::{
-    WorkItem, WorkItemKind, WorkItemSpec, WorkItemStore, WorkLane, ledger_write_gate,
+    FollowUp, WorkItem, WorkItemKind, WorkItemSpec, WorkItemStore, WorkLane, ledger_write_gate,
 };
 use foundry_sdk::workflow::WorkflowType;
 
@@ -455,7 +455,10 @@ impl SettleWorkItem {
     /// Settle the running item this result belongs to, and return it with
     /// every other item its landing settled: its lineage (see
     /// [`WorkItemStore::settle_lineage`]), each open item proved superseded
-    /// by trunk, and the lineage of each of those.
+    /// by trunk, and the lineage of each of those. A standalone task that
+    /// landed with remaining gaps also opens a follow-up holding them (see
+    /// [`FollowUp::from_landed_remainder`]), in the same ledger write; one
+    /// already recorded for the item is never opened twice.
     ///
     /// `None` when the ledger holds no running item for the run — a task that
     /// started before the ledger existed, for one — or when the ledger cannot
@@ -465,7 +468,7 @@ impl SettleWorkItem {
         trigger: &Event,
         result: &TaskRunCompletedPayload,
         verified: &[(WorkItem, String)],
-    ) -> Option<(WorkItem, Vec<WorkItem>)> {
+    ) -> Option<Settlement> {
         let _guard = ledger_lock()?;
         let mut store = load_ledger(&self.store_path)?;
         let removed = worktree_removed(result);
@@ -502,7 +505,49 @@ impl SettleWorkItem {
             // What the superseded item resumed or continued is discharged too.
             additional.extend(store.settle_lineage(&superseded, commit, Utc::now()));
         }
-        save_ledger(&store, &self.store_path).then_some((settled, additional))
+        let follow_up = FollowUp::from_landed_remainder(&settled, result)
+            .filter(|follow_up| store.follow_up_of(&follow_up.of).is_none())
+            .map(|follow_up| follow_up.into_item(&settled, Utc::now()));
+        if let Some(item) = &follow_up {
+            store.upsert(item.clone());
+        }
+        save_ledger(&store, &self.store_path).then_some(Settlement {
+            child: settled,
+            discharged: additional,
+            follow_up,
+        })
+    }
+}
+
+/// What one task run's terminal result changed in the ledger.
+pub struct Settlement {
+    /// The run's own item, settled from its verdict.
+    child: WorkItem,
+    /// Every other item its landing settled `landed`.
+    discharged: Vec<WorkItem>,
+    /// The follow-up the landing opened for its remaining gaps, if any.
+    follow_up: Option<WorkItem>,
+}
+
+impl Settlement {
+    /// The lifecycle events this settlement announces, each on its item's own
+    /// trace: `work_item_settled` for the run's item and every item its
+    /// landing discharged, then `work_item_submitted` and `work_item_settled`
+    /// for a follow-up it opened.
+    fn events(&self, trigger: &Event) -> Vec<Event> {
+        let on_trace = |event_type: EventType, item: &WorkItem| {
+            work_item_event(event_type, trigger, item).with_trace_id(item.trace_id.clone())
+        };
+        std::iter::once(&self.child)
+            .chain(self.discharged.iter())
+            .map(|item| on_trace(EventType::WorkItemSettled, item))
+            .chain(self.follow_up.iter().flat_map(|item| {
+                [
+                    on_trace(EventType::WorkItemSubmitted, item),
+                    on_trace(EventType::WorkItemSettled, item),
+                ]
+            }))
+            .collect()
     }
 }
 
@@ -516,7 +561,7 @@ fn worktree_removed(result: &TaskRunCompletedPayload) -> Option<bool> {
 }
 
 impl SimulatedSuccess for SettleWorkItem {
-    type Outcome = Option<(WorkItem, Option<WorkItem>)>;
+    type Outcome = Option<Settlement>;
 
     fn simulate(&self, trigger: &Event) -> Self::Outcome {
         let result = trigger.parse_payload::<TaskRunCompletedPayload>().ok()?;
@@ -549,19 +594,17 @@ impl SimulatedSuccess for SettleWorkItem {
         )
         .with_source(trigger.source.clone());
         item.settle_from_task_run(&result, worktree_removed(&result), Utc::now());
-        Some((item, None))
+        let follow_up = FollowUp::from_landed_remainder(&item, &result)
+            .map(|follow_up| follow_up.into_item(&item, Utc::now()));
+        Some(Settlement {
+            child: item,
+            discharged: Vec::new(),
+            follow_up,
+        })
     }
 
     fn success_events(&self, trigger: &Event, outcome: &Self::Outcome) -> Vec<Event> {
-        outcome.as_ref().map_or_else(Vec::new, |(child, parent)| {
-            std::iter::once(child)
-                .chain(parent.iter())
-                .map(|item| {
-                    work_item_event(EventType::WorkItemSettled, trigger, item)
-                        .with_trace_id(item.trace_id.clone())
-                })
-                .collect()
-        })
+        outcome.as_ref().map_or_else(Vec::new, |settlement| settlement.events(trigger))
     }
 }
 
@@ -580,8 +623,11 @@ impl TaskBlock for SettleWorkItem {
         Box::pin(async move {
             let (verified, diagnostics) = self.verify_supersession(&trigger, &result).await;
             let mut settled = self.settle(&trigger, &result, &verified);
-            if let Some((child, additional)) = &mut settled {
-                for item in std::iter::once(child).chain(additional.iter_mut()) {
+            if let Some(settlement) = &mut settled {
+                // A follow-up owns no branch, so it has nothing to clean up.
+                for item in
+                    std::iter::once(&mut settlement.child).chain(settlement.discharged.iter_mut())
+                {
                     super::work_branch_cleanup::cleanup(
                         &self.store_path,
                         self.registry.as_ref(),
@@ -590,18 +636,19 @@ impl TaskBlock for SettleWorkItem {
                     .await;
                 }
             }
-            let events = settled.as_ref().map_or_else(Vec::new, |(child, additional)| {
-                std::iter::once(child)
-                    .chain(additional.iter())
-                    .map(|item| {
-                        work_item_event(EventType::WorkItemSettled, &trigger, item)
-                            .with_trace_id(item.trace_id.clone())
-                    })
-                    .collect()
-            });
+            let events =
+                settled.as_ref().map_or_else(Vec::new, |settlement| settlement.events(&trigger));
             let summary = match &settled {
-                Some((item, _)) => {
-                    format!("{}: work item {} settled {:?}", trigger.project, item.id, item.state)
+                Some(Settlement {
+                    child, follow_up, ..
+                }) => {
+                    let opened = follow_up.as_ref().map_or_else(String::new, |item| {
+                        format!("; follow-up {} opened {}", item.id, item.state.tag())
+                    });
+                    format!(
+                        "{}: work item {} settled {:?}{opened}",
+                        trigger.project, child.id, child.state
+                    )
                 }
                 None => format!("{}: no ledger item to settle", trigger.project),
             };
@@ -695,7 +742,7 @@ mod tests {
     use foundry_sdk::work_source::WorkSource;
 
     use super::super::test_helpers;
-    use super::{SettleFailedDispatch, SettleWorkItem, SimulatedSuccess};
+    use super::{SettleFailedDispatch, SettleWorkItem, Settlement, SimulatedSuccess};
 
     fn admission_pending(trigger: &Event) -> bool {
         super::awaits_admission(
@@ -989,7 +1036,7 @@ mod tests {
         let done = completion(TaskVerdict::Complete, true, None)
             .with_source(Some(WorkSource::campaign("tidy-cli", 2)));
         assert_eq!(
-            settle.simulate(&done).unwrap().0.source,
+            settle.simulate(&done).unwrap().child.source,
             Some(WorkSource::campaign("tidy-cli", 2))
         );
 
@@ -1345,8 +1392,10 @@ mod tests {
             }
             let trigger = completion(TaskVerdict::Complete, true, None);
             let result = trigger.parse_payload::<TaskRunCompletedPayload>().unwrap();
-            let (_, additional) =
-                SettleWorkItem::new(path.clone()).settle(&trigger, &result, &verified).unwrap();
+            let additional = SettleWorkItem::new(path.clone())
+                .settle(&trigger, &result, &verified)
+                .unwrap()
+                .discharged;
             let after = WorkItemStore::load(&path).unwrap();
             assert_eq!(after.items[0].state, WorkItemState::Landed);
             assert_eq!(
@@ -1425,8 +1474,11 @@ mod tests {
         let trigger = completion(TaskVerdict::Complete, true, None);
         let result = trigger.parse_payload::<TaskRunCompletedPayload>().unwrap();
 
-        let (follow_up, additional) =
-            SettleWorkItem::new(path.clone()).settle(&trigger, &result, &[]).unwrap();
+        let Settlement {
+            child: follow_up,
+            discharged: additional,
+            ..
+        } = SettleWorkItem::new(path.clone()).settle(&trigger, &result, &[]).unwrap();
 
         assert_eq!(follow_up.state, WorkItemState::Landed);
         let reason = format!("superseded by ref-or-commit via {}", follow_up.id);
@@ -1478,8 +1530,10 @@ mod tests {
             let trigger = completion(verdict.clone(), landed, None);
             let result = trigger.parse_payload::<TaskRunCompletedPayload>().unwrap();
 
-            let (_, additional) =
-                SettleWorkItem::new(path.clone()).settle(&trigger, &result, &[]).unwrap();
+            let additional = SettleWorkItem::new(path.clone())
+                .settle(&trigger, &result, &[])
+                .unwrap()
+                .discharged;
 
             assert!(additional.is_empty(), "{verdict:?}");
             let after = WorkItemStore::load(&path).unwrap();
@@ -1487,5 +1541,96 @@ mod tests {
                 assert_eq!(after.find(&before.id), Some(before), "{verdict:?}");
             }
         }
+    }
+
+    fn remainder(gaps: &[&str]) -> TaskVerdict {
+        TaskVerdict::Remainder {
+            gaps: gaps.iter().map(|gap| (*gap).to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_landed_remainder_opens_one_follow_up_and_a_replay_never_opens_another() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        seed_dispatch(&path, &dispatch(&serde_json::json!({})));
+        start_queued(&path);
+        let running = WorkItemStore::load(&path).unwrap().items[0].clone();
+        let trigger = completion(remainder(&["Document the flag."]), true, None);
+        let result = trigger.parse_payload::<TaskRunCompletedPayload>().unwrap();
+
+        let settlement = SettleWorkItem::new(path.clone()).settle(&trigger, &result, &[]).unwrap();
+
+        let follow_up = settlement.follow_up.clone().expect("a follow-up opened");
+        assert_eq!(follow_up.kind, WorkItemKind::FollowUp);
+        assert_eq!(follow_up.state, WorkItemState::NeedsDecision);
+        assert_eq!(follow_up.follow_up.as_ref().unwrap().of, running.id);
+        assert_eq!(follow_up.follow_up.as_ref().unwrap().commit.as_deref(), Some("ref-or-commit"));
+        let events: Vec<(EventType, String)> = settlement
+            .events(&trigger)
+            .into_iter()
+            .map(|event| (event.event_type, event.payload["item_id"].as_str().unwrap().to_string()))
+            .collect();
+        assert_eq!(
+            events,
+            vec![
+                (EventType::WorkItemSettled, running.id.clone()),
+                (EventType::WorkItemSubmitted, follow_up.id.clone()),
+                (EventType::WorkItemSettled, follow_up.id.clone()),
+            ]
+        );
+
+        // The same result again, with the run's item somehow running again.
+        let mut store = WorkItemStore::load(&path).unwrap();
+        store.find_mut(&running.id).unwrap().start(Utc::now());
+        store.save(&path).unwrap();
+        let replay = SettleWorkItem::new(path.clone()).settle(&trigger, &result, &[]).unwrap();
+
+        assert_eq!(replay.follow_up, None, "one follow-up per landed item");
+        let after = WorkItemStore::load(&path).unwrap();
+        assert_eq!(
+            after.items.iter().filter(|item| item.kind == WorkItemKind::FollowUp).count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_landed_campaign_cycle_remainder_opens_no_follow_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        seed_dispatch(&path, &dispatch(&serde_json::json!({"campaign": "tidy-cli"})));
+        start_queued(&path);
+        let mut trigger = completion(remainder(&["Document the flag."]), true, None);
+        trigger.payload["campaign"] = serde_json::json!("tidy-cli");
+        let result = trigger.parse_payload::<TaskRunCompletedPayload>().unwrap();
+        assert_eq!(result.context.campaign.as_deref(), Some("tidy-cli"));
+
+        let settlement = SettleWorkItem::new(path.clone()).settle(&trigger, &result, &[]).unwrap();
+
+        assert_eq!(settlement.child.state, WorkItemState::Landed);
+        assert_eq!(settlement.follow_up, None, "the campaign's formation carries it");
+        assert_eq!(WorkItemStore::load(&path).unwrap().items.len(), 1);
+    }
+
+    #[test]
+    fn the_settlement_simulation_announces_the_follow_up_a_landed_remainder_would_open() {
+        let settle = SettleWorkItem::new("/tmp/never-written.json".into());
+        let trigger = completion(remainder(&["Document the flag."]), true, None);
+
+        let outcome = settle.simulate(&trigger);
+        let kinds: Vec<EventType> = settle
+            .success_events(&trigger, &outcome)
+            .into_iter()
+            .map(|event| event.event_type)
+            .collect();
+
+        assert_eq!(
+            kinds,
+            vec![
+                EventType::WorkItemSettled,
+                EventType::WorkItemSubmitted,
+                EventType::WorkItemSettled
+            ]
+        );
     }
 }

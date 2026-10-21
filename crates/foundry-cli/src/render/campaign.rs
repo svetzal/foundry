@@ -940,6 +940,7 @@ mod tests {
             depends_on: Vec::new(),
             not_before: None,
             continues: Vec::new(),
+            follow_up: None,
         }
     }
 

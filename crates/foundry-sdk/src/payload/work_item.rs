@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::work_item::{WorkDisposition, WorkItem, WorkItemKind, WorkItemState, WorkLane};
+use crate::work_item::{
+    FollowUp, WorkDisposition, WorkItem, WorkItemKind, WorkItemState, WorkLane,
+};
 use crate::work_source::WorkSource;
 
 /// Payload for every work-item lifecycle event — `work_item_submitted`,
@@ -48,6 +50,9 @@ pub struct WorkItemEventPayload {
     /// Open items this task follows up on. Absent when it continues none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub continues: Vec<String>,
+    /// The obligation a follow-up item holds. Absent on every other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_up: Option<FollowUp>,
     /// Owner action, without replacing the original submission origin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator_action: Option<crate::work_item::WorkItemOperatorAction>,
@@ -79,6 +84,7 @@ impl WorkItemEventPayload {
             operator_action: item.operator_action.clone(),
             resumes: item.resumes.clone(),
             continues: item.continues.clone(),
+            follow_up: item.follow_up.clone(),
             depends_on: item.depends_on.clone(),
             not_before: item.not_before,
         }

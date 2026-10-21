@@ -33,7 +33,8 @@ pub const WORK_ITEM_STORE_VERSION: u32 = 1;
 /// What sort of work a [`WorkItem`] represents.
 ///
 /// Task kinds retain typed task verdicts. Maintenance, release, remediation
-/// and general workflows share the same durable admission and scheduler.
+/// and general workflows share the same durable admission and scheduler. A
+/// follow-up is never admitted to run: it records an obligation for a person.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,6 +53,10 @@ pub enum WorkItemKind {
     Remediation,
     /// An admitted engineering workflow such as formation, validation or iteration.
     Workflow,
+    /// An obligation a landed item left behind (see [`FollowUp`]). It never
+    /// runs itself: it is settled open, and `foundry queue resume` admits a
+    /// task that continues it.
+    FollowUp,
 }
 
 /// Which queue a [`WorkItem`] belongs to.
@@ -162,6 +167,7 @@ impl WorkItemKind {
             Self::Release => "release",
             Self::Remediation => "remediation",
             Self::Workflow => "workflow",
+            Self::FollowUp => "follow_up",
         }
     }
 }
@@ -249,6 +255,140 @@ pub struct WorkItemOperatorAction {
     pub previous_settled_at: Option<DateTime<Utc>>,
 }
 
+/// An obligation a landed item left behind, held by a [`WorkItemKind::FollowUp`]
+/// item so it stays visible in the open group until someone discharges it.
+///
+/// A landing settles its own item `landed`, so whatever the landing still owes
+/// (gaps the reviewer reported, say) would otherwise exist only in that run's
+/// event payloads. The follow-up item records it in the ledger.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FollowUp {
+    /// The landed item this obligation follows.
+    pub of: String,
+    /// The trunk commit the obligation refers to. Absent when none was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// What is owed, typed. Flattened, so the record carries an `obligation`
+    /// tag beside the obligation's own fields.
+    #[serde(flatten)]
+    pub obligation: FollowUpObligation,
+}
+
+/// What a [`FollowUp`] owes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "obligation", rename_all = "snake_case")]
+pub enum FollowUpObligation {
+    /// The reviewer let the work land with a `remainder` verdict: these gaps
+    /// are still to do.
+    Remainder {
+        /// The gaps, one line each, as the reviewer reported them.
+        gaps: Vec<String>,
+    },
+}
+
+impl FollowUpObligation {
+    /// The serialized tag this obligation is written to disk and to the wire as.
+    #[must_use]
+    pub fn tag(&self) -> &'static str {
+        match self {
+            Self::Remainder { .. } => "remainder",
+        }
+    }
+
+    /// The state a new follow-up holding this obligation opens in.
+    #[must_use]
+    pub fn opening_state(&self) -> WorkItemState {
+        match self {
+            Self::Remainder { .. } => WorkItemState::NeedsDecision,
+        }
+    }
+
+    /// The objective a task that discharges this obligation runs: `parent`'s
+    /// objective, then exactly what is still owed.
+    #[must_use]
+    pub fn objective(&self, parent: &WorkItem, commit: Option<&str>) -> String {
+        let landed = commit.map_or_else(
+            || format!("{} landed", parent.id),
+            |commit| format!("{} landed as {commit}", parent.id),
+        );
+        match self {
+            Self::Remainder { gaps } => {
+                let mut objective = format!(
+                    "{}\n\nRemaining gaps reported when {landed}; the rest of the objective above is on trunk:",
+                    parent.objective.trim_end()
+                );
+                for gap in gaps {
+                    objective.push_str("\n- ");
+                    objective.push_str(&one_line(gap));
+                }
+                objective
+            }
+        }
+    }
+
+    /// The one-line reason a new follow-up holding this obligation opens with.
+    #[must_use]
+    pub fn reason(&self, parent_id: &str) -> String {
+        match self {
+            Self::Remainder { gaps } => {
+                let first = gaps.first().map_or("", String::as_str);
+                format!("remainder of {parent_id}: {} gap(s): {first}", gaps.len())
+            }
+        }
+    }
+}
+
+impl FollowUp {
+    /// The follow-up a task run's terminal result leaves behind, if any.
+    ///
+    /// Only a standalone task (`result.context.campaign` is `None`) that
+    /// `landed` with a `remainder` verdict naming at least one nonblank gap
+    /// leaves one: a campaign or initiative cycle carries its remainder into
+    /// the campaign's next formation instead. Blank gaps are dropped and the
+    /// rest are trimmed. `parent` is the item that result settled.
+    #[must_use]
+    pub fn from_landed_remainder(
+        parent: &WorkItem,
+        result: &TaskRunCompletedPayload,
+    ) -> Option<Self> {
+        if parent.state != WorkItemState::Landed || result.context.campaign.is_some() {
+            return None;
+        }
+        let TaskVerdict::Remainder { gaps } = &result.verdict else {
+            return None;
+        };
+        let gaps: Vec<String> = gaps
+            .iter()
+            .map(|gap| gap.trim())
+            .filter(|gap| !gap.is_empty())
+            .map(str::to_string)
+            .collect();
+        if gaps.is_empty() {
+            return None;
+        }
+        let commit = parent
+            .disposition
+            .as_ref()
+            .and_then(|disposition| disposition.landed_commit.clone())
+            .filter(|commit| !commit.trim().is_empty());
+        Some(Self {
+            of: parent.id.clone(),
+            commit,
+            obligation: FollowUpObligation::Remainder { gaps },
+        })
+    }
+
+    /// The open ledger item holding this follow-up of `parent`, settled at `at`
+    /// in the state, with the objective and the reason the obligation implies.
+    #[must_use]
+    pub fn into_item(self, parent: &WorkItem, at: DateTime<Utc>) -> WorkItem {
+        let objective = self.obligation.objective(parent, self.commit.as_deref());
+        let reason = self.obligation.reason(&parent.id);
+        let state = self.obligation.opening_state();
+        WorkItem::follow_up(parent, self, objective, state, &reason, at)
+    }
+}
+
 /// One durable unit of work Foundry dispatched.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkItem {
@@ -302,6 +442,10 @@ pub struct WorkItem {
     /// item settled that way (see [`WorkItemStore::settle_lineage`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub continues: Vec<String>,
+    /// The obligation a [`WorkItemKind::FollowUp`] item holds. Absent on every
+    /// other kind, and on records written before follow-ups existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_up: Option<FollowUp>,
     /// Latest owner action. Absent on records predating owner controls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator_action: Option<WorkItemOperatorAction>,
@@ -422,6 +566,7 @@ impl WorkItem {
             operator_action: None,
             resumes: None,
             continues: Vec::new(),
+            follow_up: None,
             depends_on: Vec::new(),
             not_before: None,
             pending_root: None,
@@ -501,6 +646,43 @@ impl WorkItem {
         self.state = WorkItemState::NeedsDecision;
         self.reason = one_line(reason);
         self.settled_at = Some(at);
+    }
+
+    /// Open a [`WorkItemKind::FollowUp`] item holding `follow_up`, an
+    /// obligation `parent` left behind when it landed.
+    ///
+    /// The item belongs to `parent`'s project and trace, sits in the
+    /// interactive lane, names `parent` as its typed source and in its origin,
+    /// and is settled `state` with `reason` at `at`. It never starts and holds
+    /// no root: nothing schedules it. `foundry queue resume` admits a task that
+    /// continues it, and that task's landing settles it (see
+    /// [`WorkItemStore::settle_lineage`]).
+    #[must_use]
+    pub fn follow_up(
+        parent: &Self,
+        follow_up: FollowUp,
+        objective: String,
+        state: WorkItemState,
+        reason: &str,
+        at: DateTime<Utc>,
+    ) -> Self {
+        let mut item = Self::submitted(
+            WorkItemSpec {
+                project: parent.project.clone(),
+                objective,
+                kind: WorkItemKind::FollowUp,
+                lane: WorkLane::Interactive,
+                origin: format!("follow-up of {}", parent.id),
+                trace_id: parent.trace_id.clone(),
+            },
+            at,
+        )
+        .with_source(Some(WorkSource::work_item(parent.id.clone())));
+        item.state = state;
+        item.reason = one_line(reason);
+        item.settled_at = Some(at);
+        item.follow_up = Some(follow_up);
+        item
     }
 
     /// Record what dispatched the item (builder pattern).
@@ -770,6 +952,14 @@ impl WorkItemStore {
         }
     }
 
+    /// The follow-up item recorded for the landed item `of`, if there is one.
+    #[must_use]
+    pub fn follow_up_of(&self, of: &str) -> Option<&WorkItem> {
+        self.items
+            .iter()
+            .find(|item| item.follow_up.as_ref().is_some_and(|follow_up| follow_up.of == of))
+    }
+
     /// Every item still `running`.
     pub fn running(&self) -> impl Iterator<Item = &WorkItem> {
         self.items.iter().filter(|item| item.is_running())
@@ -902,7 +1092,8 @@ fn settles_from_task_run(kind: WorkItemKind) -> bool {
         WorkItemKind::Maintenance
         | WorkItemKind::Release
         | WorkItemKind::Remediation
-        | WorkItemKind::Workflow => false,
+        | WorkItemKind::Workflow
+        | WorkItemKind::FollowUp => false,
     }
 }
 
@@ -1296,6 +1487,8 @@ mod tests {
             WorkItemKind::MajorUpgrade,
             WorkItemKind::Release,
             WorkItemKind::Remediation,
+            WorkItemKind::Workflow,
+            WorkItemKind::FollowUp,
         ] {
             assert_eq!(serde_json::to_value(kind).unwrap(), kind.tag());
         }
@@ -1678,6 +1871,7 @@ mod tests {
             (WorkItemKind::MajorUpgrade, "major_upgrade"),
             (WorkItemKind::Release, "release"),
             (WorkItemKind::Remediation, "remediation"),
+            (WorkItemKind::FollowUp, "follow_up"),
         ];
         for (kind, expected) in kinds {
             assert_eq!(serde_json::to_value(kind).unwrap(), expected);
@@ -1892,5 +2086,149 @@ mod tests {
     fn lineage_of_an_unknown_item_settles_nothing() {
         let mut store = lineage_store(vec![lineage_item("wi_a", "alpha", WorkItemState::Failed)]);
         assert!(store.settle_lineage("wi_missing", "abc123", now()).is_empty());
+    }
+
+    // --- follow-ups ----------------------------------------------------------
+
+    fn fixed(seconds: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(1_790_000_000 + seconds, 0).expect("in-range timestamp")
+    }
+
+    /// A standalone task that landed as `landedcommit` with `gaps` remaining.
+    fn landed_remainder(gaps: &[&str]) -> (WorkItem, TaskRunCompletedPayload) {
+        let mut parent = WorkItem::dispatched(spec(), fixed(0));
+        parent.id = "wi_parent".to_string();
+        let mut result = run_result(
+            TaskVerdict::Remainder {
+                gaps: gaps.iter().map(|gap| (*gap).to_string()).collect(),
+            },
+            true,
+        );
+        result.preservation_ref = Some("landedcommit".to_string());
+        parent.settle_from_task_run(&result, Some(true), fixed(1));
+        (parent, result)
+    }
+
+    #[test]
+    fn a_landed_remainder_opens_a_follow_up_needing_a_decision_with_its_gaps() {
+        let (parent, result) =
+            landed_remainder(&["  Document the flag. ", "", "Add a test\nfor it."]);
+
+        let follow_up = FollowUp::from_landed_remainder(&parent, &result).expect("a follow-up");
+        assert_eq!(
+            follow_up,
+            FollowUp {
+                of: "wi_parent".to_string(),
+                commit: Some("landedcommit".to_string()),
+                obligation: FollowUpObligation::Remainder {
+                    gaps: vec![
+                        "Document the flag.".to_string(),
+                        "Add a test\nfor it.".to_string()
+                    ],
+                },
+            }
+        );
+        let item = follow_up.clone().into_item(&parent, fixed(2));
+
+        assert_eq!(item.kind, WorkItemKind::FollowUp);
+        assert_eq!(item.lane, WorkLane::Interactive);
+        assert_eq!(item.project, parent.project);
+        assert_eq!(item.origin, "follow-up of wi_parent");
+        assert_eq!(item.source, Some(WorkSource::work_item("wi_parent")));
+        assert_eq!(item.trace_id, parent.trace_id);
+        assert_eq!(item.state, WorkItemState::NeedsDecision);
+        assert_eq!(item.reason, "remainder of wi_parent: 2 gap(s): Document the flag.");
+        assert_eq!(item.submitted_at, fixed(2));
+        assert_eq!(item.settled_at, Some(fixed(2)));
+        assert_eq!(item.started_at, None, "a follow-up never starts");
+        assert_eq!(item.pending_root, None, "nothing schedules it");
+        assert_eq!(item.disposition, None);
+        assert!(!item.occupies_slot());
+        assert_eq!(item.follow_up, Some(follow_up));
+        assert_eq!(
+            item.objective,
+            "Add a --quiet flag.\n\nRemaining gaps reported when wi_parent landed as landedcommit; \
+             the rest of the objective above is on trunk:\n- Document the flag.\n- Add a test for it."
+        );
+    }
+
+    #[test]
+    fn only_a_standalone_landing_with_a_nonblank_gap_leaves_a_follow_up() {
+        let (parent, result) = landed_remainder(&["one gap"]);
+        assert!(FollowUp::from_landed_remainder(&parent, &result).is_some());
+
+        let mut cycle = result.clone();
+        cycle.context.campaign = Some("tidy-cli".to_string());
+        assert_eq!(FollowUp::from_landed_remainder(&parent, &cycle), None, "a campaign carries it");
+
+        let (blank, blank_result) = landed_remainder(&[" ", ""]);
+        assert_eq!(FollowUp::from_landed_remainder(&blank, &blank_result), None);
+
+        let (complete, mut complete_result) = landed_remainder(&["one gap"]);
+        complete_result.verdict = TaskVerdict::Complete;
+        assert_eq!(FollowUp::from_landed_remainder(&complete, &complete_result), None);
+
+        let mut preserved = WorkItem::dispatched(spec(), fixed(0));
+        let unlanded = run_result(
+            TaskVerdict::Remainder {
+                gaps: vec!["one gap".to_string()],
+            },
+            false,
+        );
+        preserved.settle_from_task_run(&unlanded, Some(true), fixed(1));
+        assert_eq!(preserved.state, WorkItemState::Preserved);
+        assert_eq!(FollowUp::from_landed_remainder(&preserved, &unlanded), None);
+    }
+
+    #[test]
+    fn a_follow_up_without_a_commit_says_only_that_its_parent_landed() {
+        let (mut parent, result) = landed_remainder(&["one gap"]);
+        parent.disposition.as_mut().unwrap().landed_commit = None;
+        let follow_up = FollowUp::from_landed_remainder(&parent, &result).unwrap();
+        assert_eq!(follow_up.commit, None);
+        assert!(
+            follow_up
+                .into_item(&parent, fixed(2))
+                .objective
+                .contains("when wi_parent landed;"),
+            "no commit is named"
+        );
+    }
+
+    #[test]
+    fn a_follow_up_round_trips_with_a_flat_obligation_tag_and_older_records_read_without_one() {
+        let (parent, result) = landed_remainder(&["one gap"]);
+        let item = FollowUp::from_landed_remainder(&parent, &result)
+            .unwrap()
+            .into_item(&parent, fixed(2));
+
+        let json = serde_json::to_value(&item).unwrap();
+        assert_eq!(json["kind"], "follow_up");
+        assert_eq!(
+            json["follow_up"],
+            serde_json::json!({"of": "wi_parent", "commit": "landedcommit",
+                "obligation": "remainder", "gaps": ["one gap"]})
+        );
+        assert_eq!(serde_json::from_value::<WorkItem>(json).unwrap(), item);
+
+        let older = serde_json::to_value(&parent).unwrap();
+        assert!(older.get("follow_up").is_none(), "an item without one writes no key");
+        assert_eq!(serde_json::from_value::<WorkItem>(older).unwrap().follow_up, None);
+    }
+
+    #[test]
+    fn the_store_finds_the_follow_up_recorded_for_a_landed_item() {
+        let (parent, result) = landed_remainder(&["one gap"]);
+        let item = FollowUp::from_landed_remainder(&parent, &result)
+            .unwrap()
+            .into_item(&parent, fixed(2));
+        let id = item.id.clone();
+        let store = lineage_store(vec![parent, item]);
+
+        assert_eq!(
+            store.follow_up_of("wi_parent").map(|found| found.id.as_str()),
+            Some(id.as_str())
+        );
+        assert!(store.follow_up_of(&id).is_none(), "a follow-up follows its parent, not itself");
     }
 }

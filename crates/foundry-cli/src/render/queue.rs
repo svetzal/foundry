@@ -381,6 +381,9 @@ pub fn item_detail(item: &WorkItem) -> String {
     if !item.continues.is_empty() {
         let _ = writeln!(out, "{:<18}{}", "Continues:", item.continues.join(", "));
     }
+    if let Some(follow_up) = &item.follow_up {
+        follow_up_fields(&mut out, follow_up);
+    }
     if !item.depends_on.is_empty() {
         let _ = writeln!(out, "{:<18}{}", "Depends on:", item.depends_on.join(", "));
     }
@@ -405,6 +408,21 @@ pub fn item_detail(item: &WorkItem) -> String {
         optional_field(&mut out, "Prior settlement:", action.previous_settled_at.as_deref());
     }
     out
+}
+
+/// A follow-up's obligation: the landed item it follows (and the commit, when
+/// recorded), what is owed, then each gap on its own line.
+fn follow_up_fields(out: &mut String, follow_up: &crate::proto::WorkItemFollowUp) {
+    let commit = follow_up
+        .commit
+        .as_ref()
+        .map_or_else(String::new, |commit| format!(" (landed as {commit})"));
+    let _ = writeln!(out, "{:<18}{}{commit}", "Follows up:", follow_up.of);
+    let _ = writeln!(out, "{:<18}{}", "Obligation:", follow_up.obligation);
+    for (index, gap) in follow_up.gaps.iter().enumerate() {
+        let label = if index == 0 { "Gaps:" } else { "" };
+        let _ = writeln!(out, "{label:<18}- {gap}");
+    }
 }
 
 /// The heading above an item's events in `queue show`.
@@ -519,6 +537,8 @@ pub(crate) struct JsonItem<'a> {
     resumes: Option<&'a str>,
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     continues: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    follow_up: Option<JsonFollowUp<'a>>,
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     depends_on: &'a [String],
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -541,6 +561,29 @@ impl<'a> From<&'a crate::proto::WorkSource> for JsonSource<'a> {
             kind: &source.kind,
             reference: &source.r#ref,
             cycle: source.cycle,
+        }
+    }
+}
+
+/// JSON projection of a follow-up's obligation: the same flat keys the ledger
+/// writes (`of`, `commit`, the `obligation` tag, then the obligation's fields).
+#[derive(Serialize)]
+struct JsonFollowUp<'a> {
+    of: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    commit: Option<&'a str>,
+    obligation: &'a str,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    gaps: &'a [String],
+}
+
+impl<'a> From<&'a crate::proto::WorkItemFollowUp> for JsonFollowUp<'a> {
+    fn from(follow_up: &'a crate::proto::WorkItemFollowUp) -> Self {
+        Self {
+            of: &follow_up.of,
+            commit: follow_up.commit.as_deref(),
+            obligation: &follow_up.obligation,
+            gaps: &follow_up.gaps,
         }
     }
 }
@@ -573,6 +616,7 @@ impl<'a> From<&'a WorkItem> for JsonItem<'a> {
             id: &item.id,
             resumes: item.resumes.as_deref(),
             continues: &item.continues,
+            follow_up: item.follow_up.as_ref().map(JsonFollowUp::from),
             project: &item.project,
             objective: &item.objective,
             kind: &item.kind,
@@ -725,6 +769,7 @@ mod tests {
             depends_on: Vec::new(),
             not_before: None,
             continues: Vec::new(),
+            follow_up: None,
         }
     }
 
@@ -1300,6 +1345,80 @@ mod tests {
         let legacy: serde_json::Value =
             serde_json::from_str(&items_json(&[item("wi_old", "landed")], &[])).unwrap();
         assert!(legacy["items"][0].get("continues").is_none());
+    }
+
+    /// An open follow-up of the landed `wi_parent`, as the daemon sends it.
+    fn follow_up_item(commit: Option<&str>) -> WorkItem {
+        let mut item = item("wi_follow", "needs_decision");
+        item.kind = "follow_up".to_string();
+        item.origin = "follow-up of wi_parent".to_string();
+        item.reason = "remainder of wi_parent: 2 gap(s): Document the flag.".to_string();
+        item.started_at = None;
+        item.follow_up = Some(crate::proto::WorkItemFollowUp {
+            of: "wi_parent".to_string(),
+            commit: commit.map(str::to_string),
+            obligation: "remainder".to_string(),
+            gaps: vec![
+                "Document the flag.".to_string(),
+                "Cover it with a test.".to_string(),
+            ],
+        });
+        item
+    }
+
+    #[test]
+    fn show_prints_what_a_follow_up_follows_and_each_gap_on_its_own_line() {
+        let detail = item_detail(&follow_up_item(Some("landedcommit")));
+
+        assert!(detail.contains("Kind:             follow_up\n"), "{detail}");
+        assert!(
+            detail.contains(
+                "Follows up:       wi_parent (landed as landedcommit)\n\
+                 Obligation:       remainder\n\
+                 Gaps:             - Document the flag.\n\
+                 \x20                 - Cover it with a test.\n"
+            ),
+            "{detail}"
+        );
+        let without_commit = item_detail(&follow_up_item(None));
+        assert!(without_commit.contains("Follows up:       wi_parent\n"), "{without_commit}");
+        assert!(!item_detail(&item("wi_task", "landed")).contains("Follows up:"));
+    }
+
+    #[test]
+    fn show_json_carries_the_follow_up_with_the_ledgers_keys_and_omits_it_when_none() {
+        let json: serde_json::Value = serde_json::from_str(&item_with_events_json(
+            &follow_up_item(Some("landedcommit")),
+            &[],
+        ))
+        .unwrap();
+        assert_eq!(json["kind"], "follow_up");
+        assert_eq!(
+            json["follow_up"],
+            serde_json::json!({"of": "wi_parent", "commit": "landedcommit",
+                "obligation": "remainder",
+                "gaps": ["Document the flag.", "Cover it with a test."]})
+        );
+        let without_commit: serde_json::Value =
+            serde_json::from_str(&items_json(&[follow_up_item(None)], &[])).unwrap();
+        assert!(without_commit["items"][0]["follow_up"].get("commit").is_none());
+        let task: serde_json::Value =
+            serde_json::from_str(&items_json(&[item("wi_task", "landed")], &[])).unwrap();
+        assert!(task["items"][0].get("follow_up").is_none());
+    }
+
+    #[test]
+    fn an_open_follow_up_reads_as_one_open_row_naming_its_kind_and_reason() {
+        let follow_up = follow_up_item(Some("landedcommit"));
+        let open = open_only(std::slice::from_ref(&follow_up), &[]);
+
+        let row = open.lines().find(|line| line.contains("wi_follow")).expect("an open row");
+        assert!(row.contains("follow_up"), "{row}");
+        assert!(row.contains("needs_decision"), "{row}");
+        assert!(row.ends_with("remainder of wi_parent: 2 gap(s): Document the flag."), "{row}");
+        let groups = group(std::slice::from_ref(&follow_up));
+        assert_eq!(ids(&groups.open), vec!["wi_follow"]);
+        assert!(queue_overview(&[follow_up], &[]).contains(row));
     }
 
     // ── escalated campaigns ───────────────────────────────────────────────────

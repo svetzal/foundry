@@ -476,8 +476,8 @@ enum CampaignCommands {
 enum QueueCommands {
     /// Reconcile work now and print this invocation’s digest (daemon required)
     Reconcile,
-    /// Continue preserved work through a new linked task, queued for the
-    /// pacing scheduler
+    /// Continue preserved work, or an open follow-up, through a new linked
+    /// task, queued for the pacing scheduler
     Resume {
         id: String,
         #[arg(long)]

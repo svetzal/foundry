@@ -933,7 +933,7 @@ message WorkItem {
     // The task description or campaign objective the work serves.
     string objective = 3;
     // What sort of work this is: task | campaign_cycle | maintenance |
-    // major_upgrade | release | remediation.
+    // major_upgrade | release | remediation | workflow | follow_up.
     string kind = 4;
     // Which queue it belongs to: interactive | campaign | maintenance.
     string lane = 5;
@@ -991,6 +991,23 @@ message WorkItem {
     // lineage (`resumes` and `continues`) of every item settled that way.
     // Empty when it continues none. Additive.
     repeated string continues = 23;
+    // The obligation a follow_up item holds (see WorkItemFollowUp). Absent on
+    // every other kind. Additive.
+    WorkItemFollowUp follow_up = 24;
+}
+
+// An obligation a landed item left behind, held by a follow_up item until a
+// task that continues it lands (or an owner closes it).
+message WorkItemFollowUp {
+    // The landed item this obligation follows.
+    string of = 1;
+    // The trunk commit the obligation refers to. Absent when none was recorded.
+    optional string commit = 2;
+    // What is owed: remainder (gaps the reviewer reported when the work landed
+    // with a remainder verdict).
+    string obligation = 3;
+    // remainder: the gaps still to do, one per entry.
+    repeated string gaps = 4;
 }
 
 // Owner controls retain submission origin, trace, disposition and prior settlement.
@@ -1036,8 +1053,9 @@ message HoldWorkItemResponse { WorkItem item = 1; }
 // dependency settled some way other than landed, back to the queue. A released
 // dependent runs regardless of that dependency: the settled dependencies are
 // dropped from depends_on, and the recorded reason is the scheduler's own
-// verdict for the item as it now stands. Any other state is
-// FAILED_PRECONDITION. Emits work_item_released. Additive.
+// verdict for the item as it now stands. Any other state, a needs_decision item
+// that holds no root to start from, and every follow_up item (resume it
+// instead) is FAILED_PRECONDITION. Emits work_item_released. Additive.
 message ReleaseWorkItemRequest {
     string id = 1;
     string operator_origin = 2;
@@ -1107,9 +1125,12 @@ message ReconcileWorkResponse {
     string completion_json = 3;
 }
 
-// Resume only preserved work with usable preservation evidence. Persists a new
-// linked task, queued for the pacing scheduler; the original stays open until
-// actual landing. Admission stages a failed child with reason "resume admission
+// Resume preserved work with usable preservation evidence, or an open
+// (needs_decision or failed) follow_up. Persists a new linked task, queued for
+// the pacing scheduler; the original stays open until actual landing. Preserved
+// work resumes from its preservation ref and the child records `resumes`; a
+// follow-up's child starts from current trunk with the follow-up's objective
+// and records `continues`, so its landing settles the follow-up. Admission stages a failed child with reason "resume admission
 // incomplete; execution not dispatched", no started_at and a settled_at. It
 // becomes queued only after the work_item_submitted root is durably appended
 // and the ledger saved; the scheduler starts it and emits work_item_started.
