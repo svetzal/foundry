@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-10-21
+
 ### Added
 
 - A standalone task that lands with verdict `remainder` now leaves its gaps
