@@ -19,7 +19,7 @@ use foundry_sdk::payload::{
 };
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
-use foundry_sdk::work_item::{WorkItemKind, WorkItemState, WorkItemStore};
+use foundry_sdk::work_item::{FollowUpObligation, WorkItemKind, WorkItemState, WorkItemStore};
 use foundry_sdk::work_source::WorkSource;
 
 use crate::gateway::{
@@ -473,6 +473,7 @@ fn decision_prompt(
     accumulated: &str,
     gate_results: &[foundry_sdk::gates::GateResult],
     request: &CampaignAdvanceRequestedPayload,
+    trunk_ci: &[RedTrunkCi],
 ) -> String {
     let review_evidence = campaign
         .done_evidence
@@ -528,10 +529,11 @@ fn decision_prompt(
         },
     );
     let history = objective_history(campaign);
+    let trunk_ci = trunk_ci_section(trunk_ci);
     super::with_single_turn_discipline(&format!(
         "You are advancing a durable engineering campaign. Inspect the repository yourself; descriptive metadata is never current state. Decide exactly one of done, advance, recover, or escalate. You return a decision; the daemon dispatches it. Never invoke foundry task/campaign, probe localhost, or infer daemon availability from this sandbox. WRITABLE REPOSITORY: this project only; sibling repositories are read-only.\n\n\
          CAMPAIGN: {}\nMISSION: {}\nINTENT REFS: {}\nCYCLES: {} completed / {} landed / {} max\nESCALATION RULES:\n- {}\n\n\
-         OWNER DECISIONS (binding policy for this and future advances):\n{}\n\nREQUIRED REVIEW EVIDENCE:\n{}\n\nMECHANICAL DONE-GATE RESULTS (run here at formation, against the delivered trunk — the task does NOT run these):\n{}\n\nOBJECTIVE HISTORY (what this campaign has already asked for, oldest first, with the typed verdict each returned):\n{}\n\nLAST TYPED RUN RESULT:\n{}\n\nLIVE REPO SNAPSHOT (delivered trunk state):\n{}\n\nACCUMULATED UNMERGED WORK:\n{}\n\nCONTEXT ARTIFACTS (wording is binding and must be threaded into acceptance criteria):\n{}\n\n\
+         OWNER DECISIONS (binding policy for this and future advances):\n{}\n\nREQUIRED REVIEW EVIDENCE:\n{}\n\nMECHANICAL DONE-GATE RESULTS (run here at formation, against the delivered trunk — the task does NOT run these):\n{}\n\nTRUNK CI (Foundry watches the branch's GitHub CI after every landing; while any entry below is open the campaign is not done, and the next objective makes that CI green):\n{}\n\nOBJECTIVE HISTORY (what this campaign has already asked for, oldest first, with the typed verdict each returned):\n{}\n\nLAST TYPED RUN RESULT:\n{}\n\nLIVE REPO SNAPSHOT (delivered trunk state):\n{}\n\nACCUMULATED UNMERGED WORK:\n{}\n\nCONTEXT ARTIFACTS (wording is binding and must be threaded into acceptance criteria):\n{}\n\n\
          TWO TREES. The live snapshot is the delivered trunk state. The accumulated section describes a preserved branch carrying earlier cycles of THIS campaign that did not land; the next cycle starts from that ref, not from the trunk. Its work is real and already written—it is invisible to a trunk-only inspection, and any tool you run in the working directory sees the trunk, not it.\n\n\
          READ-ONLY SANDBOX. Do not run builds, tests, linters, or anything else that writes target/, caches or lock files: they cannot run here and prove nothing. Test and gate evidence comes from MECHANICAL DONE-GATE RESULTS, which the daemon ran against the delivered trunk, and from LAST TYPED RUN RESULT: a run with landed: true reached trunk only after every required gate in the project's gate file passed in its worktree, re-run after any rebase onto trunk. Judge review statements about passing tests from that evidence and the code you read. Being unable to run a command here is never a reason to escalate.\n\n\
          DONE only when every required gate passes and every review statement is true against the delivered trunk state. Accumulated unmerged work does not make a campaign done. ADVANCE must cut exactly ONE objective from mission minus current state, where current state is the trunk PLUS the accumulated work. Never re-cut an objective the accumulated commits already satisfy; if the accumulated work appears to carry the mission but has not landed, the objective is to reconcile and land it—finish the remaining gaps, get the required gates green on that branch—not to rebuild it from scratch. NO RESTATEMENT. Check the objective you are about to cut against OBJECTIVE HISTORY before you commit to it. If it substantially restates an entry there, do not re-dispatch it; decide which of exactly two things is true. Either that earlier work exists and you are reading the wrong tree—re-read the accumulated section, and the objective becomes reconcile-and-land, not rebuild. Or the earlier cycle returned `remainder` and its gaps are genuinely still open on a tree you can see, in which case asking for the same thing has already failed once and repeating it is not the correction: name the single sub-gap that blocked it, change the approach, or escalate for an owner decision. A third identical objective is never the answer. Constraints, change licenses, scope guards, and forbidden moves are gates—not co-equal objectives. DO NOT RESTATE THE MECHANICAL DONE-GATE COMMANDS AS TASK EVIDENCE. Those run here, at formation, against the delivered trunk; the task runs the project's own discovered gates in an isolated worktree and cannot produce a result for a command it is never given. Asking it to prove one creates a gap it cannot close no matter what it does. Require only evidence the task itself can produce in its worktree. State concrete proof capable of rejecting masked IDs, count-only checks, or tests that bypass the project's public API. Do not prescribe implementation mechanism. Before removal/refactor packets, perform cheap live structural probes for callers and cross-module coupling and encode discoveries as scope guards. For migrations, name each licensed behavior change with its intent ref; all other characterized behavior is frozen. Build characterization before migration. RECOVER on a missing operational capability, access, environment or evidence. State the exact prerequisite and its typed kind; this records recovery without owner judgement or extra cycles. ESCALATE only on a human judgment, fired escalation rule requiring owner authority, or a policy choice that invalidates a campaign assumption. An internal seam that TEST DESIGN pre-authorizes is never an owner question; never escalate for it.\n\n\
@@ -551,6 +553,7 @@ fn decision_prompt(
         owner_decisions,
         review_evidence,
         gates,
+        trunk_ci,
         history,
         last_result,
         snapshot,
@@ -558,6 +561,151 @@ fn decision_prompt(
         context,
         super::agent_helpers::TEST_DESIGN_GUIDANCE,
     ))
+}
+
+/// One open trunk CI follow-up of the campaign's project: the branch's CI is
+/// red at `commit` (see [`foundry_sdk::trunk_ci`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RedTrunkCi {
+    follow_up: String,
+    commit: Option<String>,
+    failing_jobs: Vec<String>,
+    log_tail: Option<String>,
+    run_url: Option<String>,
+}
+
+/// What the work-item ledger says about trunk CI on one project.
+#[derive(Debug, Default)]
+struct TrunkCiStanding {
+    /// The oldest landing whose CI is still pending: its commit and item.
+    pending: Option<(String, String)>,
+    /// Every open trunk CI follow-up.
+    red: Vec<RedTrunkCi>,
+}
+
+impl TrunkCiStanding {
+    fn of(ledger: &WorkItemStore, project: &str) -> Self {
+        let pending = ledger
+            .trunk_ci_pending(project)
+            .first()
+            .and_then(|item| item.ci.as_ref().map(|watch| (watch.commit.clone(), item.id.clone())));
+        let red = ledger
+            .open_trunk_ci_follow_ups(project)
+            .into_iter()
+            .filter_map(|item| {
+                let follow_up = item.follow_up.as_ref()?;
+                let FollowUpObligation::TrunkCi {
+                    failing_jobs,
+                    log_tail,
+                    run_url,
+                } = &follow_up.obligation
+                else {
+                    return None;
+                };
+                Some(RedTrunkCi {
+                    follow_up: item.id.clone(),
+                    commit: follow_up.commit.clone(),
+                    failing_jobs: failing_jobs.clone(),
+                    log_tail: log_tail.clone(),
+                    run_url: run_url.clone(),
+                })
+            })
+            .collect();
+        Self { pending, red }
+    }
+}
+
+/// Read trunk CI on `project` from the ledger at `work_items_path`.
+///
+/// The ledger is replaced by atomic rename, so a read needs no gate. An
+/// unreadable ledger gates nothing: the campaign keeps its loop, and the
+/// fault is logged.
+async fn trunk_ci_standing(work_items_path: &Path, project: &str) -> TrunkCiStanding {
+    let path = work_items_path.to_path_buf();
+    match tokio::task::spawn_blocking(move || WorkItemStore::load(&path)).await {
+        Ok(Ok(ledger)) => TrunkCiStanding::of(&ledger, project),
+        Ok(Err(error)) => {
+            // Best-effort: trunk CI is advisory to formation; a ledger fault
+            // must not stop the campaign, and the warn carries it.
+            tracing::warn!(%error, project, "could not read the work-item ledger for trunk CI");
+            TrunkCiStanding::default()
+        }
+        Err(error) => {
+            // Best-effort: as above, for a read that did not finish.
+            tracing::warn!(%error, project, "trunk CI ledger read did not finish");
+            TrunkCiStanding::default()
+        }
+    }
+}
+
+/// How much of one red run's log tail formation is shown. The whole tail is
+/// on the follow-up (`foundry queue show <id>`).
+const TRUNK_CI_PROMPT_LOG_BYTES: usize = 2048;
+
+/// Each red trunk CI entry with its failed jobs and the end of its log.
+fn red_trunk_ci_lines(red: &[RedTrunkCi], log_bytes: usize) -> String {
+    red.iter()
+        .map(|entry| {
+            let at = entry.commit.as_deref().map_or_else(String::new, |commit| {
+                format!(" at {}", foundry_sdk::trunk_ci::short_commit(commit))
+            });
+            let run = entry.run_url.as_deref().map_or_else(String::new, |url| format!(" ({url})"));
+            let jobs = if entry.failing_jobs.is_empty() {
+                "none named".to_string()
+            } else {
+                entry.failing_jobs.join(", ")
+            };
+            let mut line =
+                format!("- follow-up {}: CI red{at}{run}\n  failing jobs: {jobs}", entry.follow_up);
+            if let Some(tail) = entry.log_tail.as_deref().filter(|tail| !tail.trim().is_empty()) {
+                let tail = crate::gate_runner::output::compact_output(tail, log_bytes);
+                let _ =
+                    write!(line, "\n  log tail:\n    {}", tail.trim_end().replace('\n', "\n    "));
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The TRUNK CI section of a formation prompt.
+fn trunk_ci_section(red: &[RedTrunkCi]) -> String {
+    if red.is_empty() {
+        return "no open trunk CI follow-up.".to_string();
+    }
+    red_trunk_ci_lines(red, TRUNK_CI_PROMPT_LOG_BYTES)
+}
+
+/// Rewrite a `done` decision into an `advance` while trunk CI is red.
+///
+/// Foundry's gates run on its own host, which can pass where the branch's CI
+/// fails (a tool the CI runner lacks, a platform only CI covers). A campaign
+/// that completes over red CI hands its owner a broken trunk, so the next
+/// objective makes CI green, with the same forbidden moves as the done-gate
+/// rule. The green watch on that objective's landing settles the follow-up.
+fn enforce_trunk_ci_truth(
+    campaign: &Campaign,
+    decision: CampaignDecision,
+    red: &[RedTrunkCi],
+) -> CampaignDecision {
+    if !matches!(decision, CampaignDecision::Done { .. }) || red.is_empty() {
+        return decision;
+    }
+    CampaignDecision::Advance {
+        objective: format!(
+            "Make the branch's GitHub CI green again without regressing the mission.\n\n\
+             MISSION THIS CAMPAIGN MUST STILL SATISFY:\n{}\n\n\
+             RED TRUNK CI, WITH THE FAILED JOBS AND THE END OF THEIR LOG:\n{}\n\n\
+             Fix what each failing job reports, at the location it names. FORBIDDEN MOVES: \
+             weakening, skipping or deleting CI workflows, jobs or tests; deleting, reverting, or \
+             shrinking landed mission work to turn CI green; broadening a lint allowance beyond \
+             the single item a job named. EVIDENCE: the checks the failing jobs run pass in the \
+             task worktree, and the mission behavior is still present in the delivered trunk state.",
+            campaign.mission,
+            red_trunk_ci_lines(red, TRUNK_CI_PROMPT_LOG_BYTES),
+        ),
+        reason: "review proposed done while trunk CI was red".to_string(),
+    }
 }
 
 /// Keep every gate's identity and truth, but spend diagnostic space only on
@@ -1436,6 +1584,7 @@ async fn derive_advance_outcome(
     }
     let snapshot = repo_snapshot(shell, repo).await;
     let accumulated = accumulated_work(shell, repo, request, settled).await;
+    let trunk_ci = trunk_ci_standing(&execution.work_items_path, &campaign.project).await.red;
     // The gates, the snapshot, and the prompt are all deterministic for this
     // advance, so a retry re-asks the same question rather than re-deriving it.
     let decision_request = DecisionRequest {
@@ -1447,6 +1596,7 @@ async fn derive_advance_outcome(
             &accumulated,
             &gate_results,
             request,
+            &trunk_ci,
         ),
         working_dir: repo.to_path_buf(),
         agent_file: super::resolve_agent_file(&entry.agent),
@@ -1469,7 +1619,13 @@ async fn derive_advance_outcome(
         gate_results: gate_results.clone(),
     };
     Ok((
-        outcome.map_decision(|decision| enforce_done_gate_truth(campaign, decision, &gate_results)),
+        outcome.map_decision(|decision| {
+            enforce_trunk_ci_truth(
+                campaign,
+                enforce_done_gate_truth(campaign, decision, &gate_results),
+                &trunk_ci,
+            )
+        }),
         record,
     ))
 }
@@ -1819,10 +1975,60 @@ fn stand_down_before_forming(
         "campaign '{}' is {}; run recorded without advancing",
         stopped.name, stopped.status
     );
-    let events = vec![stood_down_event(
+    stand_down_recorded(
+        execution,
+        guard,
         stopped,
-        execution.throttle,
         summary.clone(),
+        summary,
+        "stopped campaign result could not be saved",
+    )
+}
+
+/// Save the run result recorded on a campaign whose project has a landing
+/// with trunk CI still pending, and stand down without forming.
+///
+/// Formation would judge a trunk whose CI is not known yet. Nothing is
+/// formed, no agent is asked, no status changes and no cycle is counted; the
+/// arriving run result stays pending on the campaign. The trunk CI watcher
+/// advances the campaign again once no watch on the project is pending, and
+/// that advance replays the recorded result (see [`replay_pending_run`]). The
+/// stand-down's reason starts with
+/// [`foundry_sdk::trunk_ci::AWAITING_TRUNK_CI`], which is how the watcher
+/// finds it in the ledger.
+fn stand_down_awaiting_trunk_ci(
+    execution: &AdvanceExecution,
+    guard: &mut CampaignStoreGuard,
+    waiting: &Campaign,
+    commit: &str,
+    item: &str,
+) -> TaskBlockResult {
+    let reason = foundry_sdk::trunk_ci::awaiting_reason(commit, item);
+    let summary = format!("campaign '{}' {reason}; run recorded without forming", waiting.name);
+    stand_down_recorded(
+        execution,
+        guard,
+        waiting,
+        reason,
+        summary,
+        "campaign result could not be saved while awaiting trunk CI",
+    )
+}
+
+/// Persist the record as `guard` holds it and announce a `stood_down`
+/// completion with `reason`.
+fn stand_down_recorded(
+    execution: &AdvanceExecution,
+    guard: &mut CampaignStoreGuard,
+    campaign: &Campaign,
+    reason: String,
+    summary: String,
+    failure_context: &str,
+) -> TaskBlockResult {
+    let events = vec![stood_down_event(
+        campaign,
+        execution.throttle,
+        reason,
         &FormationRecord::default(),
     )];
     persist_or_terminal(
@@ -1830,9 +2036,9 @@ fn stand_down_before_forming(
         guard,
         events,
         summary,
-        "stopped campaign result could not be saved",
-        stopped.cycles_completed,
-        stopped.cycles_landed,
+        failure_context,
+        campaign.cycles_completed,
+        campaign.cycles_landed,
     )
 }
 
@@ -2066,6 +2272,7 @@ async fn prepare_formation_inner(
     recorded: &mut Vec<Event>,
 ) -> Prepared {
     let work_item = result_work_item(execution).await;
+    let trunk_ci = trunk_ci_standing(&execution.work_items_path, &execution.project).await;
     let (mut guard, active_members) = match lock_formation_store(execution).await {
         Ok(locked) => locked,
         Err(error) => {
@@ -2178,13 +2385,31 @@ async fn prepare_formation_inner(
         ));
     }
 
-    if initiative_steers && execution.request.run_result.is_some() {
-        let accounted = campaign.clone();
-        return Prepared::Finished(accounted_for_initiative(execution, &mut guard, &accounted));
-    }
+    let unforced = campaign.clone();
+    prepare_unforced(execution, &mut guard, unforced, initiative_steers, &trunk_ci, &active_members)
+}
 
-    let formed_from = campaign.clone();
-    save_formation_snapshot(execution, &guard, formed_from, &active_members)
+/// The rest of the first critical section, for a campaign no outcome was
+/// forced on: an initiative that steers its member accounts for the result;
+/// a project whose trunk CI is pending stands down until it concludes;
+/// otherwise the record is saved and formed from.
+fn prepare_unforced(
+    execution: &AdvanceExecution,
+    guard: &mut CampaignStoreGuard,
+    campaign: Campaign,
+    initiative_steers: bool,
+    trunk_ci: &TrunkCiStanding,
+    active_members: &[String],
+) -> Prepared {
+    if initiative_steers && execution.request.run_result.is_some() {
+        return Prepared::Finished(accounted_for_initiative(execution, guard, &campaign));
+    }
+    if let Some((commit, item)) = &trunk_ci.pending {
+        return Prepared::Finished(stand_down_awaiting_trunk_ci(
+            execution, guard, &campaign, commit, item,
+        ));
+    }
+    save_formation_snapshot(execution, guard, campaign, active_members)
 }
 
 fn initiative_steering_enabled(store: &CampaignStore, member: &str) -> bool {
@@ -2653,11 +2878,12 @@ mod tests {
     use crate::gateway::{AgentFailureKind, AgentProvider, AgentResponse};
 
     use super::{
-        AdvanceCampaign, AdvanceOutcome, DECISION_ATTEMPTS, Recheck, enforce_campaign_budget,
-        enforce_done_gate_truth, formation_gate_results, last_run_line, outcome_label,
-        parse_decision, recheck, settled_base, update_run_and_forced_outcome,
+        AdvanceCampaign, AdvanceOutcome, DECISION_ATTEMPTS, Recheck, RedTrunkCi, TrunkCiStanding,
+        enforce_campaign_budget, enforce_done_gate_truth, enforce_trunk_ci_truth,
+        formation_gate_results, last_run_line, outcome_label, parse_decision, recheck,
+        settled_base, trunk_ci_section, update_run_and_forced_outcome,
     };
-    use foundry_sdk::work_item::WorkItemStore;
+    use foundry_sdk::work_item::{WorkItemKind, WorkItemStore};
 
     /// The block under test, reading its work-item ledger from
     /// `work_items.json` beside the campaign store. A test that never writes
@@ -2782,6 +3008,123 @@ mod tests {
             panic!("a red required gate must rewrite done into advance");
         };
         assert!(objective.contains("full logs: /logs/campaign_done_1.stderr.log"), "{objective}");
+    }
+
+    fn red_trunk_ci() -> RedTrunkCi {
+        RedTrunkCi {
+            follow_up: "wi_red".to_string(),
+            commit: Some("abcdef0123".to_string()),
+            failing_jobs: vec!["test (macos)".to_string()],
+            log_tail: Some("error[E0425]: cannot find value\nnot found in this scope".to_string()),
+            run_url: Some("https://ci/run/9".to_string()),
+        }
+    }
+
+    #[test]
+    fn red_trunk_ci_rewrites_done_into_an_advance_naming_the_jobs_and_the_log() {
+        let campaign = campaign_for_accumulation_test();
+        let done = CampaignDecision::Done {
+            reason: "looks shipped".to_string(),
+        };
+
+        let decision = enforce_trunk_ci_truth(&campaign, done.clone(), &[red_trunk_ci()]);
+
+        let CampaignDecision::Advance { objective, reason } = decision else {
+            panic!("red trunk CI must rewrite done into advance");
+        };
+        assert_eq!(reason, "review proposed done while trunk CI was red");
+        for needle in [
+            campaign.mission.as_str(),
+            "follow-up wi_red: CI red at abcdef0 (https://ci/run/9)",
+            "failing jobs: test (macos)",
+            "    not found in this scope",
+            "FORBIDDEN MOVES: weakening, skipping or deleting CI workflows, jobs or tests",
+        ] {
+            assert!(objective.contains(needle), "{needle} in:\n{objective}");
+        }
+        assert_eq!(
+            enforce_trunk_ci_truth(&campaign, done.clone(), &[]),
+            done,
+            "green: done stands"
+        );
+        let advance = CampaignDecision::Advance {
+            objective: "o".to_string(),
+            reason: "r".to_string(),
+        };
+        assert_eq!(enforce_trunk_ci_truth(&campaign, advance.clone(), &[red_trunk_ci()]), advance);
+    }
+
+    #[test]
+    fn the_trunk_ci_section_lists_each_red_follow_up_or_says_there_is_none() {
+        assert_eq!(trunk_ci_section(&[]), "no open trunk CI follow-up.");
+        let mut long = red_trunk_ci();
+        long.log_tail = Some("x".repeat(10_000));
+        long.failing_jobs.clear();
+        let section = trunk_ci_section(&[long]);
+        assert!(section.contains("failing jobs: none named"), "{section}");
+        assert!(section.len() < 3_000, "the log tail is bounded: {}", section.len());
+    }
+
+    #[test]
+    fn trunk_ci_standing_reads_the_oldest_pending_watch_and_every_open_red_follow_up() {
+        use foundry_sdk::trunk_ci::{TrunkCiConclusion, TrunkCiWatch};
+        use foundry_sdk::work_item::{WorkItem, WorkItemSpec, WorkLane};
+        let landed = |id: &str, commit: &str, minutes: i64| {
+            let mut item = WorkItem::dispatched(
+                WorkItemSpec {
+                    project: "p".to_string(),
+                    objective: format!("objective {id}"),
+                    kind: WorkItemKind::Task,
+                    lane: WorkLane::Interactive,
+                    origin: "test".to_string(),
+                    trace_id: None,
+                },
+                chrono::Utc::now(),
+            );
+            item.id = id.to_string();
+            item.settle_landed("landed", chrono::Utc::now());
+            item.ci = Some(TrunkCiWatch::pending(
+                "o/r",
+                "main",
+                commit,
+                chrono::DateTime::from_timestamp(1_790_000_000, 0).unwrap()
+                    + chrono::Duration::minutes(minutes),
+            ));
+            item
+        };
+        let mut ledger = WorkItemStore::default();
+        ledger.upsert(landed("wi_red", "aaaaaaa", 0));
+        ledger.upsert(landed("wi_late", "ccccccc", 20));
+        ledger.upsert(landed("wi_early", "bbbbbbb", 10));
+        let opened = ledger
+            .apply_trunk_ci(
+                "wi_red",
+                "aaaaaaa",
+                TrunkCiConclusion::Failed {
+                    run_url: None,
+                    failing_jobs: vec!["lint".to_string()],
+                    log_tail: None,
+                    detail: None,
+                },
+                chrono::Utc::now(),
+            )
+            .opened
+            .unwrap();
+
+        let standing = TrunkCiStanding::of(&ledger, "p");
+
+        assert_eq!(standing.pending, Some(("bbbbbbb".to_string(), "wi_early".to_string())));
+        assert_eq!(
+            standing.red,
+            vec![RedTrunkCi {
+                follow_up: opened.id,
+                commit: Some("aaaaaaa".to_string()),
+                failing_jobs: vec!["lint".to_string()],
+                log_tail: None,
+                run_url: None,
+            }]
+        );
+        assert!(TrunkCiStanding::of(&ledger, "other").pending.is_none());
     }
 
     #[tokio::test]

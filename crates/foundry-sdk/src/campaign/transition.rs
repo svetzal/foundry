@@ -90,6 +90,12 @@ pub enum TransitionError {
     /// `edit` named the done evidence the campaign already has. This is how a
     /// retried edit is refused once the first one succeeded.
     UnchangedDoneEvidence { name: String },
+    /// `complete` was requested while the campaign's project has open trunk
+    /// CI follow-ups: its branch's CI is red.
+    TrunkCiRed {
+        name: String,
+        follow_ups: Vec<String>,
+    },
 }
 
 impl std::fmt::Display for TransitionError {
@@ -158,6 +164,13 @@ impl std::fmt::Display for TransitionError {
             Self::UnchangedDoneEvidence { name } => {
                 write!(f, "campaign '{name}' already has this done evidence; nothing to apply")
             }
+            Self::TrunkCiRed { name, follow_ups } => write!(
+                f,
+                "campaign '{name}' cannot complete while its trunk CI is red: open trunk CI \
+                 follow-up(s) {}; resume each with `foundry queue resume <id>` or close it with \
+                 `foundry queue close <id> --reason <text>` first",
+                follow_ups.join(", ")
+            ),
         }
     }
 }
@@ -448,18 +461,26 @@ impl Campaign {
 
     /// Mark an authorized campaign complete outside the formation loop.
     ///
+    /// `open_trunk_ci` names the open trunk CI follow-ups of the campaign's
+    /// project (see `crate::work_item::WorkItemStore::open_trunk_ci_follow_ups`):
+    /// the branch's CI is red, and a campaign does not complete over a red
+    /// trunk. The caller reads them from the work-item ledger.
+    ///
     /// Guard ordering is load-bearing: `authorized_by` is checked first, then
     /// `Completed` (idempotent — returns `AlreadySettled`), then `Cancelled`
-    /// (rejected — cancellation is terminal and distinct from completion).
+    /// (rejected — cancellation is terminal and distinct from completion),
+    /// then red trunk CI (rejected until each follow-up is resumed and lands,
+    /// or is closed).
     ///
     /// # Errors
     ///
-    /// Returns [`TransitionError`] when the campaign is unauthorized or
-    /// `Cancelled`.
+    /// Returns [`TransitionError`] when the campaign is unauthorized,
+    /// `Cancelled`, or its project's trunk CI is red.
     pub fn complete(
         &mut self,
         reason: &str,
         at: DateTime<Utc>,
+        open_trunk_ci: &[String],
     ) -> Result<Transition, TransitionError> {
         let authorized_by =
             self.authorized_by.clone().ok_or_else(|| TransitionError::Unauthorized {
@@ -472,6 +493,12 @@ impl Campaign {
         if self.status == CampaignStatus::Cancelled {
             return Err(TransitionError::CancelledCannotComplete {
                 name: self.name.clone(),
+            });
+        }
+        if !open_trunk_ci.is_empty() {
+            return Err(TransitionError::TrunkCiRed {
+                name: self.name.clone(),
+                follow_ups: open_trunk_ci.to_vec(),
             });
         }
         self.owner_decisions.push(OwnerDecision {
@@ -1171,7 +1198,7 @@ mod tests {
     fn complete_table() {
         for status in ALL_STATUSES {
             let mut c = campaign(status, true);
-            let result = c.complete("done", at());
+            let result = c.complete("done", at(), &[]);
             match status {
                 CampaignStatus::Completed => assert_eq!(result, Ok(Transition::AlreadySettled)),
                 CampaignStatus::Cancelled => assert_eq!(
@@ -1355,10 +1382,47 @@ mod tests {
     }
 
     #[test]
+    fn complete_is_refused_while_trunk_ci_is_red_and_names_each_follow_up() {
+        for status in ALL_STATUSES {
+            let mut c = campaign(status, true);
+            let before = c.clone();
+            let red = ["wi_red1".to_string(), "wi_red2".to_string()];
+            let result = c.complete("done", at(), &red);
+            match status {
+                CampaignStatus::Completed => assert_eq!(result, Ok(Transition::AlreadySettled)),
+                CampaignStatus::Cancelled => assert_eq!(
+                    result,
+                    Err(TransitionError::CancelledCannotComplete {
+                        name: "c".to_string()
+                    })
+                ),
+                _ => {
+                    let error = result.unwrap_err();
+                    assert_eq!(
+                        error,
+                        TransitionError::TrunkCiRed {
+                            name: "c".to_string(),
+                            follow_ups: red.to_vec(),
+                        }
+                    );
+                    let message = error.to_string();
+                    assert!(message.contains("wi_red1, wi_red2"), "{message}");
+                    assert!(message.contains("foundry queue resume"), "{message}");
+                    assert_eq!(
+                        serde_json::to_value(&c).unwrap(),
+                        serde_json::to_value(&before).unwrap(),
+                        "a refused completion changes nothing"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn complete_requires_authorization() {
         let mut c = campaign(CampaignStatus::Active, false);
         assert_eq!(
-            c.complete("done", at()),
+            c.complete("done", at(), &[]),
             Err(TransitionError::Unauthorized {
                 name: "c".to_string(),
                 detail: "complete requires authorized_by",
@@ -1560,7 +1624,7 @@ mod tests {
         assert!(c.open_escalation.is_none(), "edit");
 
         let mut c = escalated_with_record();
-        assert_eq!(c.complete("shipped", at()).unwrap(), Transition::Applied);
+        assert_eq!(c.complete("shipped", at(), &[]).unwrap(), Transition::Applied);
         assert!(c.open_escalation.is_none(), "complete");
 
         let mut c = escalated_with_record();
@@ -1583,7 +1647,7 @@ mod tests {
                 at(),
                 u64::from(command.contains("--add-cycles")),
             ),
-            "complete" => c.complete("r", at()).map(|_| ()),
+            "complete" => c.complete("r", at(), &[]).map(|_| ()),
             "edit" => c.amend_done_evidence(vec![gate("true")], "r", at()),
             "cancel" => c.cancel("r", at()).map(|_| ()),
             other => panic!("unknown verb {other}"),

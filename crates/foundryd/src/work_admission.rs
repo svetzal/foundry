@@ -409,6 +409,7 @@ fn control_event(kind: &EventType) -> bool {
             | EventType::WorkItemReleased
             | EventType::PacingPaused
             | EventType::PacingResumed
+            | EventType::TrunkCiChecked
             | EventType::AgentSessionStarted
             | EventType::AgentSessionEnded
             | EventType::InitiativeAdded
@@ -674,12 +675,7 @@ impl WorkAdmission for DurableWorkAdmission {
                         }
                     }
                 } else if workflow_succeeded(root, result) {
-                    let reason = if root.throttle.permits_mutation() {
-                        "workflow completed"
-                    } else {
-                        "dry-run completed; mutations simulated"
-                    };
-                    item.settle_landed(reason, Utc::now());
+                    item.settle_landed(&succeeded_reason(root, result), Utc::now());
                 } else {
                     item.settle_failed("workflow failed; inspect its trace", Utc::now());
                 }
@@ -805,6 +801,37 @@ fn terminal_kind(root: &Event) -> Option<EventType> {
         }
         _ => None,
     }
+}
+
+/// The reason a workflow that succeeded settles `landed` with.
+fn succeeded_reason(root: &Event, result: &ProcessResult) -> String {
+    if !root.throttle.permits_mutation() {
+        "dry-run completed; mutations simulated".to_string()
+    } else if let Some(reason) = stood_down_reason(root, result) {
+        reason
+    } else {
+        "workflow completed".to_string()
+    }
+}
+
+/// Why a campaign advance stood down without forming, read off its last
+/// `campaign_advance_completed`, or `None` for any other workflow or outcome.
+///
+/// The advance's work item settles `landed` with it, so `foundry campaign
+/// show` and the trunk CI watcher read why it stood down (paused, cancelled,
+/// awaiting trunk CI) instead of a bare "workflow completed".
+fn stood_down_reason(root: &Event, result: &ProcessResult) -> Option<String> {
+    if root.event_type != EventType::CampaignAdvanceRequested {
+        return None;
+    }
+    let completed = result
+        .events
+        .iter()
+        .rfind(|event| event.event_type == EventType::CampaignAdvanceCompleted)?;
+    (completed.payload_str("decision") == Some("stood_down"))
+        .then(|| completed.payload_str("reason").map(str::to_string))
+        .flatten()
+        .filter(|reason| !reason.trim().is_empty())
 }
 
 /// An outcome event that reports `success: false`.
@@ -2794,6 +2821,30 @@ mod tests {
             block_executions: vec![],
             total_duration_ms: 0,
         }
+    }
+
+    #[test]
+    fn a_stood_down_advance_names_why_and_any_other_outcome_names_nothing() {
+        let advance = root(EventType::CampaignAdvanceRequested, "alpha");
+        let outcome = |payload: serde_json::Value| {
+            let mut completed = root(EventType::CampaignAdvanceCompleted, "alpha");
+            completed.payload = payload;
+            ProcessResult {
+                events: vec![completed],
+                block_executions: vec![],
+                total_duration_ms: 0,
+            }
+        };
+        let stood_down = outcome(serde_json::json!({"decision": "stood_down",
+            "campaign_status": "active", "reason": "awaiting trunk CI on abcdef0 (wi_1)"}));
+        assert_eq!(
+            super::stood_down_reason(&advance, &stood_down).as_deref(),
+            Some("awaiting trunk CI on abcdef0 (wi_1)")
+        );
+        let decided = outcome(serde_json::json!({"decision": "advance", "reason": "gap"}));
+        assert_eq!(super::stood_down_reason(&advance, &decided), None);
+        let other = root(EventType::ProjectIterationRequested, "alpha");
+        assert_eq!(super::stood_down_reason(&other, &stood_down), None);
     }
 
     fn queued_steers(h: &Harness) -> Vec<Event> {

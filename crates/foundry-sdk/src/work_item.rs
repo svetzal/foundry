@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::StoreError;
 use crate::event::Event;
 use crate::payload::{TaskRunCompletedPayload, TaskVerdict};
+use crate::trunk_ci::{TrunkCiConclusion, TrunkCiState, TrunkCiWatch};
 use crate::work_source::WorkSource;
 
 /// Current work-item store format version. Bumped on schema-breaking changes.
@@ -284,22 +285,45 @@ pub enum FollowUpObligation {
         /// The gaps, one line each, as the reviewer reported them.
         gaps: Vec<String>,
     },
+    /// The branch's CI went red on the landed commit (see
+    /// [`crate::trunk_ci`]): it is owed green again.
+    TrunkCi {
+        /// The failed jobs of the red run.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        failing_jobs: Vec<String>,
+        /// The end of the red run's failed-job log.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        log_tail: Option<String>,
+        /// The red run.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_url: Option<String>,
+    },
 }
+
+/// The tag of [`FollowUpObligation::Remainder`].
+pub const REMAINDER_OBLIGATION: &str = "remainder";
+/// The tag of [`FollowUpObligation::TrunkCi`].
+pub const TRUNK_CI_OBLIGATION: &str = "trunk_ci";
 
 impl FollowUpObligation {
     /// The serialized tag this obligation is written to disk and to the wire as.
     #[must_use]
     pub fn tag(&self) -> &'static str {
         match self {
-            Self::Remainder { .. } => "remainder",
+            Self::Remainder { .. } => REMAINDER_OBLIGATION,
+            Self::TrunkCi { .. } => TRUNK_CI_OBLIGATION,
         }
     }
 
     /// The state a new follow-up holding this obligation opens in.
+    ///
+    /// Remaining gaps wait for the owner's decision. Red CI is a fault on
+    /// trunk, so it opens `failed`.
     #[must_use]
     pub fn opening_state(&self) -> WorkItemState {
         match self {
             Self::Remainder { .. } => WorkItemState::NeedsDecision,
+            Self::TrunkCi { .. } => WorkItemState::Failed,
         }
     }
 
@@ -323,19 +347,85 @@ impl FollowUpObligation {
                 }
                 objective
             }
+            Self::TrunkCi {
+                failing_jobs,
+                log_tail,
+                run_url,
+            } => trunk_ci_objective(
+                parent,
+                commit,
+                failing_jobs,
+                log_tail.as_deref(),
+                run_url.as_deref(),
+            ),
         }
     }
 
     /// The one-line reason a new follow-up holding this obligation opens with.
     #[must_use]
-    pub fn reason(&self, parent_id: &str) -> String {
+    pub fn reason(&self, parent_id: &str, commit: Option<&str>) -> String {
         match self {
             Self::Remainder { gaps } => {
                 let first = gaps.first().map_or("", String::as_str);
                 format!("remainder of {parent_id}: {} gap(s): {first}", gaps.len())
             }
+            Self::TrunkCi { failing_jobs, .. } => {
+                let at = commit.map_or_else(String::new, |commit| {
+                    format!(" at {}", crate::trunk_ci::short_commit(commit))
+                });
+                let jobs = if failing_jobs.is_empty() {
+                    "no failed job named".to_string()
+                } else {
+                    failing_jobs.join(", ")
+                };
+                format!("trunk CI red{at} after {parent_id}: {jobs}")
+            }
         }
     }
+}
+
+/// The objective of a task that makes trunk CI green again after `parent`
+/// landed as `commit` and CI went red.
+fn trunk_ci_objective(
+    parent: &WorkItem,
+    commit: Option<&str>,
+    failing_jobs: &[String],
+    log_tail: Option<&str>,
+    run_url: Option<&str>,
+) -> String {
+    let (repo, branch) =
+        parent.ci.as_ref().map_or(("the repository", "the trunk branch"), |watch| {
+            (watch.repo.as_str(), watch.branch.as_str())
+        });
+    let landed = commit.map_or_else(
+        || format!("{} landed", parent.id),
+        |commit| format!("{} landed as {commit}", parent.id),
+    );
+    let run = run_url.map_or_else(String::new, |url| format!(" ({url})"));
+    let mut objective = format!(
+        "Make the CI of {branch} on {repo} green again.\n\n\
+         {landed}, and the CI run for that commit failed{run}. The landed work's objective was:\n{}\n\n\
+         FAILING JOBS:",
+        parent.objective.trim_end()
+    );
+    if failing_jobs.is_empty() {
+        objective.push_str("\n- (no failed job was named; read the run)");
+    }
+    for job in failing_jobs {
+        objective.push_str("\n- ");
+        objective.push_str(&one_line(job));
+    }
+    if let Some(tail) = log_tail.filter(|tail| !tail.trim().is_empty()) {
+        objective.push_str("\n\nFAILED-JOB LOG TAIL:\n");
+        objective.push_str(tail.trim_end());
+    }
+    objective.push_str(
+        "\n\nFix the cause the failing jobs report, at the location they name, and keep the \
+         landed work's behaviour. FORBIDDEN MOVES: weakening, skipping or deleting CI \
+         workflows, jobs or tests to turn the run green. Foundry checks the CI of the commit \
+         this fix lands as.",
+    );
+    objective
 }
 
 impl FollowUp {
@@ -383,7 +473,7 @@ impl FollowUp {
     #[must_use]
     pub fn into_item(self, parent: &WorkItem, at: DateTime<Utc>) -> WorkItem {
         let objective = self.obligation.objective(parent, self.commit.as_deref());
-        let reason = self.obligation.reason(&parent.id);
+        let reason = self.obligation.reason(&parent.id, self.commit.as_deref());
         let state = self.obligation.opening_state();
         WorkItem::follow_up(parent, self, objective, state, &reason, at)
     }
@@ -446,6 +536,12 @@ pub struct WorkItem {
     /// other kind, and on records written before follow-ups existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub follow_up: Option<FollowUp>,
+    /// The trunk CI watch on a landed task's commit (see [`crate::trunk_ci`]).
+    /// Recorded only when the item's own run landed it on a project with a
+    /// GitHub repository; absent on every other item and on records written
+    /// before the watch existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ci: Option<TrunkCiWatch>,
     /// Latest owner action. Absent on records predating owner controls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator_action: Option<WorkItemOperatorAction>,
@@ -567,6 +663,7 @@ impl WorkItem {
             resumes: None,
             continues: Vec::new(),
             follow_up: None,
+            ci: None,
             depends_on: Vec::new(),
             not_before: None,
             pending_root: None,
@@ -952,12 +1049,252 @@ impl WorkItemStore {
         }
     }
 
-    /// The follow-up item recorded for the landed item `of`, if there is one.
+    /// The follow-up item recorded for the landed item `of` holding an
+    /// obligation tagged `obligation` (see [`FollowUpObligation::tag`]), if
+    /// there is one. One landed item can owe both its remaining gaps and red
+    /// trunk CI, each at most once.
     #[must_use]
-    pub fn follow_up_of(&self, of: &str) -> Option<&WorkItem> {
+    pub fn follow_up_of(&self, of: &str, obligation: &str) -> Option<&WorkItem> {
+        self.items.iter().find(|item| {
+            item.follow_up.as_ref().is_some_and(|follow_up| {
+                follow_up.of == of && follow_up.obligation.tag() == obligation
+            })
+        })
+    }
+
+    /// Every item of `project` whose trunk CI watch is still pending, oldest
+    /// watch first.
+    #[must_use]
+    pub fn trunk_ci_pending(&self, project: &str) -> Vec<&WorkItem> {
+        let mut pending: Vec<&WorkItem> = self
+            .items
+            .iter()
+            .filter(|item| {
+                item.project == project && item.ci.as_ref().is_some_and(TrunkCiWatch::is_pending)
+            })
+            .collect();
+        pending.sort_by_key(|item| item.ci.as_ref().map(|watch| watch.requested_at));
+        pending
+    }
+
+    /// Every open trunk CI follow-up of `project`: what keeps its branch red
+    /// as far as the ledger knows.
+    #[must_use]
+    pub fn open_trunk_ci_follow_ups(&self, project: &str) -> Vec<&WorkItem> {
         self.items
             .iter()
-            .find(|item| item.follow_up.as_ref().is_some_and(|follow_up| follow_up.of == of))
+            .filter(|item| {
+                item.project == project
+                    && item.kind == WorkItemKind::FollowUp
+                    && item.state.is_open()
+                    && item.follow_up.as_ref().is_some_and(|follow_up| {
+                        matches!(follow_up.obligation, FollowUpObligation::TrunkCi { .. })
+                    })
+            })
+            .collect()
+    }
+
+    /// The campaigns of `project` whose latest advance stood down awaiting
+    /// trunk CI (see [`crate::trunk_ci::AWAITING_TRUNK_CI`]), each with that
+    /// advance's item id, in campaign-name order.
+    #[must_use]
+    pub fn campaigns_awaiting_trunk_ci(&self, project: &str) -> Vec<(String, String)> {
+        let mut latest: std::collections::BTreeMap<&str, &WorkItem> =
+            std::collections::BTreeMap::new();
+        for item in self.items.iter().filter(|item| item.project == project) {
+            let Some(campaign) = item
+                .started_root
+                .as_ref()
+                .or(item.pending_root.as_ref())
+                .filter(|root| root.event_type == crate::event::EventType::CampaignAdvanceRequested)
+                .and_then(|root| root.payload_str("campaign"))
+            else {
+                continue;
+            };
+            let newer =
+                latest.get(campaign).is_none_or(|seen| item.submitted_at >= seen.submitted_at);
+            if newer {
+                latest.insert(campaign, item);
+            }
+        }
+        latest
+            .into_iter()
+            .filter(|(_, item)| {
+                item.state == WorkItemState::Landed
+                    && item.reason.starts_with(crate::trunk_ci::AWAITING_TRUNK_CI)
+            })
+            .map(|(campaign, item)| (campaign.to_string(), item.id.clone()))
+            .collect()
+    }
+
+    /// Apply `conclusion` to the pending trunk CI watch of `commit` on item
+    /// `id`, at `at`, and return what changed.
+    ///
+    /// Nothing changes unless the item still holds a pending watch of exactly
+    /// that commit, so a watcher that read the ledger earlier never overwrites
+    /// a watch that concluded meanwhile. A pending conclusion only replaces
+    /// the recorded detail.
+    ///
+    /// Red opens a [`FollowUpObligation::TrunkCi`] follow-up of the item,
+    /// once, unless a watch of the same project begun later has already
+    /// passed: that landing carries this one, so the red is recorded with a
+    /// detail saying so and opens nothing. Green settles `landed`, with reason
+    /// `trunk CI green at <commit>`, every open trunk CI follow-up of the
+    /// project whose own watch began before this one, and then their lineage
+    /// (see [`Self::settle_lineage`]). `no_run` and `unavailable` record their
+    /// detail and open or settle nothing.
+    pub fn apply_trunk_ci(
+        &mut self,
+        id: &str,
+        commit: &str,
+        conclusion: TrunkCiConclusion,
+        at: DateTime<Utc>,
+    ) -> TrunkCiApplied {
+        let mut applied = TrunkCiApplied::default();
+        let Some(item) = self.find_mut(id) else {
+            return applied;
+        };
+        let project = item.project.clone();
+        let Some(watch) =
+            item.ci.as_mut().filter(|watch| watch.is_pending() && watch.commit == commit)
+        else {
+            return applied;
+        };
+        let requested_at = watch.requested_at;
+        if let TrunkCiConclusion::Pending { detail } = conclusion {
+            if watch.detail != detail {
+                watch.detail = detail;
+                applied.changed = true;
+            }
+            return applied;
+        }
+        applied.changed = true;
+        watch.state = conclusion.state();
+        watch.concluded_at = Some(at);
+        match conclusion {
+            TrunkCiConclusion::Pending { .. } => {}
+            TrunkCiConclusion::Passed { run_url } => {
+                watch.run_url = run_url;
+                watch.detail = None;
+            }
+            TrunkCiConclusion::Failed {
+                run_url,
+                failing_jobs,
+                log_tail,
+                detail,
+            } => {
+                watch.run_url = run_url;
+                watch.failing_jobs = failing_jobs;
+                watch.log_tail = log_tail;
+                watch.detail = detail;
+            }
+            TrunkCiConclusion::NoRun { detail } | TrunkCiConclusion::Unavailable { detail } => {
+                watch.detail = Some(detail);
+            }
+        }
+        match self.find(id).and_then(|item| item.ci.as_ref()).map(|watch| watch.state) {
+            Some(TrunkCiState::Failed) => {
+                self.open_trunk_ci_follow_up(id, &project, requested_at, at, &mut applied);
+            }
+            Some(TrunkCiState::Passed) => {
+                self.settle_trunk_ci_follow_ups(&project, commit, requested_at, at, &mut applied);
+            }
+            _ => {}
+        }
+        applied.concluded = self.find(id).cloned();
+        applied
+    }
+
+    /// Red: open the trunk CI follow-up of `id`, or say why not.
+    fn open_trunk_ci_follow_up(
+        &mut self,
+        id: &str,
+        project: &str,
+        requested_at: DateTime<Utc>,
+        at: DateTime<Utc>,
+        applied: &mut TrunkCiApplied,
+    ) {
+        let later_green = self
+            .items
+            .iter()
+            .filter(|other| other.project == project && other.id != id)
+            .find_map(|other| {
+                other
+                    .ci
+                    .as_ref()
+                    .filter(|watch| {
+                        watch.state == TrunkCiState::Passed && watch.requested_at > requested_at
+                    })
+                    .map(|watch| (other.id.clone(), watch.commit.clone()))
+            });
+        let existing = self.follow_up_of(id, TRUNK_CI_OBLIGATION).map(|item| item.id.clone());
+        let Some(parent) = self.find_mut(id) else {
+            return;
+        };
+        let Some(watch) = parent.ci.as_mut() else {
+            return;
+        };
+        if let Some((green, green_commit)) = later_green {
+            watch.detail = Some(format!(
+                "trunk CI already green at {} ({green}), which landed later; no follow-up opened",
+                crate::trunk_ci::short_commit(&green_commit)
+            ));
+            return;
+        }
+        if let Some(existing) = existing {
+            watch.follow_up = Some(existing);
+            return;
+        }
+        let follow_up = FollowUp {
+            of: id.to_string(),
+            commit: Some(watch.commit.clone()),
+            obligation: FollowUpObligation::TrunkCi {
+                failing_jobs: watch.failing_jobs.clone(),
+                log_tail: watch.log_tail.clone(),
+                run_url: watch.run_url.clone(),
+            },
+        };
+        let opened = follow_up.into_item(parent, at);
+        if let Some(watch) = parent.ci.as_mut() {
+            watch.follow_up = Some(opened.id.clone());
+        }
+        self.items.push(opened.clone());
+        applied.opened = Some(opened);
+    }
+
+    /// Green: settle the open trunk CI follow-ups this landing carries.
+    fn settle_trunk_ci_follow_ups(
+        &mut self,
+        project: &str,
+        commit: &str,
+        requested_at: DateTime<Utc>,
+        at: DateTime<Utc>,
+        applied: &mut TrunkCiApplied,
+    ) {
+        let carried: Vec<String> = self
+            .open_trunk_ci_follow_ups(project)
+            .into_iter()
+            .filter(|follow_up| {
+                follow_up
+                    .follow_up
+                    .as_ref()
+                    .and_then(|record| self.find(&record.of))
+                    .and_then(|parent| parent.ci.as_ref())
+                    .is_some_and(|watch| watch.requested_at < requested_at)
+            })
+            .map(|follow_up| follow_up.id.clone())
+            .collect();
+        let reason = format!("trunk CI green at {commit}");
+        for id in carried {
+            let Some(item) = self.find_mut(&id) else {
+                continue;
+            };
+            item.disposition.get_or_insert_with(WorkDisposition::default).landed_commit =
+                Some(commit.to_string());
+            item.settle_landed(&reason, at);
+            applied.settled.push(item.clone());
+            applied.settled.extend(self.settle_lineage(&id, commit, at));
+        }
     }
 
     /// Every item still `running`.
@@ -1074,6 +1411,21 @@ impl WorkItemStore {
         }
         settled
     }
+}
+
+/// What applying one trunk CI conclusion changed in the ledger (see
+/// [`WorkItemStore::apply_trunk_ci`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TrunkCiApplied {
+    /// Whether anything in the ledger changed, so it needs saving.
+    pub changed: bool,
+    /// The watched item as it now stands, when its watch concluded.
+    pub concluded: Option<WorkItem>,
+    /// The follow-up a red watch opened.
+    pub opened: Option<WorkItem>,
+    /// What a green watch settled `landed`: each open trunk CI follow-up it
+    /// carries, followed by that follow-up's lineage.
+    pub settled: Vec<WorkItem>,
 }
 
 /// The reason a preserved item settles `landed` with when the task that
@@ -2226,9 +2578,285 @@ mod tests {
         let store = lineage_store(vec![parent, item]);
 
         assert_eq!(
-            store.follow_up_of("wi_parent").map(|found| found.id.as_str()),
+            store
+                .follow_up_of("wi_parent", REMAINDER_OBLIGATION)
+                .map(|found| found.id.as_str()),
             Some(id.as_str())
         );
-        assert!(store.follow_up_of(&id).is_none(), "a follow-up follows its parent, not itself");
+        assert!(
+            store.follow_up_of("wi_parent", TRUNK_CI_OBLIGATION).is_none(),
+            "a remainder is not red CI"
+        );
+        assert!(
+            store.follow_up_of(&id, REMAINDER_OBLIGATION).is_none(),
+            "a follow-up follows its parent, not itself"
+        );
+    }
+
+    // --- trunk CI ------------------------------------------------------------
+
+    /// A task of `project` that landed as `commit` at `seconds`, watched.
+    fn watched(id: &str, project: &str, commit: &str, seconds: i64) -> WorkItem {
+        let mut item = lineage_item(id, project, WorkItemState::Landed);
+        item.objective = format!("Objective of {id}.");
+        item.disposition = Some(WorkDisposition {
+            landed_commit: Some(commit.to_string()),
+            ..WorkDisposition::default()
+        });
+        item.ci = Some(TrunkCiWatch::pending("o/r", "main", commit, fixed(seconds)));
+        item
+    }
+
+    fn red() -> TrunkCiConclusion {
+        TrunkCiConclusion::Failed {
+            run_url: Some("https://ci/run/1".to_string()),
+            failing_jobs: vec!["test (macos)".to_string(), "lint".to_string()],
+            log_tail: Some("error: tests failed\n".to_string()),
+            detail: None,
+        }
+    }
+
+    fn green() -> TrunkCiConclusion {
+        TrunkCiConclusion::Passed {
+            run_url: Some("https://ci/run/2".to_string()),
+        }
+    }
+
+    #[test]
+    fn red_trunk_ci_opens_one_failed_follow_up_naming_the_jobs_and_the_log() {
+        let mut store = lineage_store(vec![watched("wi_a", "alpha", "aaaaaaa111", 0)]);
+
+        let applied = store.apply_trunk_ci("wi_a", "aaaaaaa111", red(), fixed(60));
+
+        assert!(applied.changed);
+        let opened = applied.opened.clone().expect("a follow-up opened");
+        assert_eq!(opened.kind, WorkItemKind::FollowUp);
+        assert_eq!(opened.state, WorkItemState::Failed);
+        assert_eq!(opened.reason, "trunk CI red at aaaaaaa after wi_a: test (macos), lint");
+        assert_eq!(
+            opened.follow_up,
+            Some(FollowUp {
+                of: "wi_a".to_string(),
+                commit: Some("aaaaaaa111".to_string()),
+                obligation: FollowUpObligation::TrunkCi {
+                    failing_jobs: vec!["test (macos)".to_string(), "lint".to_string()],
+                    log_tail: Some("error: tests failed\n".to_string()),
+                    run_url: Some("https://ci/run/1".to_string()),
+                },
+            })
+        );
+        for needle in [
+            "Make the CI of main on o/r green again.",
+            "wi_a landed as aaaaaaa111",
+            "https://ci/run/1",
+            "Objective of wi_a.",
+            "- test (macos)\n- lint",
+            "FAILED-JOB LOG TAIL:\nerror: tests failed",
+            "FORBIDDEN MOVES: weakening, skipping or deleting CI",
+        ] {
+            assert!(opened.objective.contains(needle), "{needle} in:\n{}", opened.objective);
+        }
+        let watch = applied.concluded.unwrap().ci.unwrap();
+        assert_eq!(watch.state, TrunkCiState::Failed);
+        assert_eq!(watch.concluded_at, Some(fixed(60)));
+        assert_eq!(watch.follow_up.as_deref(), Some(opened.id.as_str()));
+        assert_eq!(watch.failing_jobs, vec!["test (macos)", "lint"]);
+        assert_eq!(store.open_trunk_ci_follow_ups("alpha").len(), 1);
+        assert!(store.open_trunk_ci_follow_ups("beta").is_empty());
+
+        let replay = store.apply_trunk_ci("wi_a", "aaaaaaa111", red(), fixed(70));
+        assert_eq!(replay, TrunkCiApplied::default(), "a concluded watch is never applied twice");
+    }
+
+    #[test]
+    fn red_after_a_later_landing_already_passed_opens_nothing_and_says_so() {
+        let mut later = watched("wi_b", "alpha", "bbbbbbb222", 10);
+        later.ci.as_mut().unwrap().state = TrunkCiState::Passed;
+        let mut store = lineage_store(vec![watched("wi_a", "alpha", "aaaaaaa111", 0), later]);
+
+        let applied = store.apply_trunk_ci("wi_a", "aaaaaaa111", red(), fixed(60));
+
+        assert_eq!(applied.opened, None);
+        let watch = applied.concluded.unwrap().ci.unwrap();
+        assert_eq!(watch.state, TrunkCiState::Failed);
+        assert_eq!(
+            watch.detail.as_deref(),
+            Some(
+                "trunk CI already green at bbbbbbb (wi_b), which landed later; no follow-up opened"
+            )
+        );
+        assert!(store.open_trunk_ci_follow_ups("alpha").is_empty());
+    }
+
+    #[test]
+    fn green_settles_the_open_trunk_ci_follow_ups_of_earlier_landings_only() {
+        let mut store = lineage_store(vec![
+            watched("wi_a", "alpha", "aaaaaaa111", 0),
+            watched("wi_b", "alpha", "bbbbbbb222", 10),
+            watched("wi_c", "alpha", "ccccccc333", 20),
+            watched("wi_x", "beta", "xxxxxxx999", 0),
+        ]);
+        let opened_a = store.apply_trunk_ci("wi_a", "aaaaaaa111", red(), fixed(30)).opened.unwrap();
+        let opened_x = store.apply_trunk_ci("wi_x", "xxxxxxx999", red(), fixed(30)).opened.unwrap();
+        let opened_c = store.apply_trunk_ci("wi_c", "ccccccc333", red(), fixed(30)).opened.unwrap();
+
+        let applied = store.apply_trunk_ci("wi_b", "bbbbbbb222", green(), fixed(40));
+
+        assert_eq!(
+            applied.settled.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            vec![opened_a.id.as_str()],
+            "only the earlier landing's red, and only in this project"
+        );
+        let settled = store.find(&opened_a.id).unwrap();
+        assert_eq!(settled.state, WorkItemState::Landed);
+        assert_eq!(settled.reason, "trunk CI green at bbbbbbb222");
+        assert_eq!(
+            settled.disposition.as_ref().unwrap().landed_commit.as_deref(),
+            Some("bbbbbbb222")
+        );
+        assert_eq!(store.find(&opened_c.id).unwrap().state, WorkItemState::Failed);
+        assert_eq!(store.find(&opened_x.id).unwrap().state, WorkItemState::Failed);
+        let watch = store.find("wi_b").unwrap().ci.clone().unwrap();
+        assert_eq!(watch.state, TrunkCiState::Passed);
+        assert_eq!(watch.run_url.as_deref(), Some("https://ci/run/2"));
+    }
+
+    #[test]
+    fn green_settles_the_lineage_a_trunk_ci_follow_up_continues() {
+        let mut store = lineage_store(vec![
+            watched("wi_a", "alpha", "aaaaaaa111", 0),
+            watched("wi_b", "alpha", "bbbbbbb222", 10),
+        ]);
+        let opened = store.apply_trunk_ci("wi_a", "aaaaaaa111", red(), fixed(30)).opened.unwrap();
+        let continued = lineage_item("wi_preserved", "alpha", WorkItemState::Preserved);
+        store.upsert(continued);
+        store.find_mut(&opened.id).unwrap().continues = vec!["wi_preserved".to_string()];
+
+        let applied = store.apply_trunk_ci("wi_b", "bbbbbbb222", green(), fixed(40));
+
+        assert_eq!(
+            applied.settled.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            vec![opened.id.as_str(), "wi_preserved"]
+        );
+    }
+
+    #[test]
+    fn no_run_unavailable_and_pending_record_their_detail_and_open_nothing() {
+        for (conclusion, state) in [
+            (
+                TrunkCiConclusion::NoRun {
+                    detail: "no run".to_string(),
+                },
+                TrunkCiState::NoRun,
+            ),
+            (
+                TrunkCiConclusion::Unavailable {
+                    detail: "gone".to_string(),
+                },
+                TrunkCiState::Unavailable,
+            ),
+        ] {
+            let mut store = lineage_store(vec![watched("wi_a", "alpha", "aaaaaaa111", 0)]);
+            let applied = store.apply_trunk_ci("wi_a", "aaaaaaa111", conclusion, fixed(60));
+            assert_eq!(applied.opened, None);
+            assert!(applied.settled.is_empty());
+            let watch = applied.concluded.unwrap().ci.unwrap();
+            assert_eq!(watch.state, state);
+            assert!(watch.detail.is_some());
+            assert!(store.trunk_ci_pending("alpha").is_empty());
+        }
+
+        let mut store = lineage_store(vec![watched("wi_a", "alpha", "aaaaaaa111", 0)]);
+        let detail = Some("could not read trunk CI: 502".to_string());
+        let pending = TrunkCiConclusion::Pending {
+            detail: detail.clone(),
+        };
+        let applied = store.apply_trunk_ci("wi_a", "aaaaaaa111", pending.clone(), fixed(60));
+        assert!(applied.changed);
+        assert_eq!(applied.concluded, None, "still pending");
+        assert_eq!(store.find("wi_a").unwrap().ci.as_ref().unwrap().detail, detail);
+        assert!(!store.apply_trunk_ci("wi_a", "aaaaaaa111", pending, fixed(70)).changed);
+        assert!(
+            !store.apply_trunk_ci("wi_a", "other", green(), fixed(70)).changed,
+            "another commit's conclusion never applies"
+        );
+        assert_eq!(store.trunk_ci_pending("alpha").len(), 1);
+    }
+
+    #[test]
+    fn a_trunk_ci_watch_round_trips_and_older_records_read_without_one() {
+        let item = watched("wi_a", "alpha", "aaaaaaa111", 0);
+        let json = serde_json::to_value(&item).unwrap();
+        assert_eq!(json["ci"]["state"], "pending");
+        assert_eq!(json["ci"]["commit"], "aaaaaaa111");
+        assert_eq!(serde_json::from_value::<WorkItem>(json).unwrap(), item);
+        let older =
+            serde_json::to_value(lineage_item("wi_o", "alpha", WorkItemState::Landed)).unwrap();
+        assert!(older.get("ci").is_none(), "an item without a watch writes no key");
+        assert_eq!(serde_json::from_value::<WorkItem>(older).unwrap().ci, None);
+
+        let follow_up = FollowUp {
+            of: "wi_a".to_string(),
+            commit: Some("aaaaaaa111".to_string()),
+            obligation: FollowUpObligation::TrunkCi {
+                failing_jobs: vec!["lint".to_string()],
+                log_tail: None,
+                run_url: None,
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&follow_up).unwrap(),
+            serde_json::json!({"of": "wi_a", "commit": "aaaaaaa111",
+                "obligation": "trunk_ci", "failing_jobs": ["lint"]})
+        );
+    }
+
+    #[test]
+    fn pending_watches_list_oldest_first_and_only_for_the_project() {
+        let store = lineage_store(vec![
+            watched("wi_late", "alpha", "bbbbbbb222", 10),
+            watched("wi_early", "alpha", "aaaaaaa111", 0),
+            watched("wi_other", "beta", "ccccccc333", 0),
+            lineage_item("wi_plain", "alpha", WorkItemState::Landed),
+        ]);
+        assert_eq!(
+            store
+                .trunk_ci_pending("alpha")
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["wi_early", "wi_late"]
+        );
+    }
+
+    fn advance(id: &str, campaign: &str, seconds: i64, reason: &str) -> WorkItem {
+        let root = Event::new(
+            crate::event::EventType::CampaignAdvanceRequested,
+            "alpha".to_string(),
+            crate::throttle::Throttle::Full,
+            serde_json::json!({"campaign": campaign}),
+        );
+        let mut item = WorkItem::queued(spec(), root.clone(), fixed(seconds));
+        item.id = id.to_string();
+        item.started_root = Some(root);
+        item.pending_root = None;
+        item.settle_landed(reason, fixed(seconds));
+        item
+    }
+
+    #[test]
+    fn a_campaign_awaits_trunk_ci_only_while_its_latest_advance_stood_down_for_it() {
+        let awaiting = crate::trunk_ci::awaiting_reason("aaaaaaa111", "wi_a");
+        let store = lineage_store(vec![
+            advance("wi_adv1", "tidy", 0, &awaiting),
+            advance("wi_adv2", "shrink", 0, &awaiting),
+            advance("wi_adv3", "shrink", 10, "workflow completed"),
+            advance("wi_adv4", "grow", 0, "workflow completed"),
+        ]);
+        assert_eq!(
+            store.campaigns_awaiting_trunk_ci("alpha"),
+            vec![("tidy".to_string(), "wi_adv1".to_string())]
+        );
+        assert!(store.campaigns_awaiting_trunk_ci("beta").is_empty());
     }
 }

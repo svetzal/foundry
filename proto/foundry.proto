@@ -1054,6 +1054,42 @@ message WorkItem {
     // The obligation a follow_up item holds (see WorkItemFollowUp). Absent on
     // every other kind. Additive.
     WorkItemFollowUp follow_up = 24;
+    // The trunk CI watch on a landed task's commit (see WorkItemTrunkCi).
+    // Recorded only when the item's own run landed it on a project with a
+    // registered GitHub repo. Absent on every other item. Additive.
+    WorkItemTrunkCi ci = 25;
+}
+
+// Foundry's watch of the branch's GitHub CI on the commit a task landed as.
+// The daemon asks GitHub for the commit's runs until one rule concludes:
+// pending while runs go; failed when a run on the branch failed; passed when
+// every run on it passed; no_run when none appeared within 15 minutes;
+// unavailable when still unknown 2 hours after landing. Only failed is red: it
+// opens a trunk_ci follow-up, unless a later landing's CI already passed.
+message WorkItemTrunkCi {
+    // pending | passed | failed | no_run | unavailable.
+    string state = 1;
+    // The landed commit.
+    string commit = 2;
+    // The branch it landed on.
+    string branch = 3;
+    // The run that decided the conclusion, when one did.
+    optional string run_url = 4;
+    // failed: the red run's failed jobs.
+    repeated string failing_jobs = 5;
+    // failed: the end of the red run's failed-job log.
+    optional string log_tail = 6;
+    // Why the watch stands where it does, when that needs saying (a GitHub
+    // error while pending, why it gave up, why red opened no follow-up).
+    optional string detail = 7;
+    // failed: the follow-up it opened.
+    optional string follow_up = 8;
+    // When the item landed and the watch began (ISO 8601).
+    string requested_at = 9;
+    // When it concluded (ISO 8601). Absent while pending.
+    optional string concluded_at = 10;
+    // The GitHub repository (owner/name) CI runs for.
+    string repo = 11;
 }
 
 // An obligation a landed item left behind, held by a follow_up item until a
@@ -1064,10 +1100,17 @@ message WorkItemFollowUp {
     // The trunk commit the obligation refers to. Absent when none was recorded.
     optional string commit = 2;
     // What is owed: remainder (gaps the reviewer reported when the work landed
-    // with a remainder verdict).
+    // with a remainder verdict) or trunk_ci (the branch's CI went red on the
+    // landed commit; it opens failed).
     string obligation = 3;
     // remainder: the gaps still to do, one per entry.
     repeated string gaps = 4;
+    // trunk_ci: the red run's failed jobs.
+    repeated string failing_jobs = 5;
+    // trunk_ci: the end of the red run's failed-job log.
+    optional string log_tail = 6;
+    // trunk_ci: the red run.
+    optional string run_url = 7;
 }
 
 // Owner controls retain submission origin, trace, disposition and prior settlement.

@@ -13,6 +13,7 @@ use tracing_subscriber::EnvFilter;
 use foundry_sdk::agent_config::AgentConfigStore;
 use foundry_sdk::sentinel::{SentinelStore, merge_default_seed_into};
 
+mod ci_watch;
 mod instance_lock;
 mod legacy_event_check;
 mod orchestrator;
@@ -277,6 +278,7 @@ async fn main() -> Result<()> {
     service::spawn_interrupted_cycle_recovery(&ctx, events_dir.clone());
     spawn_scheduler(&ctx, &sentinels, &scheduler_reload);
     let (pacing, pacing_wake) = spawn_pacing(&ctx);
+    spawn_trunk_ci_watcher(&ctx);
 
     let service = service::FoundryService::new(
         ctx,
@@ -638,6 +640,55 @@ fn spawn_pacing(ctx: &service::RuntimeContext) -> (foundry_sdk::pacing::PacingPa
         Arc::clone(&wake),
     );
     (pacing, wake)
+}
+
+/// Start the trunk CI watcher over the daemon's ledger, asking GitHub through
+/// the `gh` CLI. When the watches on a project conclude, it asks the
+/// campaigns that stood down awaiting them to advance, through the same
+/// function the `AdvanceCampaign` RPC uses; a refusal is logged and ignored.
+fn spawn_trunk_ci_watcher(ctx: &service::RuntimeContext) {
+    let advance_ctx = ctx.clone();
+    let advance: ci_watch::AdvanceHook = Arc::new(move |campaign: String| {
+        let ctx = advance_ctx.clone();
+        tokio::spawn(async move {
+            match service::request_campaign_advance(
+                &ctx,
+                foundry_sdk::paths::campaigns_path(),
+                foundry_sdk::paths::work_items_path(),
+                campaign.clone(),
+                ci_watch::ADVANCE_ORIGIN,
+            )
+            .await
+            {
+                Ok(response) => tracing::info!(
+                    %campaign,
+                    event_id = %response.event_id,
+                    in_flight = response.in_flight.is_some(),
+                    "trunk CI watch advanced a campaign"
+                ),
+                // Best-effort: the advance is the owner's to retry; a campaign
+                // that cannot advance now (paused, escalated, gone) refuses.
+                Err(status) => tracing::info!(
+                    %campaign,
+                    code = ?status.code(),
+                    message = %status.message(),
+                    "trunk CI watch could not advance a campaign"
+                ),
+            }
+        });
+    });
+    let gateway = Arc::new(foundry_blocks::gateway::GhTrunkCiGateway::new(Arc::new(
+        foundry_blocks::gateway::ProcessShellGateway,
+    )));
+    tokio::spawn(
+        ci_watch::TrunkCiWatcher::new(
+            ctx.clone(),
+            foundry_sdk::paths::work_items_path(),
+            gateway,
+            advance,
+        )
+        .run(),
+    );
 }
 
 fn spawn_scheduler(

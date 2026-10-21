@@ -1982,3 +1982,6 @@ mod lineage_settlement_test;
 
 #[path = "follow_up_test.rs"]
 mod follow_up_test;
+
+#[path = "trunk_ci_test.rs"]
+mod trunk_ci_test;

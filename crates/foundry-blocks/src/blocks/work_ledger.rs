@@ -23,6 +23,7 @@ use foundry_sdk::payload::{
 };
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::trunk_ci::TrunkCiWatch;
 use foundry_sdk::work_item::{
     FollowUp, WorkItem, WorkItemKind, WorkItemSpec, WorkItemStore, WorkLane, ledger_write_gate,
 };
@@ -452,6 +453,24 @@ impl SettleWorkItem {
         (verified, diagnostics)
     }
 
+    /// The GitHub repository and branch whose CI a landing on `project` is
+    /// watched on, or `None` when the project is unknown, records no `repo`,
+    /// or the registry was built without one.
+    fn trunk_ci_target(&self, project: &str) -> Option<(String, String)> {
+        let registry = self.registry.as_ref()?;
+        let guard = match super::read_registry(registry) {
+            Ok(guard) => guard,
+            Err(error) => {
+                // Best-effort: a poisoned registry lock leaves this landing
+                // unwatched; its settlement must not fail for it.
+                tracing::warn!(%error, project, "could not read the registry; trunk CI unwatched");
+                return None;
+            }
+        };
+        let entry = guard.find_project(project)?;
+        (!entry.repo.trim().is_empty()).then(|| (entry.repo.clone(), entry.branch.clone()))
+    }
+
     /// Settle the running item this result belongs to, and return it with
     /// every other item its landing settled: its lineage (see
     /// [`WorkItemStore::settle_lineage`]), each open item proved superseded
@@ -459,6 +478,12 @@ impl SettleWorkItem {
     /// landed with remaining gaps also opens a follow-up holding them (see
     /// [`FollowUp::from_landed_remainder`]), in the same ledger write; one
     /// already recorded for the item is never opened twice.
+    ///
+    /// When the run's own item settles `landed` at a nonblank commit on a
+    /// project with a registered GitHub `repo`, the same write records a
+    /// pending trunk CI watch of that commit on it (see
+    /// [`foundry_sdk::trunk_ci`]). Items settled through lineage or
+    /// supersession are never watched.
     ///
     /// `None` when the ledger holds no running item for the run — a task that
     /// started before the ledger existed, for one — or when the ledger cannot
@@ -469,19 +494,21 @@ impl SettleWorkItem {
         result: &TaskRunCompletedPayload,
         verified: &[(WorkItem, String)],
     ) -> Option<Settlement> {
+        let ci_target = self.trunk_ci_target(&trigger.project);
         let _guard = ledger_lock()?;
         let mut store = load_ledger(&self.store_path)?;
         let removed = worktree_removed(result);
+        let now = Utc::now();
         let item = store.running_for_settlement(trigger.trace_id.as_deref(), &trigger.project)?;
-        item.settle_from_task_run(result, removed, Utc::now());
+        item.settle_from_task_run(result, removed, now);
+        let landed = result.landed && item.state == foundry_sdk::work_item::WorkItemState::Landed;
+        let commit = result.preservation_ref.clone().filter(|commit| !commit.trim().is_empty());
+        if landed && let (Some(commit), Some((repo, branch))) = (&commit, &ci_target) {
+            item.ci = Some(TrunkCiWatch::pending(repo, branch, commit, now));
+        }
         let settled = item.clone();
         let mut additional = Vec::new();
-        let landed =
-            result.landed && settled.state == foundry_sdk::work_item::WorkItemState::Landed;
-        if landed
-            && let Some(commit) =
-                result.preservation_ref.as_ref().filter(|commit| !commit.trim().is_empty())
-        {
+        if landed && let Some(commit) = &commit {
             additional.extend(store.settle_lineage(&settled.id, commit, Utc::now()));
         }
         for (candidate, commit) in
@@ -506,7 +533,9 @@ impl SettleWorkItem {
             additional.extend(store.settle_lineage(&superseded, commit, Utc::now()));
         }
         let follow_up = FollowUp::from_landed_remainder(&settled, result)
-            .filter(|follow_up| store.follow_up_of(&follow_up.of).is_none())
+            .filter(|follow_up| {
+                store.follow_up_of(&follow_up.of, follow_up.obligation.tag()).is_none()
+            })
             .map(|follow_up| follow_up.into_item(&settled, Utc::now()));
         if let Some(item) = &follow_up {
             store.upsert(item.clone());
@@ -1610,6 +1639,66 @@ mod tests {
         assert_eq!(settlement.child.state, WorkItemState::Landed);
         assert_eq!(settlement.follow_up, None, "the campaign's formation carries it");
         assert_eq!(WorkItemStore::load(&path).unwrap().items.len(), 1);
+    }
+
+    fn registry_with_repo(repo: &str) -> Arc<std::sync::RwLock<foundry_sdk::registry::Registry>> {
+        let mut entry = test_helpers::project_entry("alpha", "/tmp/alpha");
+        entry.repo = repo.to_string();
+        entry.branch = "trunk".to_string();
+        test_helpers::registry_with_entry(entry)
+    }
+
+    #[test]
+    fn a_landing_on_a_project_with_a_repo_records_a_pending_trunk_ci_watch_of_its_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work-items.json");
+        let (_, continued) = continuation_ledger(dir.path());
+        let trigger = completion(TaskVerdict::Complete, true, None);
+        let result = trigger.parse_payload::<TaskRunCompletedPayload>().unwrap();
+
+        let settlement = SettleWorkItem::with_registry(path.clone(), registry_with_repo("o/alpha"))
+            .settle(&trigger, &result, &[])
+            .unwrap();
+
+        let watch = settlement.child.ci.clone().expect("the landing is watched");
+        assert_eq!(watch.repo, "o/alpha");
+        assert_eq!(watch.branch, "trunk");
+        assert_eq!(watch.commit, "ref-or-commit");
+        assert_eq!(watch.state, foundry_sdk::trunk_ci::TrunkCiState::Pending);
+        let after = WorkItemStore::load(&path).unwrap();
+        assert_eq!(after.items[0].ci, Some(watch), "in the same ledger write");
+        assert!(!settlement.discharged.is_empty(), "the lineage settled too");
+        for item in &settlement.discharged {
+            assert_eq!(item.ci, None, "items settled through lineage are never watched");
+        }
+        assert!(continued.iter().all(|item| after.find(&item.id).unwrap().ci.is_none()));
+        let announced = settlement.events(&trigger);
+        assert_eq!(announced[0].payload["ci"]["state"], "pending");
+    }
+
+    #[test]
+    fn no_watch_without_a_repo_a_registry_or_a_landing() {
+        for (registry, verdict, landed) in [
+            (Some(registry_with_repo("")), TaskVerdict::Complete, true),
+            (None, TaskVerdict::Complete, true),
+            (Some(registry_with_repo("o/alpha")), TaskVerdict::Complete, false),
+            (Some(registry_with_repo("o/alpha")), remainder(&["gap"]), false),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("work-items.json");
+            seed_dispatch(&path, &dispatch(&serde_json::json!({})));
+            start_queued(&path);
+            let trigger = completion(verdict.clone(), landed, None);
+            let result = trigger.parse_payload::<TaskRunCompletedPayload>().unwrap();
+            let block = match registry {
+                Some(registry) => SettleWorkItem::with_registry(path.clone(), registry),
+                None => SettleWorkItem::new(path.clone()),
+            };
+
+            let settlement = block.settle(&trigger, &result, &[]).unwrap();
+
+            assert_eq!(settlement.child.ci, None, "{verdict:?} landed={landed}");
+        }
     }
 
     #[test]

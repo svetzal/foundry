@@ -76,6 +76,11 @@ pub use codex::CodexAgentGateway;
 pub mod routing;
 pub use routing::RoutingAgentGateway;
 
+// The GitHub boundary of the trunk CI watch: which CI runs a landed commit
+// has, and what a red one says.
+pub mod trunk_ci;
+pub use trunk_ci::{GhTrunkCiGateway, TrunkCiGateway};
+
 /// Production implementation that delegates to `crate::shell::run`.
 pub struct ProcessShellGateway;
 
