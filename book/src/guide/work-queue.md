@@ -30,7 +30,7 @@ The ledger lives in a single JSON file, `~/.foundry/work-items.json`
 authoritative: every mutation loads the file, applies the change, and saves it
 through a same-directory temp-file rename.
 
-## The seven kinds
+## The eight kinds
 
 | Kind | What it is | Admitted root | Settlement |
 |------|------------|---------------|------------|
@@ -41,6 +41,7 @@ through a same-directory temp-file rename.
 | `release` | A release | `ReleaseRequested` | Release, pipeline and installation traversal |
 | `remediation` | Pipeline or vulnerability work | Pipeline and vulnerability roots | Whole remediation traversal |
 | `workflow` | Other engineering work, including agents | Iteration, validation, formation, digest, summary and scan roots | Whole traversal |
+| `follow_up` | Work a landed item still owes (see [Remaining gaps become a follow-up](#remaining-gaps-become-a-follow-up)) | None: it opens settled and never runs | A task that continues it lands, or the owner closes it |
 
 Task settlement retains its typed verdict. Its execution slot stays occupied
 until task cleanup finishes. Other kinds settle after the whole traversal.
@@ -223,7 +224,7 @@ Foundry's `*Started`/`*Completed` pairing rule.
 | `work_item_settled` | A ledger item reached a settled state, with its disposition |
 | `work_item_cancelled` | An operator, or the item's own campaign, stopped a ledger item |
 | `work_item_held` | An operator took a queued item out of the scheduler's hands |
-| `work_item_released` | An operator returned a held or dependency-blocked item to the queue |
+| `work_item_released` | An operator returned a held or dependency-blocked item to the queue, or the scheduler returned a dependency-blocked item whose dependencies landed after all |
 
 `work_item_started` pairs with `work_item_settled` rather than a
 `work_item_completed`, because an item does not *complete* — it settles, into a
@@ -497,6 +498,57 @@ closed or cancelled stays as it is. A follow-up that does not land, including
 a `complete` that delivered nothing, leaves the continued items open and
 unchanged.
 
+Lineage settles transitively. Every item a landing settles through lineage
+also discharges its own lineage: its `resumes` parent and the open items it
+`continues`, and so on. On 2026-10-19 roost item A was continued by B, B was
+preserved and resumed as C, and C landed. C's landing settled B, but A stayed
+open, because only C's own links were followed. Now A settles too, with the
+reason `superseded by <commit> via <B>`, naming the item that listed it. Only
+open items in the same project settle, so an item the owner closed or
+cancelled, and everything behind it on that path, stays as it is. The same
+applies when the landing-triggered check or the work reconciler settles an item
+`superseded by <commit>`: what that item resumed or continued settles with it.
+
+### Remaining gaps become a follow-up
+
+A reviewer can let a task land with the verdict `remainder`: the work reached
+trunk, and the gaps it lists are still owed. A campaign cycle carries them into
+its next formation. A standalone task had nobody to carry them: its item settled
+`landed`, and the gaps existed only in the `task_reviewed` and
+`task_run_completed` payloads.
+
+Now a standalone landing (a `foundry task`, or a nightly major upgrade) whose
+verdict is `remainder` with at least one nonblank gap also opens a `follow_up`
+item in the same ledger write:
+
+- state `needs_decision`, lane `interactive`, same project and trace as the
+  landed item, source `work_item:<landed id>`;
+- `follow_up` records `of` (the landed item), `commit` (its landed commit),
+  `obligation: remainder` and the `gaps`;
+- its objective is the landed item's objective followed by the remaining gaps,
+  and its reason reads `remainder of <id>: <n> gap(s): <first gap>`.
+
+It never runs and holds no root, so it sits in `foundry queue open` until you
+act on it. `foundry queue show` prints `Follows up:` with the item and commit,
+then each gap on its own line; `--json` carries a `follow_up` object (absent
+on other items). `work_item_submitted` and `work_item_settled` announce it. A
+replayed result never opens a second follow-up for the same landed item.
+
+Two ways to discharge it:
+
+```bash
+foundry queue resume wi_<follow-up> --origin "finish the gaps"
+foundry queue close wi_<follow-up> --reason "gaps accepted as they are"
+```
+
+`queue resume` on an open follow-up admits a new interactive task with the
+follow-up's objective, started from current trunk (there is no preserved
+branch to start from), with `continues` naming the follow-up. When that task
+lands, lineage settles the follow-up `landed`. If it lands with its own
+remainder, it opens its own follow-up. Only an owner resumes a follow-up.
+`queue release` refuses one, because there is nothing for the scheduler to
+start.
+
 ### Resume preserved work
 
 ```bash
@@ -519,7 +571,8 @@ action.
 
 The original obligation stays preserved until the linked task actually lands.
 Then Foundry records its landing commit and appends `work_item_settled` for the
-original. Failed, blocked, preserved and no-landing results leave it open.
+original, and for everything the original resumed or continued (see [Follow up on open
+work](#follow-up-on-open-work)). Failed, blocked, preserved and no-landing results leave it open.
 An original cancelled by its owner stays cancelled even if its child lands.
 Unknown ids return `NOT_FOUND`, blank inputs `INVALID_ARGUMENT`, ineligible
 states or unusable evidence `FAILED_PRECONDITION`, and persistence failures
@@ -707,6 +760,16 @@ settled <state>` (or `which is not in the ledger`). `foundry queue release <id>`
 returns it to the queue: the settled dependencies are dropped from `depends_on`
 and the item runs regardless of them.
 
+A dependency that settled `preserved` can still land later, through a resume
+or a follow-up that continues it. So on every tick, before it evaluates the
+queue, the scheduler looks again at each dependent it moved to `needs_decision`
+that never started and still holds its root. When every dependency is now
+`landed`, waiting or running, the item returns to `queued` and
+`work_item_released` announces it; the same tick then starts it if nothing else
+holds it. No operator action is recorded, because the scheduler made the
+decision. Before this, such an item stayed in `needs_decision` with `waits on
+<id>, which settled preserved` after that dependency had landed.
+
 ### The reasons
 
 A queued item's `reason` is the scheduler's current verdict, refreshed on every
@@ -749,7 +812,9 @@ one in `needs_decision` over a dependency, to `queued` with the scheduler's
 current verdict as its reason. Both require the daemon, reject `--offline`,
 record this CLI's hostname and optional `--origin` in `operator_action`, and
 emit `work_item_held` / `work_item_released` on Watch and in the durable log.
-`queue cancel` also accepts a held item.
+`queue cancel` also accepts a held item. `release` refuses a follow-up and any
+item that holds no root to start from: use `queue resume` or `queue close` for
+those.
 
 ### Pausing lanes
 

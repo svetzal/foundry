@@ -191,7 +191,7 @@ the `*Started`/`*Completed` pairing rule:
 | `work_item_settled` | A ledger item reached a settled state, with its disposition |
 | `work_item_cancelled` | An operator, or the item's own campaign, stopped a ledger item |
 | `work_item_held` | An operator took a queued item out of the scheduler's hands |
-| `work_item_released` | An operator returned a held or dependency-blocked item to the queue |
+| `work_item_released` | An operator returned a held or dependency-blocked item to the queue, or the scheduler returned a dependency-blocked item whose dependencies have all landed |
 
 The pacing stage adds `pacing_paused` and `pacing_resumed`, emitted for the
 project `system` with `lanes`, `paused` and `operator_origin`.
@@ -206,7 +206,7 @@ state that may still hold an obligation (`preserved`, `needs_decision`,
 | Command | Purpose |
 |---------|---------|
 | `foundry iterate <project>` | AI-assisted quality improvement cycle (legitimate no-op is a success when plan agent sets `correctionNeeded: false`) |
-| `foundry task <project> "<description>" [--agent <provider>] [--origin <text>] [--after <id>]... [--not-before <RFC3339\|duration>] [--continues <id>]...` | Run one isolated, evidence-reviewed coding task and return a typed verdict. `--origin` records a free-text operator note on the work item, beside the CLI client's hostname. `--after` waits for that item to settle landed; `--not-before` sets the earliest start. `--continues` records lineage to an open item of the same project, which settles landed as superseded when this task lands. The task is recorded `queued` and started by the pacing scheduler |
+| `foundry task <project> "<description>" [--agent <provider>] [--origin <text>] [--after <id>]... [--not-before <RFC3339\|duration>] [--continues <id>]...` | Run one isolated, evidence-reviewed coding task and return a typed verdict. `--origin` records a free-text operator note on the work item, beside the CLI client's hostname. `--after` waits for that item to settle landed; `--not-before` sets the earliest start. `--continues` records lineage to an open item of the same project, which settles landed as superseded when this task lands, transitively through that item's own `resumes` and `continues` (`WorkItemStore::settle_lineage`). The task is recorded `queued` and started by the pacing scheduler |
 | `foundry campaign add\|list\|show\|advance\|pause\|resume\|decide\|complete\|cancel` | Manage durable objectives that derive one task at a time from live state, close on owner-verified evidence, or stop outright |
 | `foundry deps <project> [--policy patch\|minor\|major]` | Show outdated dependencies, the maintain brief under the project's update policy, and what the majors lane would dispatch; changes nothing |
 | `foundry scout <project>` | Detect intent drift without changes |
@@ -496,11 +496,11 @@ the settled group alone.
 | `foundry queue show <id>` | Yes (or `--offline`) | Renders `GetWorkItem` as one item's full durable record; an absent optional prints no line at all, so a recorded `worktree_removed: false` reads `no` while an unrecorded one is silent. Then renders `ListWorkItemEvents`: the item's own `work_item_*` events from the durable event log, one line each, selected by exact payload `item_id` (never by trace or project) across every monthly file, oldest first; an item with none prints `(no events)` |
 | `foundry queue reconcile` | Yes | `ReconcileWork`: run now and print this invocation’s digest; rejects `--offline`; failures surface as INTERNAL |
 | `foundry queue open` | Yes (or `--offline`) | Renders `ListWorkItems`, open group only, then one `campaign <name> … escalated <when> <reason>` row per escalated campaign with `next: foundry campaign show <name> (<controls>)`. Escalations are campaign state, never ledger items: they come from `ListCampaigns` (offline: the campaign store plus the event-log fallback). Every escalated campaign is listed, also one with an open cycle item, and its row names that item (`(open cycle <id>)`) |
-| `foundry queue resume <id> [--origin <text>] [--after <id>]... [--not-before <when>]` | Yes | `ResumeWorkItem`: resume preserved work through a new task linked by exact `resumes` id, recorded `queued` for the scheduler; an unknown `--after` id or unparsable `--not-before` is INVALID_ARGUMENT; rejects `--offline` |
+| `foundry queue resume <id> [--origin <text>] [--after <id>]... [--not-before <when>]` | Yes | `ResumeWorkItem`: resume preserved work through a new task linked by exact `resumes` id, or an open `follow_up` through a new task from trunk that `continues` it, recorded `queued` for the scheduler; an unknown `--after` id or unparsable `--not-before` is INVALID_ARGUMENT; rejects `--offline` |
 | `foundry queue close <id> --reason <text> [--origin <text>]` | Yes | `CloseWorkItem`: settle preserved/needs_decision/failed cancelled; nonblank reason; retains prior evidence and disposition; rejects `--offline` |
 | `foundry queue cancel <id> [--origin <text>]` | Yes | `CancelWorkItem`: settle submitted/queued/held cancelled with `cancelled by operator`; rejects `--offline` |
 | `foundry queue hold <id> [--origin <text>]` | Yes | `HoldWorkItem`: queued → held, reason `held by operator`; emits `work_item_held`; rejects `--offline` |
-| `foundry queue release <id> [--origin <text>]` | Yes | `ReleaseWorkItem`: held or dependency-blocked needs_decision → queued; drops settled dependencies; reason is the scheduler's verdict; emits `work_item_released`; rejects `--offline` |
+| `foundry queue release <id> [--origin <text>]` | Yes | `ReleaseWorkItem`: held or dependency-blocked needs_decision → queued; refuses a `follow_up` and any item holding no root; drops settled dependencies; reason is the scheduler's verdict; emits `work_item_released`; rejects `--offline` |
 | `foundry pacing show` | Yes (or `--offline`) | Renders `GetPacing`; `--offline` reads the ledger and both pacing files through `foundry_sdk::pacing::snapshot`, the same selection and order |
 | `foundry pacing pause\|resume [--lane …]` | Yes | `PausePacing`/`ResumePacing`: persist the lane set to `FOUNDRY_PACING_STATE_PATH` by atomic rename, then emit `pacing_paused`/`pacing_resumed` for project `system`; rejects `--offline` |
 | `foundry pacing drain [--timeout <duration>]` | Yes | `PausePacing` on every lane, then watch `work_item_settled` until no running item remains; on timeout re-reads `GetPacing` and exits 1 naming what still runs; does not resume lanes; rejects `--offline` |
@@ -551,7 +551,7 @@ action.
 
 The original obligation stays preserved until the linked task actually lands.
 Then Foundry records its landing commit and appends `work_item_settled` for the
-original. Failed, blocked, preserved and no-landing results leave it open.
+original and, transitively, for everything it resumed or continued. Failed, blocked, preserved and no-landing results leave it open.
 An original cancelled by its owner stays cancelled even if its child lands.
 Unknown ids return `NOT_FOUND`, blank inputs `INVALID_ARGUMENT`, ineligible
 states or unusable evidence `FAILED_PRECONDITION`, and persistence failures
@@ -565,6 +565,17 @@ child and preserve the parent and unrelated records. Successfully written roots
 remain in history and on Watch even if a later admission step fails; failed
 writes are never advertised on Watch. Earlier bytes, including partial appends,
 are never truncated or rewritten.
+
+A standalone task (no campaign context) that lands with verdict `remainder`
+and at least one nonblank gap also opens a `follow_up` item in the same ledger
+write (`FollowUp::from_landed_remainder`): `needs_decision`, never started, no
+root, `follow_up { of, commit, obligation: remainder, gaps }`, objective = the
+landed objective plus the gaps. One per landed item and obligation. The owner
+discharges it with `queue resume` (a task from trunk with `continues` naming
+it, so lineage settles it on landing) or `queue close`. The scheduler revives
+a dependency-blocked `needs_decision` item (never started, still holding its
+root) once every dependency is landed, waiting or running
+(`pacing::revivable_dependents`), and announces `work_item_released`.
 
 ### Registry commands
 

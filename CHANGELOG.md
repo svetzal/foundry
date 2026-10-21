@@ -7,7 +7,32 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- A standalone task that lands with verdict `remainder` now leaves its gaps
+  in the ledger. They used to exist only in the `task_reviewed` and
+  `task_run_completed` payloads, so nothing showed them again. The landing
+  opens a `follow_up` item (new kind) in `needs_decision`, holding the gaps
+  and the landed commit, with the landed objective plus the gaps as its
+  objective. `queue open` lists it; `queue show` prints `Follows up:` and each
+  gap, and `--json` carries `follow_up`. `queue resume` on it runs a new task
+  from trunk that `continues` it, so its landing settles the follow-up;
+  `queue close` discharges it. `queue release` refuses it. Campaign cycles are
+  unchanged: formation carries their remainder.
+
 ### Fixed
+
+- Lineage now settles transitively. On 2026-10-19 roost item A was continued
+  by B (`--continues A`), B was resumed as C, and C landed: B settled, A stayed
+  open. A landing now settles the whole chain of `resumes` parents and open
+  `continues` items, each with its own `work_item_settled` event, and so does
+  an item settled by landing-triggered supersession or by the work
+  reconciler. Items the owner closed or cancelled stay as they are.
+- A dependent parked in `needs_decision` with `waits on X, which settled
+  preserved` now returns to the queue by itself when X later lands through a
+  resume. The scheduler re-checks such items (never started, still holding
+  their root) on every tick, announces `work_item_released`, and starts them
+  when nothing else holds them.
 
 - A failed execution session that did no work is no longer reviewed as
   missing proof, whatever the failure. On 2026-10-19, cycles 3 and 5 of
