@@ -1477,7 +1477,7 @@ mod tests {
             }
             assert!(
                 open.contains(
-                    "next: foundry campaign show mojentic-ex-v2 (decide, resume, complete, cancel)"
+                    "next: foundry campaign show mojentic-ex-v2 (decide, resume, edit, complete, cancel)"
                 ),
                 "{out}"
             );

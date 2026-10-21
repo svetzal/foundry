@@ -14,7 +14,7 @@
 
 use chrono::{DateTime, Utc};
 
-use super::{Campaign, CampaignStatus, OwnerDecision};
+use super::{Campaign, CampaignStatus, DoneEvidence, DoneEvidenceAmendment, OwnerDecision};
 
 /// The outcome of an idempotent transition request.
 ///
@@ -84,6 +84,12 @@ pub enum TransitionError {
     /// text and owner, on a campaign that is not waiting on a new escalation.
     /// This is how a retried decide is refused once the first one succeeded.
     DuplicateDecision { name: String },
+    /// `edit` named replacement done evidence that a definition could not
+    /// declare: [`Campaign::validate`] refuses it.
+    InvalidDoneEvidence { name: String, detail: String },
+    /// `edit` named the done evidence the campaign already has. This is how a
+    /// retried edit is refused once the first one succeeded.
+    UnchangedDoneEvidence { name: String },
 }
 
 impl std::fmt::Display for TransitionError {
@@ -146,6 +152,12 @@ impl std::fmt::Display for TransitionError {
                 f,
                 "campaign '{name}' already records this owner decision as its latest; nothing to apply"
             ),
+            Self::InvalidDoneEvidence { name, detail } => {
+                write!(f, "campaign '{name}' cannot take this done evidence: {detail}")
+            }
+            Self::UnchangedDoneEvidence { name } => {
+                write!(f, "campaign '{name}' already has this done evidence; nothing to apply")
+            }
         }
     }
 }
@@ -271,6 +283,7 @@ impl Campaign {
                 detail: "decide requires authorized_by",
             })?;
         let record = |decision| OwnerDecision {
+            done_evidence_amendment: None,
             decision,
             authorized_by: authorized_by.clone(),
             decided_at: at,
@@ -359,6 +372,80 @@ impl Campaign {
         })
     }
 
+    /// Replace the campaign's done evidence on its owner's authority.
+    ///
+    /// Done evidence is the campaign's definition of finished, so a correction
+    /// is an owner decision: it is appended to `owner_decisions` as
+    /// `Done evidence amended: <reason>`, which every later formation reads as
+    /// binding, and the record keeps the previous and replacement evidence
+    /// for audit. The replacement must pass the same validation as a campaign
+    /// definition ([`Campaign::validate`]: at least one item, runnable required
+    /// gates).
+    ///
+    /// - `Staged`, `Active` or `Paused`: the evidence changes and nothing else
+    ///   does. A staged campaign can correct a gate before its first cycle.
+    /// - `Escalated`: the campaign returns to `Active` and `open_escalation` is
+    ///   cleared, as an escalated `decide` does, so its next advance re-forms
+    ///   against the new gates. No cycles are added and none are required: a
+    ///   formation whose gates now pass may decide `done` on a spent budget,
+    ///   and one that would cut another objective escalates on the budget
+    ///   again.
+    /// - `Completed` or `Cancelled`: refused.
+    ///
+    /// Every check runs before anything is written, so a refusal records
+    /// nothing. `pending_run_result` is never touched.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransitionError`] when the campaign is unauthorized,
+    /// terminal, the replacement is invalid, or it equals the current evidence.
+    pub fn amend_done_evidence(
+        &mut self,
+        replacement: Vec<DoneEvidence>,
+        reason: &str,
+        at: DateTime<Utc>,
+    ) -> Result<(), TransitionError> {
+        let authorized_by =
+            self.authorized_by.clone().ok_or_else(|| TransitionError::Unauthorized {
+                name: self.name.clone(),
+                detail: "edit requires authorized_by",
+            })?;
+        if self.status.is_terminal() {
+            return Err(TransitionError::WrongStatus {
+                name: self.name.clone(),
+                status: self.status,
+                op: "edit",
+                requires: "Staged, Active, Paused or Escalated",
+            });
+        }
+        let mut candidate = self.clone();
+        candidate.done_evidence.clone_from(&replacement);
+        candidate.validate().map_err(|error| TransitionError::InvalidDoneEvidence {
+            name: self.name.clone(),
+            detail: error.to_string(),
+        })?;
+        if self.done_evidence == replacement {
+            return Err(TransitionError::UnchangedDoneEvidence {
+                name: self.name.clone(),
+            });
+        }
+        let previous = std::mem::replace(&mut self.done_evidence, replacement.clone());
+        self.owner_decisions.push(OwnerDecision {
+            decision: format!("Done evidence amended: {}", reason.trim()),
+            authorized_by,
+            decided_at: at,
+            done_evidence_amendment: Some(DoneEvidenceAmendment {
+                previous,
+                replacement,
+            }),
+        });
+        if self.status == CampaignStatus::Escalated {
+            self.status = CampaignStatus::Active;
+            self.open_escalation = None;
+        }
+        Ok(())
+    }
+
     /// Mark an authorized campaign complete outside the formation loop.
     ///
     /// Guard ordering is load-bearing: `authorized_by` is checked first, then
@@ -388,6 +475,7 @@ impl Campaign {
             });
         }
         self.owner_decisions.push(OwnerDecision {
+            done_evidence_amendment: None,
             decision: format!("Completed externally: {reason}"),
             authorized_by,
             decided_at: at,
@@ -446,6 +534,7 @@ impl Campaign {
         }
         if let Some(authorized_by) = self.authorized_by.clone() {
             self.owner_decisions.push(OwnerDecision {
+                done_evidence_amendment: None,
                 decision: format!("Cancelled externally: {reason}"),
                 authorized_by,
                 decided_at: at,
@@ -504,7 +593,7 @@ impl Campaign {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OwnerOption {
     /// The control the command runs: `advance`, `pause`, `resume`, `decide`,
-    /// `complete` or `cancel`. Absent from a report an older daemon wrote.
+    /// `edit`, `complete` or `cancel`. Absent from a report an older daemon wrote.
     #[serde(default)]
     pub control: String,
     /// The command line, with `<text>`-style placeholders for owner input.
@@ -523,7 +612,10 @@ pub struct OwnerOption {
 /// budget is spent, `resume` and an escalated `decide` are offered with
 /// `--add-cycles`, the only form the engine accepts. An active or paused
 /// `decide` is always offered without `--add-cycles`, the only form the engine
-/// accepts there: it records the decision and changes nothing else.
+/// accepts there: it records the decision and changes nothing else. An
+/// escalated campaign also offers `edit`, for an escalation that a done gate
+/// caused by matching harmless code: it replaces the evidence and returns the
+/// campaign to active without a decision about the mission.
 #[must_use]
 pub fn owner_options(
     name: &str,
@@ -575,6 +667,12 @@ pub fn owner_options(
             )
         }
     };
+    let edit = || {
+        option(
+            format!("foundry campaign edit {name} --done-evidence <file> --reason \"<text>\""),
+            "replace the done evidence and return to active; advance re-forms against the new gates",
+        )
+    };
     let complete = || {
         option(
             format!("foundry campaign complete {name} --reason \"<text>\""),
@@ -605,7 +703,7 @@ pub fn owner_options(
         }
         CampaignStatus::Escalated => {
             if authorized {
-                options.extend([decide(), resume(), complete()]);
+                options.extend([decide(), resume(), edit(), complete()]);
             }
         }
         CampaignStatus::Completed | CampaignStatus::Cancelled => return options,
@@ -925,6 +1023,7 @@ mod tests {
     fn an_escalated_campaign_accepts_the_same_words_as_its_latest_decision() {
         let mut c = escalated_with_record();
         c.owner_decisions.push(OwnerDecision {
+            done_evidence_amendment: None,
             decision: "keep going".to_string(),
             authorized_by: "owner".to_string(),
             decided_at: at(),
@@ -1088,6 +1187,171 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn gate(command: &str) -> DoneEvidence {
+        DoneEvidence::Gate {
+            command: command.to_string(),
+            required: true,
+            artifacts: vec![],
+        }
+    }
+
+    /// The state machine for `edit`: every live status takes the new
+    /// evidence, an escalated one also returns to active, and terminal
+    /// campaigns refuse and record nothing.
+    #[test]
+    fn edit_table() {
+        for status in ALL_STATUSES {
+            let mut c = campaign(status, true);
+            let before = c.clone();
+            let result = c.amend_done_evidence(vec![gate("rg -q done src")], "fix gate", at());
+            if status.is_terminal() {
+                assert_eq!(
+                    result,
+                    Err(TransitionError::WrongStatus {
+                        name: "c".to_string(),
+                        status,
+                        op: "edit",
+                        requires: "Staged, Active, Paused or Escalated",
+                    })
+                );
+                assert_eq!(c.owner_decisions, before.owner_decisions, "{status}");
+                assert_eq!(c.done_evidence, before.done_evidence, "{status}");
+                continue;
+            }
+            assert_eq!(result, Ok(()), "{status}");
+            assert_eq!(c.done_evidence, vec![gate("rg -q done src")], "{status}");
+            let expected = if status == CampaignStatus::Escalated {
+                CampaignStatus::Active
+            } else {
+                status
+            };
+            assert_eq!(c.status, expected, "{status}");
+            assert_eq!(c.budget, before.budget, "{status}: edit never changes the budget");
+        }
+    }
+
+    /// The amendment is an append-only owner decision: formation reads the
+    /// reason as binding context, and the record keeps who, when, the
+    /// evidence it replaced and the replacement.
+    #[test]
+    fn edit_appends_an_auditable_owner_decision_with_both_evidence_sets() {
+        let mut c = campaign(CampaignStatus::Escalated, true);
+        c.owner_decisions.push(OwnerDecision {
+            decision: "earlier".to_string(),
+            authorized_by: "owner".to_string(),
+            decided_at: at(),
+            done_evidence_amendment: None,
+        });
+        let previous = c.done_evidence.clone();
+        let replacement = vec![
+            gate("! rg -n 'Thread.sleep' src/test"),
+            DoneEvidence::Review {
+                statement: "tests use an injected clock".to_string(),
+            },
+        ];
+        let later = at() + chrono::Duration::hours(1);
+
+        c.amend_done_evidence(
+            replacement.clone(),
+            "  the grep matched java.net.SocketTimeoutException  ",
+            later,
+        )
+        .unwrap();
+
+        assert_eq!(c.owner_decisions.len(), 2, "earlier decisions are kept");
+        assert_eq!(c.owner_decisions[0].decision, "earlier");
+        assert_eq!(
+            c.owner_decisions[1],
+            OwnerDecision {
+                decision: "Done evidence amended: the grep matched java.net.SocketTimeoutException"
+                    .to_string(),
+                authorized_by: "owner".to_string(),
+                decided_at: later,
+                done_evidence_amendment: Some(DoneEvidenceAmendment {
+                    previous,
+                    replacement: replacement.clone(),
+                }),
+            }
+        );
+        assert_eq!(c.done_evidence, replacement);
+    }
+
+    /// A second amendment keeps the first one's record intact and records the
+    /// first replacement as its own previous evidence.
+    #[test]
+    fn a_second_edit_records_the_first_replacement_as_previous() {
+        let mut c = campaign(CampaignStatus::Active, true);
+        c.amend_done_evidence(vec![gate("first")], "one", at()).unwrap();
+        c.amend_done_evidence(vec![gate("second")], "two", at()).unwrap();
+        let amendments: Vec<_> = c
+            .owner_decisions
+            .iter()
+            .filter_map(|decision| decision.done_evidence_amendment.as_ref())
+            .collect();
+        assert_eq!(amendments.len(), 2);
+        assert_eq!(amendments[0].replacement, vec![gate("first")]);
+        assert_eq!(amendments[1].previous, vec![gate("first")]);
+        assert_eq!(amendments[1].replacement, vec![gate("second")]);
+    }
+
+    /// An escalated campaign whose budget is spent still returns to active:
+    /// a formation whose new gates pass may decide done, and one that cuts
+    /// another objective escalates on the budget again.
+    #[test]
+    fn edit_reactivates_an_escalated_campaign_on_a_spent_budget_without_cycles() {
+        let mut c = escalated_with_record();
+        c.cycles_completed = c.budget.max_cycles;
+        c.amend_done_evidence(vec![gate("rg -q fixed src")], "harmless match", at())
+            .unwrap();
+        assert_eq!(c.status, CampaignStatus::Active);
+        assert_eq!(c.budget.max_cycles, 2);
+        assert!(c.open_escalation.is_none());
+    }
+
+    /// Refusals record nothing: no owner decision, no evidence change, no
+    /// status change.
+    #[test]
+    fn edit_refusals_change_nothing() {
+        let refused = |mut c: Campaign, replacement: Vec<DoneEvidence>| {
+            let before = serde_json::to_value(&c).unwrap();
+            let error = c.amend_done_evidence(replacement, "why", at()).unwrap_err();
+            assert_eq!(serde_json::to_value(&c).unwrap(), before, "{error}");
+            error
+        };
+
+        assert_eq!(
+            refused(campaign(CampaignStatus::Escalated, false), vec![gate("true")]),
+            TransitionError::Unauthorized {
+                name: "c".to_string(),
+                detail: "edit requires authorized_by",
+            }
+        );
+
+        let empty = refused(campaign(CampaignStatus::Active, true), vec![]);
+        assert!(
+            matches!(&empty, TransitionError::InvalidDoneEvidence { detail, .. } if detail.contains("at least one done_evidence")),
+            "{empty}"
+        );
+
+        let host = refused(
+            campaign(CampaignStatus::Escalated, true),
+            vec![gate("ssh odin 'systemctl is-active x'")],
+        );
+        assert!(
+            matches!(&host, TransitionError::InvalidDoneEvidence { detail, .. } if detail.contains("cannot run in a task worktree")),
+            "{host}"
+        );
+
+        let current = campaign(CampaignStatus::Escalated, true);
+        let same = current.done_evidence.clone();
+        assert_eq!(
+            refused(current, same),
+            TransitionError::UnchangedDoneEvidence {
+                name: "c".to_string()
+            }
+        );
     }
 
     #[test]
@@ -1291,6 +1555,11 @@ mod tests {
         assert!(c.open_escalation.is_none(), "decide");
 
         let mut c = escalated_with_record();
+        c.amend_done_evidence(vec![gate("rg -q fixed src")], "gate matched harmless code", at())
+            .unwrap();
+        assert!(c.open_escalation.is_none(), "edit");
+
+        let mut c = escalated_with_record();
         assert_eq!(c.complete("shipped", at()).unwrap(), Transition::Applied);
         assert!(c.open_escalation.is_none(), "complete");
 
@@ -1315,6 +1584,7 @@ mod tests {
                 u64::from(command.contains("--add-cycles")),
             ),
             "complete" => c.complete("r", at()).map(|_| ()),
+            "edit" => c.amend_done_evidence(vec![gate("true")], "r", at()),
             "cancel" => c.cancel("r", at()).map(|_| ()),
             other => panic!("unknown verb {other}"),
         }
@@ -1357,6 +1627,7 @@ mod tests {
             [
                 "foundry campaign decide mojentic-x --decision \"<text>\"",
                 "foundry campaign resume mojentic-x",
+                "foundry campaign edit mojentic-x --done-evidence <file> --reason \"<text>\"",
                 "foundry campaign complete mojentic-x --reason \"<text>\"",
                 "foundry campaign cancel mojentic-x --reason \"<text>\"",
             ]

@@ -19,6 +19,56 @@ project adheres to [Semantic Versioning](https://semver.org/).
   from trunk that `continues` it, so its landing settles the follow-up;
   `queue close` discharges it. `queue release` refuses it. Campaign cycles are
   unchanged: formation carries their remainder.
+- `foundry campaign edit <name> --done-evidence <file> --reason "<text>"`
+  replaces a campaign's done evidence. On 2026-10-19 and 2026-10-20 three
+  campaigns escalated only because a lexical done gate matched harmless code
+  (`java.net.SocketTimeoutException`, a guard module that blocks connections,
+  FIFO pipes and README text). The owner could only finish them with a manual
+  `campaign complete`. Now:
+  - The file holds a JSON array in the shape of a definition's
+    `done_evidence`. The replacement passes the same validation as `add`. The
+    reason must be non-empty, the campaign needs an `authorized_by` owner, and
+    a completed or cancelled campaign refuses. Evidence equal to the current
+    evidence is refused, so a retry records nothing twice.
+  - The change is an owner decision, `Done evidence amended: <reason>`, that
+    formation reads as binding. The record keeps the previous and the
+    replacement evidence (`done_evidence_amendment` on the owner decision,
+    also in `campaign show` and `--json`). No event is emitted, as for
+    `decide`.
+  - An escalated campaign returns to active, so its next advance re-forms
+    against the new gates. It adds no cycles: a formation whose gates now pass
+    can decide `done` on a spent budget. Other statuses keep their status.
+    `edit` is an owner option of every authorized escalated campaign.
+  - `--offline` applies the same transition and says the gates were not
+    probed.
+- `campaign add` and `campaign edit` run every gate done-evidence item once
+  against the registered project path, the trunk checkout formation uses,
+  through the daemon's shell and formation's own gate runner (now
+  `foundry_blocks::campaign_gates`). The responses carry each gate's name,
+  verdict, exit code, a bounded output excerpt and log paths
+  (`gate_probes`, `gate_probe_error`), and the CLI prints them, so the author
+  sees false positives before any cycle runs. A failing gate does not refuse
+  the add.
+
+### Changed
+
+- The shared test-design rule (`TEST_DESIGN_GUIDANCE`) that formation,
+  execution, review and initiative steering receive now defines temporal and
+  ordering coupling: a test whose outcome depends on real elapsed time,
+  scheduling or ordering. It names real sleeps, wall-clock deadlines, real
+  timeouts racing work, duration assertions, which of two concurrent outcomes
+  happens first, and shared state under parallel runs. The remedy is an
+  injected clock that tests set and advance, and explicit ordering. Such a
+  test is a defect like the other violations (Stacey, 2026-10-19).
+- The same rule pre-authorizes an internal (non-public) injection seam for a
+  clock, sleeper, transport or scheduler that removes real network or
+  temporal or ordering coupling, when the public API and default production
+  behaviour are unchanged and no dependency is added. It needs no owner
+  decision. Campaigns for mojentic-sw and mojentic-ex had stopped to ask for
+  such seams. Formation says such a seam is never grounds to escalate,
+  execution says it is never a missing owner decision, and review accepts it
+  but still returns `defect` for a public API change the objective does not
+  license.
 
 ### Fixed
 

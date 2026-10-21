@@ -334,6 +334,32 @@ message AddCampaignRequest {
 
 message AddCampaignResponse {
     CampaignDetail campaign = 1;
+    // Each gate done-evidence item run once against the registered project
+    // path (the trunk checkout formation runs it from), after the campaign is
+    // saved. A failing gate does not refuse the add: a campaign that is not
+    // done yet is expected to fail. The results are for the author to see
+    // false positives before any cycle runs.
+    repeated CampaignGateProbe gate_probes = 2;
+    // Set when the probe could not run at all (for example, the gate runner
+    // faulted). The campaign is still added.
+    optional string gate_probe_error = 3;
+}
+
+// One campaign done-evidence gate run against the trunk checkout.
+message CampaignGateProbe {
+    // `campaign_done_<n>`, the name formation reports, n counting every
+    // done-evidence item from 1.
+    string name = 1;
+    string command = 2;
+    bool required = 3;
+    bool passed = 4;
+    int32 exit_code = 5;
+    // Bounded excerpt of the gate's output (the matches of a lexical gate);
+    // truncated says whether it was shortened.
+    string output = 6;
+    bool truncated = 7;
+    // Files holding a failed gate's complete output, on the daemon host.
+    repeated string logs = 8;
 }
 
 // Request the durable campaign inventory. When project is non-empty, the
@@ -411,6 +437,14 @@ message OwnerDecision {
     string decision = 1;
     string authorized_by = 2;
     string decided_at = 3;
+    // Set only on the record EditCampaign appends.
+    DoneEvidenceAmendment done_evidence_amendment = 4;
+}
+
+// The done evidence an owner's EditCampaign replaced, and its replacement.
+message DoneEvidenceAmendment {
+    repeated DoneEvidence previous = 1;
+    repeated DoneEvidence replacement = 2;
 }
 
 // Full durable definition of a campaign, as returned by GetCampaign.
@@ -775,6 +809,32 @@ message DecideCampaignRequest {
 message DecideCampaignResponse {
     // Full campaign detail reflecting the state after the decision is applied.
     CampaignDetail campaign = 1;
+}
+
+// Replace a campaign's done evidence on its owner's authority.
+// done_evidence_json holds a JSON array of done-evidence items, the shape of a
+// definition's done_evidence. The replacement must pass the same validation as
+// AddCampaign (at least one item, runnable required gates; INVALID_ARGUMENT
+// otherwise). The reason must be non-empty (INVALID_ARGUMENT). The campaign
+// needs authorized_by and must not be completed or cancelled
+// (FAILED_PRECONDITION); evidence equal to the current evidence is refused
+// (FAILED_PRECONDITION), so a retry after a success records nothing twice.
+// The daemon appends an owner decision `Done evidence amended: <reason>` that
+// keeps the previous and replacement evidence. An escalated campaign returns
+// to active so its next advance re-forms against the new gates; other statuses
+// keep their status. No event is emitted: the store carries the record.
+message EditCampaignRequest {
+    string name = 1;
+    string done_evidence_json = 2;
+    string reason = 3;
+}
+
+message EditCampaignResponse {
+    CampaignDetail campaign = 1;
+    // The new done evidence's gates run against the trunk checkout, as
+    // AddCampaign returns them.
+    repeated CampaignGateProbe gate_probes = 2;
+    optional string gate_probe_error = 3;
 }
 
 // Mark an authorized campaign complete from outside the formation loop.
@@ -1328,6 +1388,10 @@ service Foundry {
 
     // Record a binding owner decision; an escalated campaign also returns to active.
     rpc DecideCampaign(DecideCampaignRequest) returns (DecideCampaignResponse);
+
+    // Replace done evidence with an auditable owner reason; an escalated
+    // campaign also returns to active. Returns trunk gate probes.
+    rpc EditCampaign(EditCampaignRequest) returns (EditCampaignResponse);
 
     // Mark an authorized campaign complete with an auditable owner reason.
     rpc CompleteCampaign(CompleteCampaignRequest) returns (CompleteCampaignResponse);

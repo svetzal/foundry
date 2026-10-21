@@ -911,7 +911,12 @@ async fn online_campaign_show_prints_the_recorded_escalation_question_and_option
         .iter()
         .map(|o| o["command"].as_str().expect("command"))
         .collect();
-    assert_eq!(commands.len(), 4, "{commands:?}");
+    assert_eq!(commands.len(), 5, "{commands:?}");
+    assert!(
+        commands
+            .contains(&"foundry campaign edit asking --done-evidence <file> --reason \"<text>\""),
+        "an escalated campaign offers edit: {commands:?}"
+    );
 
     let steady = run(&["campaign", "show", "steady", "--json"]);
     assert_success(&steady, "online campaign show of an active campaign");

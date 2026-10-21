@@ -48,32 +48,7 @@ pub fn campaign_detail_proto(detail: &crate::proto::CampaignDetail) -> String {
     let _ = writeln!(out, "Context:    {}", detail.context_paths.join(", "));
     let _ = writeln!(out, "Done evidence:");
     for evidence in &detail.done_evidence {
-        match evidence.kind.as_str() {
-            "gate" => {
-                let artifacts_note = if evidence.artifacts.is_empty() {
-                    String::new()
-                } else {
-                    format!(" (artifacts: {})", evidence.artifacts.join(", "))
-                };
-                let _ = writeln!(
-                    out,
-                    "  gate [{}]: {}{}",
-                    if evidence.required {
-                        "required"
-                    } else {
-                        "optional"
-                    },
-                    evidence.command,
-                    artifacts_note,
-                );
-            }
-            "review" => {
-                let _ = writeln!(out, "  review: {}", evidence.statement);
-            }
-            other => {
-                let _ = writeln!(out, "  {other}: (unknown kind)");
-            }
-        }
+        let _ = writeln!(out, "  {}", evidence_line(evidence));
     }
     let _ = writeln!(out, "Owner decisions:");
     for decision in &detail.owner_decisions {
@@ -82,12 +57,111 @@ pub fn campaign_detail_proto(detail: &crate::proto::CampaignDetail) -> String {
             "  {} [{}] {}",
             decision.decided_at, decision.authorized_by, decision.decision
         );
+        if let Some(amendment) = &decision.done_evidence_amendment {
+            for evidence in &amendment.previous {
+                let _ = writeln!(out, "    previous:    {}", evidence_line(evidence));
+            }
+            for evidence in &amendment.replacement {
+                let _ = writeln!(out, "    replacement: {}", evidence_line(evidence));
+            }
+        }
     }
     if detail.status == CampaignStatus::Escalated.to_string() {
         out.push_str(&escalation_section(detail.open_escalation.as_ref()));
     }
     out.push_str(&options_section(&detail_options(detail)));
     out
+}
+
+/// One done-evidence item as `gate [required]: <command>` or
+/// `review: <statement>`.
+fn evidence_line(evidence: &crate::proto::DoneEvidence) -> String {
+    match evidence.kind.as_str() {
+        "gate" => {
+            let artifacts_note = if evidence.artifacts.is_empty() {
+                String::new()
+            } else {
+                format!(" (artifacts: {})", evidence.artifacts.join(", "))
+            };
+            format!(
+                "gate [{}]: {}{}",
+                if evidence.required {
+                    "required"
+                } else {
+                    "optional"
+                },
+                evidence.command,
+                artifacts_note,
+            )
+        }
+        "review" => format!("review: {}", evidence.statement),
+        other => format!("{other}: (unknown kind)"),
+    }
+}
+
+/// The heading above the done-gate probe results that `campaign add` and
+/// `campaign edit` print.
+pub const GATE_PROBES_HEADING: &str =
+    "Done gates on trunk (run once now, from the checkout formation uses):";
+
+/// The trunk probe of a campaign's done gates, as an add or edit returned it:
+/// one line per gate with its verdict and exit code, then the bounded output
+/// indented below it. A lexical gate's matches are the output, so a false
+/// positive is visible before any cycle runs. A failing gate is expected on a
+/// campaign that is not done yet; the section only reports.
+///
+/// Empty when the evidence has no gate and the probe recorded no error.
+#[must_use]
+pub fn gate_probes_section(
+    probes: &[crate::proto::CampaignGateProbe],
+    error: Option<&str>,
+) -> String {
+    let mut out = String::new();
+    if probes.is_empty() && error.is_none() {
+        return out;
+    }
+    let _ = writeln!(out, "{GATE_PROBES_HEADING}");
+    if let Some(error) = error {
+        let _ = writeln!(out, "  not probed: {error}");
+    }
+    for probe in probes {
+        let _ = writeln!(
+            out,
+            "  {} [{}] {} (exit {}): {}",
+            probe.name,
+            if probe.required {
+                "required"
+            } else {
+                "optional"
+            },
+            if probe.passed { "PASS" } else { "FAIL" },
+            probe.exit_code,
+            probe.command
+        );
+        for line in probe.output.lines().filter(|line| !line.trim().is_empty()) {
+            let _ = writeln!(out, "      {line}");
+        }
+        if probe.truncated {
+            let _ = writeln!(out, "      (output shortened)");
+        }
+        for log in &probe.logs {
+            let _ = writeln!(out, "      full output: {log}");
+        }
+    }
+    out
+}
+
+/// What `--offline` add and edit print in place of a probe: the CLI has no
+/// gate runner, so the next formation is the first run.
+#[must_use]
+pub fn gate_probes_offline_note(evidence: &[DoneEvidence]) -> String {
+    if evidence.iter().any(|item| matches!(item, DoneEvidence::Gate { .. })) {
+        format!(
+            "{GATE_PROBES_HEADING}\n  not probed: --offline has no gate runner; the next formation runs them\n"
+        )
+    } else {
+        String::new()
+    }
 }
 
 /// The line under the `Escalation:` heading when the campaign is escalated but
@@ -267,6 +341,27 @@ struct JsonOwnerDecision<'a> {
     decision: &'a str,
     authorized_by: &'a str,
     decided_at: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    done_evidence_amendment: Option<JsonAmendment<'a>>,
+}
+
+#[derive(Serialize)]
+struct JsonAmendment<'a> {
+    previous: Vec<JsonDoneEvidence<'a>>,
+    replacement: Vec<JsonDoneEvidence<'a>>,
+}
+
+fn json_done_evidence(evidence: &[crate::proto::DoneEvidence]) -> Vec<JsonDoneEvidence<'_>> {
+    evidence
+        .iter()
+        .map(|e| JsonDoneEvidence {
+            kind: &e.kind,
+            command: &e.command,
+            required: (e.kind == "gate").then_some(e.required),
+            artifacts: &e.artifacts,
+            statement: &e.statement,
+        })
+        .collect()
 }
 
 /// `campaign show --json`: the campaign, its open escalation, the owner's
@@ -339,17 +434,7 @@ pub fn campaign_show_json(
         max_cycles: detail.max_cycles,
         intent_refs: &detail.intent_refs,
         context_paths: &detail.context_paths,
-        done_evidence: detail
-            .done_evidence
-            .iter()
-            .map(|e| JsonDoneEvidence {
-                kind: &e.kind,
-                command: &e.command,
-                required: (e.kind == "gate").then_some(e.required),
-                artifacts: &e.artifacts,
-                statement: &e.statement,
-            })
-            .collect(),
+        done_evidence: json_done_evidence(&detail.done_evidence),
         escalation: &detail.escalation,
         owner_decisions: detail
             .owner_decisions
@@ -358,6 +443,12 @@ pub fn campaign_show_json(
                 decision: &d.decision,
                 authorized_by: &d.authorized_by,
                 decided_at: &d.decided_at,
+                done_evidence_amendment: d.done_evidence_amendment.as_ref().map(|amendment| {
+                    JsonAmendment {
+                        previous: json_done_evidence(&amendment.previous),
+                        replacement: json_done_evidence(&amendment.replacement),
+                    }
+                }),
             })
             .collect(),
         open_escalation: detail.open_escalation.as_ref().map(JsonEscalation::from),
@@ -892,6 +983,7 @@ mod tests {
             .with_timezone(&chrono::Utc);
         let campaign = Campaign {
             owner_decisions: vec![OwnerDecision {
+                done_evidence_amendment: None,
                 decision: "Proceed with the gRPC path.".to_string(),
                 authorized_by: "stacey".to_string(),
                 decided_at,
@@ -1209,5 +1301,144 @@ mod tests {
         assert!(out.contains("foundry campaign cancel stuck"), "{out}");
         data.status = "active".to_string();
         assert!(!report(&data).contains("Escalation:"));
+    }
+
+    // -- done-gate probes and done-evidence amendments --
+
+    fn probe(name: &str, passed: bool, output: &str) -> crate::proto::CampaignGateProbe {
+        crate::proto::CampaignGateProbe {
+            name: name.to_string(),
+            command: "! rg -n Timeout src".to_string(),
+            required: true,
+            passed,
+            exit_code: i32::from(!passed),
+            output: output.to_string(),
+            truncated: false,
+            logs: vec![],
+        }
+    }
+
+    /// A lexical gate's matches are its output; the author sees them, with
+    /// the verdict and exit code, before any cycle runs.
+    #[test]
+    fn gate_probes_section_shows_each_gate_verdict_and_its_matches() {
+        let mut failing = probe(
+            "campaign_done_1",
+            false,
+            "src/net.rs:3: java.net.SocketTimeoutException\nsrc/net.rs:9: read Timeout",
+        );
+        failing.truncated = true;
+        failing.logs = vec!["/home/u/.foundry/evidence/gate-logs/run/stdout.log".to_string()];
+        let passing = crate::proto::CampaignGateProbe {
+            required: false,
+            ..probe("campaign_done_3", true, "")
+        };
+
+        let out = gate_probes_section(&[failing, passing], None);
+
+        assert_eq!(
+            out,
+            format!(
+                "{GATE_PROBES_HEADING}\n\
+                 \x20 campaign_done_1 [required] FAIL (exit 1): ! rg -n Timeout src\n\
+                 \x20     src/net.rs:3: java.net.SocketTimeoutException\n\
+                 \x20     src/net.rs:9: read Timeout\n\
+                 \x20     (output shortened)\n\
+                 \x20     full output: /home/u/.foundry/evidence/gate-logs/run/stdout.log\n\
+                 \x20 campaign_done_3 [optional] PASS (exit 0): ! rg -n Timeout src\n"
+            )
+        );
+    }
+
+    #[test]
+    fn gate_probes_section_reports_an_unrun_probe_and_is_silent_without_gates() {
+        assert_eq!(gate_probes_section(&[], None), "");
+        let out = gate_probes_section(&[], Some("project 'p' is not registered"));
+        assert!(out.starts_with(GATE_PROBES_HEADING), "{out}");
+        assert!(out.contains("  not probed: project 'p' is not registered\n"), "{out}");
+    }
+
+    #[test]
+    fn offline_note_appears_only_for_gate_evidence() {
+        let review = vec![DoneEvidence::Review {
+            statement: "shipped".to_string(),
+        }];
+        assert_eq!(gate_probes_offline_note(&review), "");
+        let gate = vec![DoneEvidence::Gate {
+            command: "true".to_string(),
+            required: true,
+            artifacts: vec![],
+        }];
+        assert!(
+            gate_probes_offline_note(&gate).contains("not probed: --offline has no gate runner")
+        );
+    }
+
+    fn amended_detail() -> crate::proto::CampaignDetail {
+        let gate = |command: &str| crate::proto::DoneEvidence {
+            kind: "gate".to_string(),
+            command: command.to_string(),
+            required: true,
+            statement: String::new(),
+            artifacts: vec![],
+        };
+        crate::proto::CampaignDetail {
+            done_evidence: vec![gate("! rg -n 'Thread.sleep' src/test")],
+            owner_decisions: vec![crate::proto::OwnerDecision {
+                decision: "Done evidence amended: grep matched SocketTimeoutException".to_string(),
+                authorized_by: "stacey".to_string(),
+                decided_at: "2026-10-20T12:00:00+00:00".to_string(),
+                done_evidence_amendment: Some(crate::proto::DoneEvidenceAmendment {
+                    previous: vec![gate("! rg -n Timeout src")],
+                    replacement: vec![gate("! rg -n 'Thread.sleep' src/test")],
+                }),
+            }],
+            ..proto_detail_fixture()
+        }
+    }
+
+    #[test]
+    fn an_amendment_shows_the_evidence_it_replaced_and_its_replacement() {
+        let out = campaign_detail_proto(&amended_detail());
+        assert!(
+            out.contains(
+                "  2026-10-20T12:00:00+00:00 [stacey] Done evidence amended: grep matched SocketTimeoutException\n\
+                 \x20   previous:    gate [required]: ! rg -n Timeout src\n\
+                 \x20   replacement: gate [required]: ! rg -n 'Thread.sleep' src/test\n"
+            ),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn show_json_carries_the_amendment_only_on_the_decision_that_made_it() {
+        let mut detail = amended_detail();
+        detail.owner_decisions.push(crate::proto::OwnerDecision {
+            decision: "keep going".to_string(),
+            authorized_by: "stacey".to_string(),
+            decided_at: "2026-10-20T13:00:00+00:00".to_string(),
+            done_evidence_amendment: None,
+        });
+        let json: serde_json::Value =
+            serde_json::from_str(&campaign_show_json(&detail, &[])).unwrap();
+        let decisions = json["owner_decisions"].as_array().unwrap();
+        assert_eq!(
+            decisions[0]["done_evidence_amendment"]["previous"][0]["command"],
+            "! rg -n Timeout src"
+        );
+        assert_eq!(decisions[0]["done_evidence_amendment"]["replacement"][0]["required"], true);
+        assert!(decisions[1].get("done_evidence_amendment").is_none(), "{json}");
+    }
+
+    #[test]
+    fn an_escalated_campaign_offers_edit_with_its_real_command_line() {
+        let out = campaign_detail_proto(&escalated_detail(Some(logged_escalation())));
+        assert!(
+            out.contains(
+                "foundry campaign edit harden-auth --done-evidence <file> --reason \"<text>\""
+            ),
+            "{out}"
+        );
+        assert!(out.contains("advance re-forms against the new gates"), "{out}");
     }
 }

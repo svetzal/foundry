@@ -50,6 +50,7 @@ BLOCKED: if you cannot reach the acceptance boundary because a capability, acces
   "options": ["...", "..."]
 }
 For an operational prerequisite, add "recovery_kind" with one of "capability_unavailable", "access_unavailable", "environment_unavailable", "missing_evidence", "unmet_precondition" or "runner_unavailable". Foundry records a recovery and rechecks after recovery evidence; this does not request owner judgement. Omit recovery_kind only for a real choice that needs owner authority.
+An internal seam that TEST DESIGN pre-authorizes is never a missing owner decision: add it and continue, do not write a blocker for it.
 tried and missing are non-empty strings. For typed operational recovery, question and options may be omitted. Otherwise question is required and non-empty; options is optional and holds non-empty concrete owner choices. Only an untyped owner-decision blocker asks the owner a question and waits for their answer.
 WRITABLE REPOSITORY: this isolated worktree only; do not edit sibling checkouts, dispatch nested Foundry work, commit, or push.
 "#;
@@ -983,6 +984,28 @@ mod tests {
         assert!(
             campaign.find(guidance) < campaign.find("PROOF FIRST"),
             "early proof refers to TEST DESIGN, so the rule must come first: {campaign}"
+        );
+    }
+
+    /// Executors stopped to ask whether they may add a clock or transport
+    /// seam. Every task executor carries the pre-authorization, and a campaign
+    /// executor's blocker rule says a seam is never a missing owner decision.
+    #[test]
+    fn every_task_executor_carries_the_seam_pre_authorization() {
+        use foundry_sdk::workflow::WorkflowType;
+
+        for campaign in [false, true] {
+            let suffix = super::task_prompt_suffix(WorkflowType::Task, campaign);
+            for phrase in super::super::agent_helpers::SEAM_AUTHORIZATION_PHRASES {
+                assert!(suffix.contains(phrase), "missing {phrase}: {suffix}");
+            }
+        }
+        let campaign = super::task_prompt_suffix(WorkflowType::Task, true);
+        assert!(
+            campaign.contains(
+                "An internal seam that TEST DESIGN pre-authorizes is never a missing owner decision: add it and continue, do not write a blocker for it."
+            ),
+            "{campaign}"
         );
     }
 

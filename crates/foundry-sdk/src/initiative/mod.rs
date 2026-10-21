@@ -726,6 +726,7 @@ impl CampaignStore {
         for member in &applicable {
             if let Some(campaign) = candidate.find_mut(member) {
                 campaign.owner_decisions.push(OwnerDecision {
+                    done_evidence_amendment: None,
                     decision: decision.into(),
                     authorized_by: owner.clone(),
                     decided_at: at,

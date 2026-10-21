@@ -207,7 +207,7 @@ state that may still hold an obligation (`preserved`, `needs_decision`,
 |---------|---------|
 | `foundry iterate <project>` | AI-assisted quality improvement cycle (legitimate no-op is a success when plan agent sets `correctionNeeded: false`) |
 | `foundry task <project> "<description>" [--agent <provider>] [--origin <text>] [--after <id>]... [--not-before <RFC3339\|duration>] [--continues <id>]...` | Run one isolated, evidence-reviewed coding task and return a typed verdict. `--origin` records a free-text operator note on the work item, beside the CLI client's hostname. `--after` waits for that item to settle landed; `--not-before` sets the earliest start. `--continues` records lineage to an open item of the same project, which settles landed as superseded when this task lands, transitively through that item's own `resumes` and `continues` (`WorkItemStore::settle_lineage`). The task is recorded `queued` and started by the pacing scheduler |
-| `foundry campaign add\|list\|show\|advance\|pause\|resume\|decide\|complete\|cancel` | Manage durable objectives that derive one task at a time from live state, close on owner-verified evidence, or stop outright |
+| `foundry campaign add\|list\|show\|advance\|pause\|resume\|decide\|edit\|complete\|cancel` | Manage durable objectives that derive one task at a time from live state, close on owner-verified evidence, or stop outright. `add` and `edit` print the done gates run once against trunk |
 | `foundry deps <project> [--policy patch\|minor\|major]` | Show outdated dependencies, the maintain brief under the project's update policy, and what the majors lane would dispatch; changes nothing |
 | `foundry scout <project>` | Detect intent drift without changes |
 | `foundry validate <project>` | Check quality gate health |
@@ -403,7 +403,18 @@ is the one statement of how agents design and judge tests. Formation
 (`execute_plan::task_prompt_suffix`), task review (`review_task`) and
 initiative steering (`steer_initiative/packet.rs`) all include it. The
 boundary is the project's public API, not a real network; unit and library
-tests stub I/O in process. Change the rule there, never by rewording one stage.
+tests stub I/O in process. It defines temporal and ordering coupling (an
+outcome that depends on real elapsed time, scheduling or ordering, including
+which of two concurrent outcomes comes first and shared state under parallel
+runs) as a defect, with the remedy: an injected clock the test sets and
+advances, and explicit ordering. It pre-authorizes internal (non-public)
+clock, sleeper, transport and scheduler seams that remove coupling, provided
+the public API and default production behaviour are unchanged and no
+dependency is added: no owner decision, no escalation. Formation, execution
+and review each add one sentence applying that authorization (review accepts
+the seam and still rejects an unlicensed public API change); the stage tests
+assert `SEAM_AUTHORIZATION_PHRASES`. Change the rule there, never by rewording
+one stage.
 
 Initiative integration gates use `done_evidence` entries of kind `gate`, with
 `command`, optional `host`, `required` and repository-relative `artifacts`.
@@ -457,12 +468,12 @@ assessment token volume alone do not establish waste. Preserve this loop when
 changing campaign dispatch, budgets, prompts, or context compaction.
 
 Campaign commands are daemon-authoritative in normal online use. `add`, `list`,
-`show`, `advance`, `pause`, `resume`, `decide`, `complete`, and `cancel` go through
+`show`, `advance`, `pause`, `resume`, `decide`, `edit`, `complete`, and `cancel` go through
 `foundryd` via typed gRPC so reads and writes all observe the daemon-owned
 campaign state. Pass `--offline` only for explicit recovery when the daemon is
 stopped and you intentionally need direct file access.
 
-The status transition rules for `pause`/`resume`/`decide`/`complete`/`cancel`/
+The status transition rules for `pause`/`resume`/`decide`/`edit`/`complete`/`cancel`/
 `advance` live in exactly one place, `foundry_sdk::campaign::transition`
 (`crates/foundry-sdk/src/campaign/transition.rs`); `--offline` differs from the
 online path only in transport and event emission, never in which transitions
@@ -470,17 +481,18 @@ are legal.
 
 | Command | Daemon required? | Notes |
 |---------|-----------------|-------|
-| `foundry campaign add <definition.json>` | Yes (or `--offline`) | Adds via `AddCampaign`; unreachable daemon is an error unless `--offline` is set |
+| `foundry campaign add <definition.json>` | Yes (or `--offline`) | Adds via `AddCampaign`; unreachable daemon is an error unless `--offline` is set. After the save, the daemon runs each gate done-evidence item once in the registered project path through its injected `ShellGateway` and `foundry_blocks::campaign_gates::run_done_gates` (formation's runner), outside the store lock, and returns `gate_probes` (name, verdict, exit code, bounded output, logs) or `gate_probe_error`. A failing gate never refuses the add. `--offline` runs no gate and says so |
 | `foundry campaign list` | Yes (or `--offline`) | Reads daemon-owned campaign state via `ListCampaigns`; `--offline` reads the file directly |
 | `foundry campaign show <name> [--json]` | Yes (or `--offline`) | Reads daemon-owned campaign state via `GetCampaign`, then lists the campaign's cycles from the work-item ledger via `ListWorkItems` with the campaign filter `campaign:<name>`, including initiative-owned cycles by their retained member identity (never by trace inference); `--offline` reads both files directly. An escalated campaign prints its `open_escalation` (reason, time, cycles, the agent's question and choices), and every campaign prints its owner options as command lines from `foundry_sdk::campaign::owner_options`. The reason comes from the campaign record; an escalation older than the record is recovered from the newest `campaign_escalated` event (`--offline` reads `FOUNDRY_EVENTS_DIR` through the same `resolve_open_escalations`). `--json` emits one object with `open_escalation`, `owner_options` and `cycles` |
 | `foundry campaign advance <name> [--origin <text>]` | Yes | Dispatches via `AdvanceCampaign`; there is no offline advance fallback. `--origin` records a free-text operator note on the dispatched cycle's work item, beside the CLI client's hostname. Returns promptly while any campaign forms: formation holds the campaign store lock only for short read and write sections, never across its agent, and applies its outcome only to an unchanged record. A campaign stopped before or while it forms makes the advance stand down (`campaign_advance_completed` with `decision: "stood_down"`), which settles its work item `landed`; a campaign edited while it forms is formed again from the edit, at most three formations, then the advance fails. A duplicate is a no-op: when the campaign already has an advance or a cycle submitted, queued, held or running (ledger, or the workflow tracker before admission), nothing is dispatched, the response's `in_flight` names that work, and the CLI prints it and exits 0. The check and the dispatch share the store lock, so two simultaneous advances yield one workflow. The CLI follows only its own advance's trace |
 | `foundry campaign pause <name>` | Yes (or `--offline`) | Mutates via `PauseCampaign`; unreachable daemon is an error unless `--offline` is set |
 | `foundry campaign resume <name>` | Yes (or `--offline`) | Mutates via `ResumeCampaign`; unreachable daemon is an error unless `--offline` is set |
 | `foundry campaign decide <name> …` | Yes (or `--offline`) | Mutates via `DecideCampaign`; unreachable daemon is an error unless `--offline` is set. Records a binding owner decision on an active, paused or escalated campaign. Active and paused keep their status and refuse `--add-cycles`; escalated returns to active and may add cycles. A repeat of the latest decision is refused (retry safety); staged and terminal campaigns refuse |
+| `foundry campaign edit <name> --done-evidence <file> --reason "<text>"` | Yes (or `--offline`) | Mutates via `EditCampaign` (`Campaign::amend_done_evidence`). The file is a JSON `done_evidence` array; it must pass `Campaign::validate` (invalid: INVALID_ARGUMENT). Needs a non-empty reason and `authorized_by`; completed and cancelled refuse, and evidence equal to the current evidence is refused (retry safety). Appends an owner decision `Done evidence amended: <reason>` whose `done_evidence_amendment` keeps the previous and replacement evidence. Escalated returns to active with no cycles added; other statuses keep theirs. No event is emitted, as for `decide`. Returns trunk gate probes exactly as `add` does |
 | `foundry campaign complete <name> …` | Yes (or `--offline`) | Mutates via `CompleteCampaign`; unreachable daemon is an error unless `--offline` is set |
 | `foundry campaign cancel <name> --reason … [--now] [--discard-work]` | Yes (or `--offline`) | Mutates via `CancelCampaign`. Terminal and non-resumable, and unlike `complete` it does **not** require `authorized_by`. `--now` aborts the in-flight workflow and kills the running agent; `--discard-work` requires `--now`. `--offline` is graceful-only — `--offline --now` is refused, not downgraded |
 
-> **Note for scripts/automation**: without `--offline`, online `foundry campaign add/list/show/advance/pause/resume/decide/complete/cancel` commands do not silently fall back and surface stable typed gRPC status errors instead. `list` and `show` render the daemon response directly, never read the client-side campaign file, and if `FOUNDRY_CAMPAIGNS_PATH` is absent the online path leaves it absent. If `foundryd` is not listening, the online commands fail and leave any existing client-side campaign file untouched byte-for-byte. Online `pause`/`resume`/`decide`/`complete`/`cancel` are also persistence-atomic: if the daemon cannot save the campaign store, the RPC returns `INTERNAL`, leaves the daemon-owned store unchanged in memory and on disk, and `CompleteCampaign`/`CancelCampaign` do not emit a terminal event.
+> **Note for scripts/automation**: without `--offline`, online `foundry campaign add/list/show/advance/pause/resume/decide/edit/complete/cancel` commands do not silently fall back and surface stable typed gRPC status errors instead. `list` and `show` render the daemon response directly, never read the client-side campaign file, and if `FOUNDRY_CAMPAIGNS_PATH` is absent the online path leaves it absent. If `foundryd` is not listening, the online commands fail and leave any existing client-side campaign file untouched byte-for-byte. Online `pause`/`resume`/`decide`/`edit`/`complete`/`cancel` are also persistence-atomic: if the daemon cannot save the campaign store, the RPC returns `INTERNAL`, leaves the daemon-owned store unchanged in memory and on disk, and `CompleteCampaign`/`CancelCampaign` do not emit a terminal event.
 
 ### Queue commands
 

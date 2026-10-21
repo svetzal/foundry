@@ -648,6 +648,22 @@ pub struct OwnerDecision {
     pub decision: String,
     pub authorized_by: String,
     pub decided_at: chrono::DateTime<chrono::Utc>,
+    /// Present only on the record `foundry campaign edit` appends: the done
+    /// evidence this decision replaced and what replaced it. The decision text
+    /// carries the owner's reason, which formation reads as binding context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_evidence_amendment: Option<DoneEvidenceAmendment>,
+}
+
+/// The audit half of an owner's done-evidence amendment: the evidence before
+/// and after, kept on the append-only owner decision that made the change.
+///
+/// `previous` is a copy, not a reference, so the record still shows what the
+/// owner corrected after later amendments replace the evidence again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DoneEvidenceAmendment {
+    pub previous: Vec<DoneEvidence>,
+    pub replacement: Vec<DoneEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1091,6 +1107,7 @@ mod tests {
             agent_provider: None,
             last_run_event_id: None,
             owner_decisions: vec![OwnerDecision {
+                done_evidence_amendment: None,
                 decision: "Proceed with the gRPC path.".to_string(),
                 authorized_by: "tester".to_string(),
                 decided_at: chrono::DateTime::parse_from_rfc3339("2026-07-18T12:00:00Z")
@@ -1111,6 +1128,46 @@ mod tests {
 
         let round_trip: Campaign = serde_json::from_value(json).unwrap();
         assert_eq!(round_trip.owner_decisions, campaign.owner_decisions);
+    }
+
+    /// A decision without an amendment writes no key, so a store this build
+    /// rewrites still reads in an older one; an amendment round-trips intact.
+    #[test]
+    fn done_evidence_amendment_is_absent_unless_recorded_and_round_trips() {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-10-20T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let plain = OwnerDecision {
+            decision: "keep going".to_string(),
+            authorized_by: "owner".to_string(),
+            decided_at: at,
+            done_evidence_amendment: None,
+        };
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json.get("done_evidence_amendment").is_none(), "{json}");
+        let legacy: OwnerDecision = serde_json::from_value(serde_json::json!({
+            "decision": "keep going", "authorized_by": "owner", "decided_at": "2026-10-20T12:00:00Z"
+        }))
+        .unwrap();
+        assert_eq!(legacy, plain);
+
+        let amended = OwnerDecision {
+            done_evidence_amendment: Some(DoneEvidenceAmendment {
+                previous: vec![DoneEvidence::Gate {
+                    command: "! rg -n timeout src".to_string(),
+                    required: true,
+                    artifacts: vec![],
+                }],
+                replacement: vec![DoneEvidence::Review {
+                    statement: "no real timeouts in tests".to_string(),
+                }],
+            }),
+            ..plain
+        };
+        let json = serde_json::to_value(&amended).unwrap();
+        assert_eq!(json["done_evidence_amendment"]["previous"][0]["kind"], "gate");
+        assert_eq!(json["done_evidence_amendment"]["replacement"][0]["kind"], "review");
+        assert_eq!(serde_json::from_value::<OwnerDecision>(json).unwrap(), amended);
     }
 
     #[test]

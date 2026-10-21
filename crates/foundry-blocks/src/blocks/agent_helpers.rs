@@ -68,7 +68,26 @@ pub(crate) const INITIATIVE_CONTRACT_GUIDANCE: &str = "CONTRACT TESTING: A libra
 /// project's public API; I/O below it is stubbed in process. Paired
 /// service-to-service contract verification ([`INITIATIVE_CONTRACT_GUIDANCE`])
 /// is a separate rule and is not narrowed by this one.
-pub(crate) const TEST_DESIGN_GUIDANCE: &str = "TEST DESIGN: The real boundary is the project's public API, used the way a caller uses it; it is never a real network. Unit and library tests drive that API with in-process test doubles at the I/O boundary: a stub transport (for example URLProtocol, a Req test adapter or plug, or a mock HTTP client), a fake gateway, and an injected clock and sleeper. They do not open real sockets or local servers, call external services, assert wall-clock thresholds, or sleep for real time. A test double at the gateway or transport boundary is valid proof; mocking library internals is not. Objectives, evidence requirements and reviews must not demand real servers, sockets, live services or wall-clock timing. New or changed tests that break these rules are a defect, except in a suite the project's own guidance (AGENTS.md or its gate file) designates as integration or end-to-end, such as a Playwright UAT repository; that suite alone keeps real infrastructure. Paired producer/consumer contract verification between running services is unchanged.";
+///
+/// Temporal and ordering coupling is named explicitly (Stacey, 2026-10-19:
+/// "Clock time must be simulated. Tests must not be temporally coupled."), and
+/// the internal seams that remove coupling are pre-authorized. Campaigns for
+/// mojentic-sw and mojentic-ex stopped repeatedly to ask the owner whether
+/// they could add a clock, transport or initializer seam; that question has
+/// one answer, so no stage escalates on it.
+pub(crate) const TEST_DESIGN_GUIDANCE: &str = "TEST DESIGN: The real boundary is the project's public API, used the way a caller uses it; it is never a real network. Unit and library tests drive that API with in-process test doubles at the I/O boundary: a stub transport (for example URLProtocol, a Req test adapter or plug, or a mock HTTP client), a fake gateway, and an injected clock and sleeper. They do not open real sockets or local servers, call external services, assert wall-clock thresholds, or sleep for real time. Tests must not be temporally coupled: a test is temporally coupled when its outcome depends on real elapsed time, scheduling or ordering, such as real sleeps, wall-clock deadlines, real timeouts racing work, assertions on measured duration, or which of two concurrent outcomes happens first, including tests that share state and depend on parallel scheduling. The remedy: code reads time only through an injected clock, tests set and advance that clock, and a test orders concurrent outcomes explicitly. A test double at the gateway or transport boundary is valid proof; mocking library internals is not. Objectives, evidence requirements and reviews must not demand real servers, sockets, live services or wall-clock timing. New or changed tests that break these rules are a defect, except in a suite the project's own guidance (AGENTS.md or its gate file) designates as integration or end-to-end, such as a Playwright UAT repository; that suite alone keeps real infrastructure. SEAMS ARE PRE-AUTHORIZED: adding an internal (non-public) injection seam for a clock, sleeper, transport or scheduler to remove real network or temporal or ordering coupling is in scope and needs no owner decision, provided the public API and default production behaviour are unchanged and no dependency is added. It is never grounds to block on a decision, ask the owner or escalate. A public API change still needs explicit license from the objective. Paired producer/consumer contract verification between running services is unchanged.";
+
+/// The phrases of [`TEST_DESIGN_GUIDANCE`] that pre-authorize coupling-removal
+/// seams. Every stage's prompt test asserts them, so a stage that stops
+/// carrying the authorization fails its own test.
+#[cfg(test)]
+pub(crate) const SEAM_AUTHORIZATION_PHRASES: [&str; 5] = [
+    "adding an internal (non-public) injection seam for a clock, sleeper, transport or scheduler",
+    "to remove real network or temporal or ordering coupling is in scope and needs no owner decision",
+    "the public API and default production behaviour are unchanged and no dependency is added",
+    "It is never grounds to block on a decision, ask the owner or escalate",
+    "A public API change still needs explicit license from the objective",
+];
 
 /// Foundry-owned brief identity and findings carried by the chain. The
 /// formation bounds findings before dispatch, and executors see the same
@@ -573,6 +592,44 @@ mod tests {
             "designates as integration or end-to-end",
             "Paired producer/consumer contract verification between running services is unchanged",
         ] {
+            assert!(TEST_DESIGN_GUIDANCE.contains(rule), "missing: {rule}");
+        }
+    }
+
+    /// Stacey, 2026-10-19: "Clock time must be simulated. Tests must not be
+    /// temporally coupled." The rule names what coupling is, including
+    /// ordering between concurrent outcomes and shared state under parallel
+    /// runs, and states the remedy, so a stage cannot read it as "no sleeps"
+    /// alone.
+    #[test]
+    fn test_design_guidance_defines_temporal_and_ordering_coupling_and_its_remedy() {
+        for rule in [
+            "Tests must not be temporally coupled",
+            "its outcome depends on real elapsed time, scheduling or ordering",
+            "real sleeps, wall-clock deadlines, real timeouts racing work, assertions on measured duration",
+            "which of two concurrent outcomes happens first",
+            "tests that share state and depend on parallel scheduling",
+            "code reads time only through an injected clock",
+            "tests set and advance that clock",
+            "a test orders concurrent outcomes explicitly",
+        ] {
+            assert!(TEST_DESIGN_GUIDANCE.contains(rule), "missing: {rule}");
+        }
+        // Coupled tests fall under the same defect sentence as the other
+        // violations: the definition precedes it.
+        let coupling = TEST_DESIGN_GUIDANCE.find("Tests must not be temporally coupled").unwrap();
+        let defect = TEST_DESIGN_GUIDANCE
+            .find("New or changed tests that break these rules are a defect")
+            .unwrap();
+        assert!(coupling < defect, "coupling must be one of 'these rules'");
+    }
+
+    /// Campaigns stopped to ask whether they may add a clock, transport or
+    /// initializer seam. The rule answers that once: internal seams that remove
+    /// coupling need no owner, and public API changes still need a license.
+    #[test]
+    fn test_design_guidance_pre_authorizes_internal_coupling_removal_seams() {
+        for rule in SEAM_AUTHORIZATION_PHRASES {
             assert!(TEST_DESIGN_GUIDANCE.contains(rule), "missing: {rule}");
         }
     }

@@ -429,6 +429,15 @@ test-design rule. Standalone tasks receive it too.
   mock HTTP client), a fake gateway, and an injected clock and sleeper.
 - These tests do not open real sockets or local servers. They do not call
   external services, assert wall-clock thresholds or sleep for real time.
+- Tests must not be temporally coupled. A test is temporally coupled when its
+  result depends on real elapsed time, scheduling or ordering. Examples are
+  real sleeps, wall-clock deadlines, real timeouts that race work, assertions
+  on measured duration, and a test that depends on which of two concurrent
+  outcomes comes first. Tests that share state and depend on parallel
+  scheduling are also temporally coupled.
+- The remedy is the same in each case. Code reads time only through an
+  injected clock. The test sets the clock and advances it. The test puts
+  concurrent outcomes in an explicit order.
 - A test double at the gateway or transport boundary is valid proof. A mock of
   library internals is not.
 - Objectives, evidence requirements and reviews must not demand real servers,
@@ -447,7 +456,30 @@ does not change. See
 This rule came from production evidence. Campaigns for the Mojentic library
 ports read "the real boundary" as "a real network". They built test suites on
 local HTTP servers with wall-clock assertions, and one port's CI then hung for
-up to six hours.
+up to six hours. On 2026-10-19 Stacey added: "Clock time must be simulated.
+Tests must not be temporally coupled."
+
+#### Seams that remove coupling are pre-authorized
+
+To remove coupling, an agent can add an internal injection seam for a clock, a
+sleeper, a transport or a scheduler. This work is in scope and needs no owner
+decision when all of these conditions are true:
+
+- The seam is internal. It is not part of the public API.
+- The public API does not change.
+- The default production behaviour does not change.
+- No dependency is added.
+
+Such a seam is never a reason to escalate, to ask the owner, or to stop with
+`blocked_on_decision`. Formation, execution, review and steering all receive
+this rule. The reviewer accepts the seam. The reviewer still returns `defect`
+for a public API change that the objective does not license, also when the
+change was made for testability.
+
+Campaigns for mojentic-sw and mojentic-ex stopped many times to ask about such
+seams: a `StreamMeasurement` clock, an `AnthropicGateway` line transport, an
+`OpenAIGateway` recovery initializer, and `CurrentDatetime` and `ReqClient`
+clocks. Each question had the same answer, so the rule now gives it.
 
 ### Prove acceptance early
 
@@ -621,6 +653,32 @@ added: code in a disposable task worktree cannot make such a gate pass reliably.
 Express deployment evidence as a review statement that the owner verifies, or
 mark a remote probe as optional.
 
+### Check the done gates before the first cycle
+
+`foundry campaign add` runs each `gate` item once, after it saves the campaign.
+The gate runs in the registered project path, which is the trunk checkout that
+formation uses, with the same gate runner. The command prints the result of
+each gate after the campaign detail:
+
+```text
+Done gates on trunk (run once now, from the checkout formation uses):
+  campaign_done_1 [required] FAIL (exit 1): ! rg -n Timeout src
+      src/net.rs:3: import java.net.SocketTimeoutException;
+```
+
+A campaign that is not done yet usually fails its gates, so a failure does
+not stop the add. Read the output for false positives. A lexical gate (a
+`grep` or `rg` command) prints its matches, so you can see when it matches a
+type name, a guard module, a test fixture or README text instead of the
+defect. Each line shows the gate name that formation reports, its verdict, its
+exit code and a bounded excerpt of its output. A failed gate also names the
+log files that keep its complete output.
+
+If a gate is wrong, correct it with `foundry campaign edit` (see
+[Correcting done evidence](#correcting-done-evidence)) before the first
+advance. `--offline` add cannot run gates. It says so, and the first formation
+runs them for the first time.
+
 Campaign gates are not task acceptance criteria. A dispatched task runs the
 project gates resolved from its own checkout. Formation must state acceptance
 evidence the task can actually produce inside that worktree; it does not copy
@@ -653,6 +711,8 @@ foundry campaign resume parite-phase-2d
 foundry campaign resume parite-phase-2d --add-cycles 1
 # Or record a decision and authorize more work in one step:
 foundry campaign decide parite-phase-2d --decision "Keep the current design." --add-cycles 1
+# Replace done evidence whose gate matched harmless code:
+foundry campaign edit parite-phase-2d --done-evidence ./gates.json --reason "The grep matched README text."
 ```
 
 `foundry campaign show <name>` prints the campaign, then its cycles as the
@@ -683,6 +743,7 @@ Escalation:
 Owner options:
   foundry campaign decide mojentic-x --decision "<text>"  record a binding owner decision and return to active; advance continues it
   foundry campaign resume mojentic-x --add-cycles <n>     authorize n more cycles and return to active; advance continues it
+  foundry campaign edit mojentic-x --done-evidence <file> --reason "<text>"  replace the done evidence and return to active; advance re-forms against the new gates
   foundry campaign complete mojentic-x --reason "<text>"  close it: owner-verified evidence shows the mission shipped
   foundry campaign cancel mojentic-x --reason "<text>"    stop it permanently
 ```
@@ -694,7 +755,9 @@ follow the status table below. `resume`, `decide` and `complete` need an
 When the cycle budget is spent, `decide` and `resume` are offered with
 `--add-cycles`, the only form the engine accepts. An active or paused campaign
 is offered `decide` without `--add-cycles`, the only form it accepts, to record
-a decision for the next formation. Every other status prints its own options too,
+a decision for the next formation. An escalated campaign is also offered
+`edit`, for an escalation that a done gate caused when it matched harmless
+code. Every other status prints its own options too,
 and a completed or cancelled campaign prints none. `foundry campaign report`
 prints the same `Escalation:` block and options, and its `--json` carries
 `open_escalation` and `owner_options`.
@@ -742,7 +805,7 @@ reviews the repository and context artifacts, then makes exactly one decision:
 | `staged`    | Definition exists; no cycle has started                | `advance`, `pause`, `cancel`             |
 | `active`    | Formation or a task may advance the mission            | `advance`, `pause`, `decide`, `cancel`   |
 | `paused`    | Advancement is intentionally stopped                   | `resume`, `decide`, `complete`, `cancel` |
-| `escalated` | Budget, policy, or human judgement stopped the mission | `decide`, `resume`, `complete`, `cancel` |
+| `escalated` | Budget, policy, or human judgement stopped the mission | `decide`, `resume`, `edit`, `complete`, `cancel` |
 | `completed` | Evidence or owner authorization closed the mission     | None                                     |
 | `cancelled` | An owner abandoned the mission before its evidence     | None                                     |
 
@@ -758,16 +821,16 @@ only in transport and event emission, never in legality. The table below is
 generated from that module's exhaustive state-machine test and is the
 authoritative specification:
 
-| Status      | `pause`   | `resume`               | `decide`               | `complete`                   | `cancel`                   | `advance`              |
-| ----------- | --------- | ---------------------- | ---------------------- | ---------------------------- | -------------------------- | ---------------------- |
-| `staged`    | allowed † | rejected: wrong status | rejected: wrong status | allowed                      | allowed                    | allowed                |
-| `active`    | allowed † | rejected: wrong status | allowed ‡              | allowed                      | allowed                    | allowed                |
-| `paused`    | allowed † | allowed                | allowed ‡              | allowed                      | allowed                    | rejected: wrong status |
-| `escalated` | allowed † | allowed                | allowed                | allowed                      | allowed                    | rejected: wrong status |
-| `completed` | allowed † | rejected: wrong status | rejected: wrong status | no-op (already settled)      | rejected: already complete | rejected: wrong status |
-| `cancelled` | allowed † | rejected: wrong status | rejected: wrong status | rejected: cancelled campaign | no-op (already settled)    | rejected: wrong status |
+| Status      | `pause`   | `resume`               | `decide`               | `edit`                 | `complete`                   | `cancel`                   | `advance`              |
+| ----------- | --------- | ---------------------- | ---------------------- | ---------------------- | ---------------------------- | -------------------------- | ---------------------- |
+| `staged`    | allowed † | rejected: wrong status | rejected: wrong status | allowed §              | allowed                      | allowed                    | allowed                |
+| `active`    | allowed † | rejected: wrong status | allowed ‡              | allowed §              | allowed                      | allowed                    | allowed                |
+| `paused`    | allowed † | allowed                | allowed ‡              | allowed §              | allowed                      | allowed                    | rejected: wrong status |
+| `escalated` | allowed † | allowed                | allowed                | allowed                | allowed                      | allowed                    | rejected: wrong status |
+| `completed` | allowed † | rejected: wrong status | rejected: wrong status | rejected: wrong status | no-op (already settled)      | rejected: already complete | rejected: wrong status |
+| `cancelled` | allowed † | rejected: wrong status | rejected: wrong status | rejected: wrong status | rejected: cancelled campaign | no-op (already settled)    | rejected: wrong status |
 
-`resume`, `decide` and `complete` additionally require `authorized_by` to be set,
+`resume`, `decide`, `edit` and `complete` additionally require `authorized_by` to be set,
 regardless of status; `cancel` deliberately does not, so an unauthorized
 campaign is never stranded with no reachable terminal state.
 
@@ -779,6 +842,10 @@ known open question, not a decision this table is asserting is correct.
 ‡ On an `active` or `paused` campaign, `decide` records the decision and keeps
 the status. It refuses `--add-cycles` there, and refuses a decision whose text
 and owner repeat the campaign's latest decision.
+
+§ On a `staged`, `active` or `paused` campaign, `edit` replaces the done
+evidence and keeps the status. Only an escalated campaign returns to `active`.
+`edit` refuses evidence equal to the current evidence in every status.
 
 A `done` decision made while a required done-evidence gate is red is rewritten
 into an `advance`. The synthesized objective carries the campaign mission and
@@ -1066,6 +1133,64 @@ foundry campaign decide parite-phase-2d \
   --offline
 ```
 
+## Correcting done evidence
+
+A done gate can be wrong. A lexical gate that searches for `Timeout` also
+matches `java.net.SocketTimeoutException`. A gate that searches for socket
+calls also matches the guard module that blocks them. When this happens, the
+campaign cannot finish and it escalates. Correct the evidence instead of
+closing the campaign by hand.
+
+Write the replacement as a JSON array in the shape of a definition's
+`done_evidence`:
+
+```json
+[
+  {"kind": "gate", "command": "! rg -n 'Thread.sleep|Duration::from_secs' src/test", "required": true},
+  {"kind": "review", "statement": "Tests read time only through the injected clock."}
+]
+```
+
+Then give the file and a reason:
+
+```bash
+foundry campaign edit mojentic-x \
+  --done-evidence ./gates.json \
+  --reason "The Timeout gate matched java.net.SocketTimeoutException, a type name."
+```
+
+The rules are these:
+
+- The reason must not be empty.
+- The campaign must have an `authorized_by` owner.
+- A completed or cancelled campaign refuses the edit.
+- The replacement must pass the same validation as `campaign add`. It must
+  have at least one item, and a required gate must not assert the state of
+  another host.
+- Foundry refuses evidence that equals the current evidence, so a retry after
+  a success records nothing a second time.
+
+A refusal changes nothing and runs no gate.
+
+The edit is an owner decision. Foundry appends `Done evidence amended:
+<reason>` to the campaign's owner decisions, and every later formation reads it
+as binding context. The same record keeps the previous evidence and the
+replacement, with the owner and the time. `campaign show` prints the two below the
+decision, and `--json` carries them as `done_evidence_amendment`. Foundry emits
+no event for an edit, the same as for `decide`. The record on the campaign is
+the audit trail.
+
+An escalated campaign returns to `active` and Foundry clears its open
+escalation, the same as after `decide`. Its next `advance` forms again against the new
+gates. The edit adds no cycles. When the new gates pass, formation can decide
+`done` also when the budget is spent. When formation would cut another
+objective on a spent budget, the campaign escalates on the budget again. A
+staged, active or paused campaign keeps its status.
+
+Online, the daemon then runs the new gates against trunk, the same as `add`
+does, and the command prints their results. `--offline` applies the same
+change without a gate run and says so.
+
 ## External Completion
 
 When production or other owner-reviewed evidence proves the mission shipped
@@ -1176,6 +1301,9 @@ By default, every campaign control command is daemon-authoritative:
   watches the workflow, and then renders the trace from that daemon-owned event.
 - `pause`, `resume`, `decide`, and `complete` render the typed `CampaignDetail`
   returned by their respective RPCs.
+- `edit` sends the replacement done evidence through `EditCampaign`. It renders
+  the returned `CampaignDetail`, then the trunk gate probes. `add` also prints
+  the gate probes that `AddCampaign` returns.
 
 Without `--offline`, an unreachable daemon is always an error. The CLI does not
 warn and fall back to direct file mutation automatically.
@@ -1191,6 +1319,7 @@ foundry campaign resume parite-phase-2d --offline
 foundry campaign resume parite-phase-2d --add-cycles 1 --offline
 foundry campaign decide parite-phase-2d --decision "Keep the daemon boundary." --offline
 foundry campaign complete parite-phase-2d --reason "Production verification confirms every required outcome shipped." --offline
+foundry campaign edit parite-phase-2d --done-evidence ./gates.json --reason "The grep matched README text." --offline
 ```
 
 The offline path reads or mutates the file directly and cannot emit workflow

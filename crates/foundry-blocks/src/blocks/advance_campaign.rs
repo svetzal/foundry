@@ -10,7 +10,6 @@ use foundry_sdk::campaign::{
     DoneEvidence,
 };
 use foundry_sdk::event::{Event, EventType};
-use foundry_sdk::gates::GateDefinition;
 use foundry_sdk::gateway::{AgentStage, StageProviders};
 use foundry_sdk::initiative::{Finding, FindingKind, FindingSource, InitiativeContext};
 use foundry_sdk::payload::{
@@ -467,65 +466,6 @@ fn objective_history(campaign: &Campaign) -> String {
         .join("\n")
 }
 
-async fn run_done_gates(
-    shell: &dyn ShellGateway,
-    repo: &Path,
-    evidence: &[DoneEvidence],
-) -> anyhow::Result<Vec<foundry_sdk::gates::GateResult>> {
-    let mut results = Vec::new();
-    for (index, item) in evidence.iter().enumerate() {
-        let DoneEvidence::Gate {
-            command,
-            required,
-            artifacts,
-        } = item
-        else {
-            continue;
-        };
-        let name = format!("campaign_done_{}", index + 1);
-        if let Some(error) = artifact_error(repo, artifacts) {
-            results.push(foundry_sdk::gates::GateResult {
-                name,
-                command: command.clone(),
-                passed: false,
-                required: *required,
-                output: error,
-                exit_code: 1,
-                duration_ms: Some(0),
-                fix_applied: false,
-                logs: Vec::new(),
-            });
-            continue;
-        }
-        let gate = GateDefinition {
-            name,
-            command: command.clone(),
-            required: *required,
-            timeout: None,
-            fix_command: None,
-        };
-        results.extend(crate::gate_runner::run_gates(&[gate], repo, shell).await?.results);
-    }
-    Ok(results)
-}
-
-fn artifact_error(repo: &Path, artifacts: &[String]) -> Option<String> {
-    artifacts.iter().find_map(|artifact| {
-        let relative = Path::new(artifact);
-        let safe = !relative.is_absolute()
-            && relative.components().all(|component| {
-                matches!(component, std::path::Component::Normal(_) | std::path::Component::CurDir)
-            });
-        if !safe {
-            return Some(format!("campaign gate artifact must be repository-relative: {artifact}"));
-        }
-        if !repo.join(relative).exists() {
-            return Some(format!("campaign gate artifact missing: {artifact}"));
-        }
-        None
-    })
-}
-
 fn decision_prompt(
     campaign: &Campaign,
     context: &str,
@@ -594,7 +534,7 @@ fn decision_prompt(
          OWNER DECISIONS (binding policy for this and future advances):\n{}\n\nREQUIRED REVIEW EVIDENCE:\n{}\n\nMECHANICAL DONE-GATE RESULTS (run here at formation, against the delivered trunk — the task does NOT run these):\n{}\n\nOBJECTIVE HISTORY (what this campaign has already asked for, oldest first, with the typed verdict each returned):\n{}\n\nLAST TYPED RUN RESULT:\n{}\n\nLIVE REPO SNAPSHOT (delivered trunk state):\n{}\n\nACCUMULATED UNMERGED WORK:\n{}\n\nCONTEXT ARTIFACTS (wording is binding and must be threaded into acceptance criteria):\n{}\n\n\
          TWO TREES. The live snapshot is the delivered trunk state. The accumulated section describes a preserved branch carrying earlier cycles of THIS campaign that did not land; the next cycle starts from that ref, not from the trunk. Its work is real and already written—it is invisible to a trunk-only inspection, and any tool you run in the working directory sees the trunk, not it.\n\n\
          READ-ONLY SANDBOX. Do not run builds, tests, linters, or anything else that writes target/, caches or lock files: they cannot run here and prove nothing. Test and gate evidence comes from MECHANICAL DONE-GATE RESULTS, which the daemon ran against the delivered trunk, and from LAST TYPED RUN RESULT: a run with landed: true reached trunk only after every required gate in the project's gate file passed in its worktree, re-run after any rebase onto trunk. Judge review statements about passing tests from that evidence and the code you read. Being unable to run a command here is never a reason to escalate.\n\n\
-         DONE only when every required gate passes and every review statement is true against the delivered trunk state. Accumulated unmerged work does not make a campaign done. ADVANCE must cut exactly ONE objective from mission minus current state, where current state is the trunk PLUS the accumulated work. Never re-cut an objective the accumulated commits already satisfy; if the accumulated work appears to carry the mission but has not landed, the objective is to reconcile and land it—finish the remaining gaps, get the required gates green on that branch—not to rebuild it from scratch. NO RESTATEMENT. Check the objective you are about to cut against OBJECTIVE HISTORY before you commit to it. If it substantially restates an entry there, do not re-dispatch it; decide which of exactly two things is true. Either that earlier work exists and you are reading the wrong tree—re-read the accumulated section, and the objective becomes reconcile-and-land, not rebuild. Or the earlier cycle returned `remainder` and its gaps are genuinely still open on a tree you can see, in which case asking for the same thing has already failed once and repeating it is not the correction: name the single sub-gap that blocked it, change the approach, or escalate for an owner decision. A third identical objective is never the answer. Constraints, change licenses, scope guards, and forbidden moves are gates—not co-equal objectives. DO NOT RESTATE THE MECHANICAL DONE-GATE COMMANDS AS TASK EVIDENCE. Those run here, at formation, against the delivered trunk; the task runs the project's own discovered gates in an isolated worktree and cannot produce a result for a command it is never given. Asking it to prove one creates a gap it cannot close no matter what it does. Require only evidence the task itself can produce in its worktree. State concrete proof capable of rejecting masked IDs, count-only checks, or tests that bypass the project's public API. Do not prescribe implementation mechanism. Before removal/refactor packets, perform cheap live structural probes for callers and cross-module coupling and encode discoveries as scope guards. For migrations, name each licensed behavior change with its intent ref; all other characterized behavior is frozen. Build characterization before migration. RECOVER on a missing operational capability, access, environment or evidence. State the exact prerequisite and its typed kind; this records recovery without owner judgement or extra cycles. ESCALATE only on a human judgment, fired escalation rule requiring owner authority, or a policy choice that invalidates a campaign assumption.\n\n\
+         DONE only when every required gate passes and every review statement is true against the delivered trunk state. Accumulated unmerged work does not make a campaign done. ADVANCE must cut exactly ONE objective from mission minus current state, where current state is the trunk PLUS the accumulated work. Never re-cut an objective the accumulated commits already satisfy; if the accumulated work appears to carry the mission but has not landed, the objective is to reconcile and land it—finish the remaining gaps, get the required gates green on that branch—not to rebuild it from scratch. NO RESTATEMENT. Check the objective you are about to cut against OBJECTIVE HISTORY before you commit to it. If it substantially restates an entry there, do not re-dispatch it; decide which of exactly two things is true. Either that earlier work exists and you are reading the wrong tree—re-read the accumulated section, and the objective becomes reconcile-and-land, not rebuild. Or the earlier cycle returned `remainder` and its gaps are genuinely still open on a tree you can see, in which case asking for the same thing has already failed once and repeating it is not the correction: name the single sub-gap that blocked it, change the approach, or escalate for an owner decision. A third identical objective is never the answer. Constraints, change licenses, scope guards, and forbidden moves are gates—not co-equal objectives. DO NOT RESTATE THE MECHANICAL DONE-GATE COMMANDS AS TASK EVIDENCE. Those run here, at formation, against the delivered trunk; the task runs the project's own discovered gates in an isolated worktree and cannot produce a result for a command it is never given. Asking it to prove one creates a gap it cannot close no matter what it does. Require only evidence the task itself can produce in its worktree. State concrete proof capable of rejecting masked IDs, count-only checks, or tests that bypass the project's public API. Do not prescribe implementation mechanism. Before removal/refactor packets, perform cheap live structural probes for callers and cross-module coupling and encode discoveries as scope guards. For migrations, name each licensed behavior change with its intent ref; all other characterized behavior is frozen. Build characterization before migration. RECOVER on a missing operational capability, access, environment or evidence. State the exact prerequisite and its typed kind; this records recovery without owner judgement or extra cycles. ESCALATE only on a human judgment, fired escalation rule requiring owner authority, or a policy choice that invalidates a campaign assumption. An internal seam that TEST DESIGN pre-authorizes is never an owner question; never escalate for it.\n\n\
          {}\n\n\
          End with exactly one fenced JSON object:\n\
          {{\"decision\":\"done\",\"reason\":\"evidence\"}}\n\
@@ -1479,7 +1419,8 @@ async fn derive_advance_outcome(
     }
     let formation_provider = providers.resolve(AgentStage::Formation, fallback);
     let repo = Path::new(&entry.path);
-    let gate_results = run_done_gates(shell, repo, &campaign.done_evidence).await?;
+    let gate_results =
+        crate::campaign_gates::run_done_gates(shell, repo, &campaign.done_evidence).await?;
     let mut context = read_context_files(repo, &campaign.context_paths)?;
     if let Some(initiative) = initiative_context {
         let _ = write!(context, "\n\nINITIATIVE: {}\n", initiative.initiative);
@@ -2714,7 +2655,7 @@ mod tests {
     use super::{
         AdvanceCampaign, AdvanceOutcome, DECISION_ATTEMPTS, Recheck, enforce_campaign_budget,
         enforce_done_gate_truth, formation_gate_results, last_run_line, outcome_label,
-        parse_decision, recheck, run_done_gates, settled_base, update_run_and_forced_outcome,
+        parse_decision, recheck, settled_base, update_run_and_forced_outcome,
     };
     use foundry_sdk::work_item::WorkItemStore;
 
@@ -2764,6 +2705,7 @@ mod tests {
         assert_eq!(recheck(&formed_from, &budget), Recheck::Changed);
         let mut decided = formed_from.clone();
         decided.owner_decisions.push(foundry_sdk::campaign::OwnerDecision {
+            done_evidence_amendment: None,
             decision: "prefer the smaller slice".to_string(),
             authorized_by: "owner".to_string(),
             decided_at: chrono::Utc::now(),
@@ -2960,43 +2902,6 @@ mod tests {
                 reason: "campaign cycle budget exhausted (2)".to_string(),
             }
         );
-    }
-
-    #[tokio::test]
-    async fn missing_declared_artifact_fails_gate_without_running_command() {
-        let dir = tempfile::tempdir().unwrap();
-        let shell = FakeShellGateway::success();
-        let evidence = vec![DoneEvidence::Gate {
-            command: "mix test test/required_test.exs".to_string(),
-            required: true,
-            artifacts: vec!["test/required_test.exs".to_string()],
-        }];
-
-        let results = run_done_gates(&*shell, dir.path(), &evidence).await.unwrap();
-
-        assert_eq!(results.len(), 1);
-        assert!(!results[0].passed);
-        assert!(results[0].output.contains("campaign gate artifact missing"));
-        assert!(shell.invocations().is_empty());
-    }
-
-    #[tokio::test]
-    async fn present_declared_artifact_allows_gate_command_to_run() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("test")).unwrap();
-        std::fs::write(dir.path().join("test/required_test.exs"), "test").unwrap();
-        let shell = FakeShellGateway::success();
-        let evidence = vec![DoneEvidence::Gate {
-            command: "mix test test/required_test.exs".to_string(),
-            required: true,
-            artifacts: vec!["test/required_test.exs".to_string()],
-        }];
-
-        let results = run_done_gates(&*shell, dir.path(), &evidence).await.unwrap();
-
-        assert_eq!(results.len(), 1);
-        assert!(results[0].passed);
-        assert_eq!(shell.invocations().len(), 1);
     }
 
     #[tokio::test]
@@ -3485,6 +3390,14 @@ mod tests {
         // Formation writes the objective and its evidence, so it must not ask
         // for tests through a real network.
         assert!(prompt.contains(super::super::agent_helpers::TEST_DESIGN_GUIDANCE));
+        // Formation decides escalation, so it carries the seam
+        // pre-authorization and says plainly that a seam is no owner question.
+        for phrase in super::super::agent_helpers::SEAM_AUTHORIZATION_PHRASES {
+            assert!(prompt.contains(phrase), "missing {phrase}");
+        }
+        assert!(prompt.contains(
+            "An internal seam that TEST DESIGN pre-authorizes is never an owner question; never escalate for it."
+        ));
         assert!(!prompt.contains("bypass the real boundary"));
         assert!(prompt.contains("tests that bypass the project's public API"));
         // A formation agent that backgrounds a command and ends its turn
@@ -3651,6 +3564,7 @@ mod tests {
                 initiative: None,
                 last_run_event_id: Some("run-1".to_string()),
                 owner_decisions: vec![OwnerDecision {
+                    done_evidence_amendment: None,
                     decision: "Prefer the generated gRPC client path; do not add raw JSON shims."
                         .to_string(),
                     authorized_by: "owner".to_string(),

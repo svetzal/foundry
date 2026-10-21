@@ -275,6 +275,7 @@ foundry campaign report <name> [--json]
 foundry campaign advance <name> [--origin "<note>"]
 foundry campaign pause <name>
 foundry campaign decide <name> --decision "Use the generated tonic client path." [--add-cycles N]  # --add-cycles: escalated only
+foundry campaign edit <name> --done-evidence ./gates.json --reason "The grep matched README text."
 foundry campaign complete <name> --reason "Production evidence confirms the mission shipped."
 foundry campaign cancel <name> --reason "Superseded." [--now] [--discard-work]
 foundry campaign resume <name> [--add-cycles N]
@@ -301,7 +302,7 @@ Nothing dispatched.` with `next: foundry queue show <id>`, and exits 0. Do not
 retry a slow advance; check `foundry queue` instead.
 
 Campaign definitions live in the daemon-owned campaign store. By default,
-`foundry campaign add/list/show/advance/pause/resume/decide/complete/cancel` all go
+`foundry campaign add/list/show/advance/pause/resume/decide/edit/complete/cancel` all go
 through typed gRPC and do not read or mutate the client-side
 `FOUNDRY_CAMPAIGNS_PATH`. Successful online reads and mutations render the
 daemon's typed response or workflow output directly, so stale client-side
@@ -346,7 +347,17 @@ library tests use in-process doubles at the I/O boundary (a stub transport, a
 fake gateway, an injected clock and sleeper), never real sockets, local
 servers, external services, wall-clock assertions or real sleeps. A double at
 the gateway or transport boundary is valid proof; mocking library internals is
-not. Only a suite the project's own AGENTS.md or gate file designates as
+not. Tests must not be temporally coupled: an outcome that depends on real
+elapsed time, scheduling or ordering (real sleeps, wall-clock deadlines, real
+timeouts racing work, duration assertions, which of two concurrent outcomes
+comes first, shared state under parallel runs) is a defect. Code reads time
+through an injected clock that the test sets and advances, and the test orders
+concurrent outcomes explicitly. An internal (non-public) seam for a clock,
+sleeper, transport or scheduler that removes such coupling is pre-authorized
+when the public API and default production behaviour are unchanged and no
+dependency is added: it needs no owner decision and is never grounds to
+escalate or block. Review accepts it and still rejects an unlicensed public
+API change. Only a suite the project's own AGENTS.md or gate file designates as
 integration or end-to-end keeps real infrastructure. A task that cannot
 reach the acceptance boundary (a missing capability, access or owner decision)
 records `.foundry/blocker.json` instead; review turns a valid one into a
@@ -371,6 +382,25 @@ consumes that pending result, preserving reviewer gaps and branch continuity.
 Campaign gate evidence may declare repository-relative `artifacts`. Foundry
 requires each path to exist before running the command, preventing tools that
 silently ignore absent test files from yielding false-green evidence.
+
+`campaign add` runs every gate item once against the registered trunk checkout,
+with formation's gate runner, and prints each gate's verdict, exit code and a
+bounded output excerpt under `Done gates on trunk`. A failing gate does not
+refuse the add. Read the output for false positives: a lexical gate prints its
+matches, so a match on a type name, guard module or README text shows before
+any cycle runs.
+
+Correct wrong done evidence with `foundry campaign edit <name> --done-evidence
+<file> --reason "<text>"`, not by `campaign complete`. The file is a JSON array
+in the shape of a definition's `done_evidence` and passes the same validation
+as `add`. It needs a non-empty reason and an `authorized_by` owner; completed
+and cancelled campaigns refuse, and evidence equal to the current evidence is
+refused. Foundry appends the owner decision `Done evidence amended: <reason>`
+(binding for formation) with the previous and replacement evidence, emits no
+event, and returns an escalated campaign to `active` without adding cycles so
+its next advance re-forms against the new gates. Online, the output ends with
+the new gates' trunk probes; `--offline` says no gate ran. An escalated
+campaign lists `edit` among its owner options.
 
 When a campaign escalates because its cycle budget is exhausted, resuming
 requires an explicit owner-authorized extension, for example
