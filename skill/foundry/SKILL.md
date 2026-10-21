@@ -193,6 +193,9 @@ task's base or objective, and no waiting. An unknown id is refused with
 `FAILED_PRECONDITION`. When the task lands, each continued item still open
 settles `landed` with reason `superseded by <commit> via <new item id>`; if it
 does not land, they stay open. `queue show` lists the ids under `Continues:`.
+Settling is transitive: an item settled this way, or by `queue resume`
+landing, also settles what it resumed or continued, so A continued by B,
+resumed as C, all settle when C lands.
 
 The task is recorded `queued` and the pacing scheduler starts it when the rules
 allow (one mutating item per repository, the host running cap, `--not-before`,
@@ -221,7 +224,10 @@ change files is reviewed as usual.
 
 Complete work with passing required gates lands on trunk. A converging
 `remainder` also lands when at least one required gate ran and every required
-gate passed; its reviewer gaps become the campaign's next objective. Every other
+gate passed; its reviewer gaps become the campaign's next objective. A
+standalone task that lands that way opens a `follow_up` item holding the gaps
+(`needs_decision`, shown by `queue open` and `queue show`); `queue resume` it
+to run a task from trunk that continues it, or `queue close` it. Every other
 non-complete result is committed and preserved on a named remote branch, with a
 Git bundle fallback when push is unavailable. The task formation never retries.
 
@@ -606,6 +612,7 @@ work that needs re-dispatching.
 
 ```bash
 foundry queue resume wi_0123456789abcdef01234567 --origin "finish preserved work" [--after <id>]... [--not-before <when>]
+foundry queue resume wi_<follow-up> --origin "finish the gaps"   # a task from trunk that continues the follow-up
 foundry queue close wi_0123456789abcdef01234567 --reason "Reviewed; no further work required" --origin "owner review"
 foundry queue cancel wi_0123456789abcdef01234567 --origin "withdrawn request"
 foundry queue hold wi_0123456789abcdef01234567 --origin "wait for the review"
@@ -621,7 +628,10 @@ requiring a reason argument. Both settle exactly the requested id as `cancelled`
 the reason `held by operator` until released. `release` returns a held item, or
 one in `needs_decision` because a dependency settled some way other than
 `landed`, to `queued`; the settled dependencies are dropped and the item runs
-regardless of them. Both emit `work_item_held` / `work_item_released` on Watch
+regardless of them. You rarely need it for a dependency that later lands: the
+scheduler returns such an item to the queue by itself once every dependency is
+landed, waiting or running, and announces `work_item_released`. `release`
+refuses a `follow_up` (resume or close it instead). Both emit `work_item_held` / `work_item_released` on Watch
 and in the durable log, and follow the same daemon-only, `operator_action`
 contract as `close` and `cancel`.
 

@@ -494,8 +494,15 @@ action.
 
 The original obligation stays preserved until the linked task actually lands.
 Then Foundry records its landing commit and appends `work_item_settled` for the
-original. Failed, blocked, preserved and no-landing results leave it open.
+original and, transitively, for everything it resumed or continued.
+Failed, blocked, preserved and no-landing results leave it open.
 An original cancelled by its owner stays cancelled even if its child lands.
+
+An open `follow_up` item (`needs_decision` or `failed`) can be resumed too.
+Foundry records a new interactive task with the follow-up's objective, started
+from current trunk, whose `continues` names the follow-up, so its landing
+settles the follow-up. Only an owner can resume a follow-up.
+
 Unknown ids return `NOT_FOUND`, blank inputs `INVALID_ARGUMENT`, ineligible
 states or unusable evidence `FAILED_PRECONDITION`, and persistence failures
 `INTERNAL`. A rejected admission dispatches no execution and invokes no agent.
