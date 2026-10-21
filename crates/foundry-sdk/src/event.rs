@@ -439,6 +439,9 @@ pub enum EventType {
     PacingPaused,
     /// An operator resumed one or more pacing lanes.
     PacingResumed,
+    /// Domain fact: the trunk CI watch on a landed work item concluded
+    /// (passed, failed, no run, or unavailable). See `crate::trunk_ci`.
+    TrunkCiChecked,
     /// Scheduled or operator-invoked inventory and supersession check.
     WorkReconcileStarted,
     /// Reconciliation report, including explicit inspection failures.
@@ -688,6 +691,7 @@ impl EventType {
             | EventType::WorkItemReleased
             | EventType::PacingPaused
             | EventType::PacingResumed
+            | EventType::TrunkCiChecked
             | EventType::ValidationCompleted
             | EventType::MaintenanceCycleCompleted
             | EventType::ProjectRunCompleted
@@ -823,6 +827,7 @@ mod tests {
             (EventType::WorkItemReleased, "work_item_released"),
             (EventType::PacingPaused, "pacing_paused"),
             (EventType::PacingResumed, "pacing_resumed"),
+            (EventType::TrunkCiChecked, "trunk_ci_checked"),
             (EventType::WorkReconcileStarted, "work_reconcile_started"),
             (EventType::WorkReconcileCompleted, "work_reconcile_completed"),
             (EventType::ValidationRequested, "validation_requested"),
@@ -922,6 +927,7 @@ mod tests {
             (EventType::WorkItemReleased, "work_item_released"),
             (EventType::PacingPaused, "pacing_paused"),
             (EventType::PacingResumed, "pacing_resumed"),
+            (EventType::TrunkCiChecked, "trunk_ci_checked"),
             (EventType::WorkReconcileStarted, "work_reconcile_started"),
             (EventType::WorkReconcileCompleted, "work_reconcile_completed"),
             (EventType::ValidationRequested, "validation_requested"),
@@ -1413,6 +1419,7 @@ mod tests {
         assert!(!EventType::WorkItemReleased.is_span_opener());
         assert!(!EventType::PacingPaused.is_span_opener());
         assert!(!EventType::PacingResumed.is_span_opener());
+        assert!(!EventType::TrunkCiChecked.is_span_opener());
         assert!(EventType::WorkReconcileStarted.is_span_opener());
         assert!(!EventType::WorkReconcileCompleted.is_span_opener());
 

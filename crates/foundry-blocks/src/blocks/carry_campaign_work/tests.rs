@@ -369,7 +369,7 @@ async fn completion_settles_every_remaining_open_cycle_with_its_reason() {
         cycle("wi_2", 2, WorkItemState::Preserved, 20),
     ];
     let mut done = campaign(CampaignStatus::Active);
-    assert_eq!(done.complete("done evidence met", start()).unwrap(), Transition::Applied);
+    assert_eq!(done.complete("done evidence met", start(), &[]).unwrap(), Transition::Applied);
     let fixture = Fixture::new(&open, done);
 
     let events = fixture.run(&completed("done evidence met")).await;

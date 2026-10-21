@@ -419,15 +419,19 @@ pub async fn decide(
     Ok(())
 }
 
+/// Complete campaign `name` through the daemon, or with `offline` directly
+/// against `store_path`, refusing as the daemon does while the work-item
+/// ledger at `work_items_path` holds open trunk CI follow-ups of its project.
 pub async fn complete_and_render(
     store_path: &Path,
+    work_items_path: &Path,
     addr: &str,
     offline: bool,
     name: &str,
     reason: &str,
 ) -> Result<String> {
     if offline {
-        return complete_offline_and_render(store_path, name, reason);
+        return complete_offline_and_render(store_path, work_items_path, name, reason);
     }
 
     let mut client =
@@ -454,7 +458,9 @@ pub async fn complete(
     name: &str,
     reason: &str,
 ) -> Result<()> {
-    let output = complete_and_render(store_path, addr, offline, name, reason).await?;
+    let work_items_path = foundry_sdk::paths::work_items_path();
+    let output =
+        complete_and_render(store_path, &work_items_path, addr, offline, name, reason).await?;
     print!("{output}");
     Ok(())
 }
@@ -856,7 +862,12 @@ fn edit_offline_and_render(
     Ok(format!("{rendered}{note}"))
 }
 
-fn complete_offline_and_render(store_path: &Path, name: &str, reason: &str) -> Result<String> {
+fn complete_offline_and_render(
+    store_path: &Path,
+    work_items_path: &Path,
+    name: &str,
+    reason: &str,
+) -> Result<String> {
     let reason = reason.trim();
     if reason.is_empty() {
         bail!("reason must be non-empty");
@@ -866,7 +877,15 @@ fn complete_offline_and_render(store_path: &Path, name: &str, reason: &str) -> R
         .store
         .find_mut(name)
         .ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
-    let transition = campaign.complete(reason, Utc::now())?;
+    // The same refusal the daemon makes: a campaign does not complete while
+    // its project's trunk CI is red. A missing ledger records none.
+    let open_trunk_ci: Vec<String> = foundry_sdk::work_item::WorkItemStore::load(work_items_path)
+        .with_context(|| format!("load work-item ledger {}", work_items_path.display()))?
+        .open_trunk_ci_follow_ups(&campaign.project)
+        .into_iter()
+        .map(|item| item.id.clone())
+        .collect();
+    let transition = campaign.complete(reason, Utc::now(), &open_trunk_ci)?;
     let rendered = render::campaign::campaign_detail(campaign);
     if transition == Transition::Applied {
         guard.save()?;
@@ -1039,6 +1058,7 @@ mod tests {
 
         let output = complete_and_render(
             &store,
+            &dir.path().join("work-items.json"),
             "http://127.0.0.1:0",
             true,
             "c",
@@ -1057,6 +1077,79 @@ mod tests {
             "Completed externally: Production evidence confirms the mission shipped."
         );
         assert!(output.contains("completed"));
+    }
+
+    /// The offline path refuses as the daemon does while the project's trunk
+    /// CI is red, and completes once the follow-up is no longer open.
+    #[tokio::test]
+    async fn offline_complete_is_refused_while_a_trunk_ci_follow_up_is_open() {
+        use foundry_sdk::work_item::{
+            FollowUp, FollowUpObligation, WorkItem, WorkItemKind, WorkItemSpec, WorkItemStore,
+            WorkLane,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("campaigns.json");
+        let ledger = dir.path().join("work-items.json");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let registry_path = write_registry(&dir, "p", &repo);
+        let file = write_campaign_file(
+            &dir,
+            r#"{
+                "name":"c", "project":"p", "mission":"ship",
+                "done_evidence":[{"kind":"review","statement":"shipped"}],
+                "authorized_by":"tester", "status":"active"
+            }"#,
+        );
+        add(&store, &registry_path, "http://127.0.0.1:0", true, &file).await.unwrap();
+        let parent = WorkItem::dispatched(
+            WorkItemSpec {
+                project: "p".to_string(),
+                objective: "o".to_string(),
+                kind: WorkItemKind::Task,
+                lane: WorkLane::Interactive,
+                origin: "test".to_string(),
+                trace_id: None,
+            },
+            Utc::now(),
+        );
+        let red = FollowUp {
+            of: parent.id.clone(),
+            commit: Some("abcdef0".to_string()),
+            obligation: FollowUpObligation::TrunkCi {
+                failing_jobs: vec!["lint".to_string()],
+                log_tail: None,
+                run_url: None,
+            },
+        }
+        .into_item(&parent, Utc::now());
+        let red_id = red.id.clone();
+        let mut items = WorkItemStore::default();
+        items.upsert(parent);
+        items.upsert(red);
+        items.save(&ledger).unwrap();
+
+        let err = complete_and_render(&store, &ledger, "http://127.0.0.1:0", true, "c", "shipped")
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("trunk CI is red"), "{err}");
+        assert!(err.contains(&red_id), "{err}");
+        let saved = CampaignStore::load(&store).unwrap();
+        assert_eq!(saved.find("c").unwrap().status, CampaignStatus::Active);
+
+        let mut items = WorkItemStore::load(&ledger).unwrap();
+        items
+            .find_mut(&red_id)
+            .unwrap()
+            .settle_landed("trunk CI green at x", Utc::now());
+        items.save(&ledger).unwrap();
+        complete_and_render(&store, &ledger, "http://127.0.0.1:0", true, "c", "shipped")
+            .await
+            .unwrap();
+        let saved = CampaignStore::load(&store).unwrap();
+        assert_eq!(saved.find("c").unwrap().status, CampaignStatus::Completed);
     }
 
     /// `complete_offline_and_render` historically guarded only `Completed`, so
@@ -1084,9 +1177,16 @@ mod tests {
             .await
             .unwrap();
 
-        let err = complete_and_render(&store, "http://127.0.0.1:0", true, "c", "shipped anyway")
-            .await
-            .unwrap_err();
+        let err = complete_and_render(
+            &store,
+            &dir.path().join("work-items.json"),
+            "http://127.0.0.1:0",
+            true,
+            "c",
+            "shipped anyway",
+        )
+        .await
+        .unwrap_err();
 
         assert!(
             err.to_string().contains("cancelled"),
@@ -1116,14 +1216,28 @@ mod tests {
         );
         add(&store, &registry_path, "http://127.0.0.1:0", true, &file).await.unwrap();
 
-        let unauthorized = complete_and_render(&store, "http://127.0.0.1:0", true, "c", "shipped")
-            .await
-            .unwrap_err();
+        let unauthorized = complete_and_render(
+            &store,
+            &dir.path().join("work-items.json"),
+            "http://127.0.0.1:0",
+            true,
+            "c",
+            "shipped",
+        )
+        .await
+        .unwrap_err();
         assert!(unauthorized.to_string().contains("authorized"));
 
-        let empty = complete_and_render(&store, "http://127.0.0.1:0", true, "c", "   ")
-            .await
-            .unwrap_err();
+        let empty = complete_and_render(
+            &store,
+            &dir.path().join("work-items.json"),
+            "http://127.0.0.1:0",
+            true,
+            "c",
+            "   ",
+        )
+        .await
+        .unwrap_err();
         assert!(empty.to_string().contains("non-empty"));
     }
 

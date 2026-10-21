@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::trunk_ci::{TrunkCiState, TrunkCiWatch};
 use crate::work_item::{
     FollowUp, WorkDisposition, WorkItem, WorkItemKind, WorkItemState, WorkLane,
 };
@@ -53,6 +54,9 @@ pub struct WorkItemEventPayload {
     /// The obligation a follow-up item holds. Absent on every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub follow_up: Option<FollowUp>,
+    /// The trunk CI watch on a landed task's commit. Absent when none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ci: Option<TrunkCiWatch>,
     /// Owner action, without replacing the original submission origin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator_action: Option<crate::work_item::WorkItemOperatorAction>,
@@ -85,9 +89,50 @@ impl WorkItemEventPayload {
             resumes: item.resumes.clone(),
             continues: item.continues.clone(),
             follow_up: item.follow_up.clone(),
+            ci: item.ci.clone(),
             depends_on: item.depends_on.clone(),
             not_before: item.not_before,
         }
+    }
+}
+
+/// Payload for `trunk_ci_checked`: a trunk CI watch on a landed work item
+/// concluded (see [`crate::trunk_ci`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrunkCiCheckedPayload {
+    /// Registry project name.
+    pub project: String,
+    /// The landed work item the watch belongs to.
+    pub item_id: String,
+    /// The landed commit.
+    pub commit: String,
+    /// How the watch concluded: `passed`, `failed`, `no_run` or `unavailable`.
+    pub state: TrunkCiState,
+    /// The run that decided it, when one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_url: Option<String>,
+    /// The failed jobs of a red run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failing_jobs: Vec<String>,
+    /// The follow-up a red watch opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_up: Option<String>,
+}
+
+impl TrunkCiCheckedPayload {
+    /// Report the concluded watch on `item`, or `None` when it holds none.
+    #[must_use]
+    pub fn from_item(item: &WorkItem) -> Option<Self> {
+        let watch = item.ci.as_ref()?;
+        Some(Self {
+            project: item.project.clone(),
+            item_id: item.id.clone(),
+            commit: watch.commit.clone(),
+            state: watch.state,
+            run_url: watch.run_url.clone(),
+            failing_jobs: watch.failing_jobs.clone(),
+            follow_up: watch.follow_up.clone(),
+        })
     }
 }
 

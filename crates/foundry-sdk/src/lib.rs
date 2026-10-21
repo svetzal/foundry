@@ -27,6 +27,7 @@ pub mod token_rates;
 pub mod token_usage;
 pub mod trace;
 pub mod triage;
+pub mod trunk_ci;
 pub mod work_item;
 pub mod work_item_events;
 pub mod work_source;

@@ -1033,6 +1033,7 @@ mod tests {
             not_before: None,
             continues: Vec::new(),
             follow_up: None,
+            ci: None,
         }
     }
 

@@ -191,6 +191,33 @@ pub fn spawn_pacing_scheduler(
     );
 }
 
+/// Ask campaign `name` to advance, exactly as the `AdvanceCampaign` RPC does:
+/// the same checks, the same in-flight no-op, the same dispatch, with
+/// `operator_origin` as its operator context.
+///
+/// # Errors
+///
+/// Returns the RPC's own status: `NOT_FOUND`, `FAILED_PRECONDITION` for a
+/// campaign that cannot advance now, `INTERNAL` for a store fault.
+pub async fn request_campaign_advance(
+    ctx: &RuntimeContext,
+    campaigns_path: PathBuf,
+    work_items_path: PathBuf,
+    name: String,
+    operator_origin: &str,
+) -> Result<crate::proto::AdvanceCampaignResponse, Status> {
+    let ctx = ctx.clone();
+    let request = Request::new(crate::proto::AdvanceCampaignRequest {
+        name,
+        operator_origin: operator_origin.to_string(),
+    });
+    campaign_ops::blocking(move || {
+        campaign_ops::advance(&campaigns_path, &work_items_path, &ctx, request)
+    })
+    .await
+    .map(Response::into_inner)
+}
+
 /// Record a root event as an active workflow, so `foundry status` shows it.
 pub(crate) fn track_workflow(event: &Event, tracker: &WorkflowTracker) {
     // Read the campaign generically off the root payload rather than matching
@@ -853,8 +880,11 @@ impl Foundry for FoundryService {
         &self,
         request: Request<CompleteCampaignRequest>,
     ) -> Result<Response<CompleteCampaignResponse>, Status> {
-        self.campaign_operation(move |path, ctx| campaign_ops::complete(path, ctx, request))
-            .await
+        let work_items_path = self.work_items_path.clone();
+        self.campaign_operation(move |path, ctx| {
+            campaign_ops::complete(path, &work_items_path, ctx, request)
+        })
+        .await
     }
 
     async fn cancel_campaign(
@@ -2352,6 +2382,7 @@ mod tests {
             resumes: None,
             continues: Vec::new(),
             follow_up: None,
+            ci: None,
             depends_on: Vec::new(),
             not_before: None,
             pending_root: None,
@@ -2740,6 +2771,7 @@ mod tests {
             resumes: None,
             continues: Vec::new(),
             follow_up: None,
+            ci: None,
             depends_on: Vec::new(),
             not_before: None,
             pending_root: None,

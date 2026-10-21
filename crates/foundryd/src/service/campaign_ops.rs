@@ -565,8 +565,12 @@ pub(super) fn decide(
 ///
 /// The reason is retained in the append-only owner record and a terminal event
 /// is emitted so existing digest and observability blocks see the completion.
+/// While the campaign's project has open trunk CI follow-ups in the ledger at
+/// `work_items_path` (its branch's CI is red), the completion is refused with
+/// `FAILED_PRECONDITION` naming them.
 pub(super) fn complete(
     campaigns_path: &Path,
+    work_items_path: &Path,
     ctx: &super::RuntimeContext,
     request: Request<CompleteCampaignRequest>,
 ) -> Result<Response<CompleteCampaignResponse>, Status> {
@@ -579,11 +583,21 @@ pub(super) fn complete(
 
     let (detail, event) = {
         let mut guard = lock_store_exclusive(campaigns_path)?;
+        let project = guard
+            .store
+            .find(&name)
+            .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?
+            .project
+            .clone();
+        // Lock order: campaign store, then ledger. A read takes no gate.
+        let open_trunk_ci = open_trunk_ci_follow_ups(work_items_path, &project)?;
         let campaign = guard
             .store
             .find_mut(&name)
             .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
-        if campaign.complete(&reason, Utc::now()).map_err(|e| map_transition_error(&e))?
+        if campaign
+            .complete(&reason, Utc::now(), &open_trunk_ci)
+            .map_err(|e| map_transition_error(&e))?
             == Transition::AlreadySettled
         {
             return Ok(Response::new(CompleteCampaignResponse {
@@ -649,6 +663,16 @@ pub(super) fn complete(
     Ok(Response::new(CompleteCampaignResponse {
         campaign: Some(detail),
     }))
+}
+
+/// The ids of every open trunk CI follow-up of `project` in the ledger at
+/// `work_items_path`.
+fn open_trunk_ci_follow_ups(work_items_path: &Path, project: &str) -> Result<Vec<String>, Status> {
+    Ok(super::work_item_ops::load_store(work_items_path)?
+        .open_trunk_ci_follow_ups(project)
+        .into_iter()
+        .map(|item| item.id.clone())
+        .collect())
 }
 
 fn select_aborted_owner(

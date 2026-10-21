@@ -532,6 +532,7 @@ fn item_to_proto(item: &WorkItem) -> ProtoWorkItem {
         not_before: item.not_before.map(|at| at.to_rfc3339()),
         continues: item.continues.clone(),
         follow_up: item.follow_up.as_ref().map(follow_up_to_proto),
+        ci: item.ci.as_ref().map(trunk_ci_to_proto),
     }
 }
 
@@ -539,14 +540,43 @@ fn item_to_proto(item: &WorkItem) -> ProtoWorkItem {
 fn follow_up_to_proto(
     follow_up: &foundry_sdk::work_item::FollowUp,
 ) -> crate::proto::WorkItemFollowUp {
-    let gaps = match &follow_up.obligation {
-        foundry_sdk::work_item::FollowUpObligation::Remainder { gaps } => gaps.clone(),
-    };
-    crate::proto::WorkItemFollowUp {
+    let mut wire = crate::proto::WorkItemFollowUp {
         of: follow_up.of.clone(),
         commit: follow_up.commit.clone(),
         obligation: follow_up.obligation.tag().to_string(),
-        gaps,
+        ..crate::proto::WorkItemFollowUp::default()
+    };
+    match &follow_up.obligation {
+        foundry_sdk::work_item::FollowUpObligation::Remainder { gaps } => {
+            wire.gaps.clone_from(gaps);
+        }
+        foundry_sdk::work_item::FollowUpObligation::TrunkCi {
+            failing_jobs,
+            log_tail,
+            run_url,
+        } => {
+            wire.failing_jobs.clone_from(failing_jobs);
+            wire.log_tail.clone_from(log_tail);
+            wire.run_url.clone_from(run_url);
+        }
+    }
+    wire
+}
+
+/// Wire form of a trunk CI watch.
+fn trunk_ci_to_proto(watch: &foundry_sdk::trunk_ci::TrunkCiWatch) -> crate::proto::WorkItemTrunkCi {
+    crate::proto::WorkItemTrunkCi {
+        state: watch.state.tag().to_string(),
+        commit: watch.commit.clone(),
+        branch: watch.branch.clone(),
+        run_url: watch.run_url.clone(),
+        failing_jobs: watch.failing_jobs.clone(),
+        log_tail: watch.log_tail.clone(),
+        detail: watch.detail.clone(),
+        follow_up: watch.follow_up.clone(),
+        requested_at: watch.requested_at.to_rfc3339(),
+        concluded_at: watch.concluded_at.map(|at| at.to_rfc3339()),
+        repo: watch.repo.clone(),
     }
 }
 
@@ -935,10 +965,59 @@ mod tests {
                 commit: Some("landedcommit".to_string()),
                 obligation: "remainder".to_string(),
                 gaps: vec!["one gap".to_string()],
+                ..crate::proto::WorkItemFollowUp::default()
             })
         );
         let parent = items.iter().find(|item| item.id == "wi_parent").expect("the parent");
         assert_eq!(parent.follow_up, None);
+    }
+
+    #[test]
+    fn offline_load_carries_a_trunk_ci_watch_and_a_red_follow_up() {
+        let mut parent = item("wi_parent", "alpha", WorkItemState::Landed, 5);
+        let mut watch =
+            foundry_sdk::trunk_ci::TrunkCiWatch::pending("o/alpha", "main", "abcdef0123", at(5));
+        watch.state = foundry_sdk::trunk_ci::TrunkCiState::Failed;
+        watch.concluded_at = Some(at(6));
+        watch.failing_jobs = vec!["lint".to_string()];
+        parent.ci = Some(watch);
+        let red = foundry_sdk::work_item::FollowUp {
+            of: "wi_parent".to_string(),
+            commit: Some("abcdef0123".to_string()),
+            obligation: foundry_sdk::work_item::FollowUpObligation::TrunkCi {
+                failing_jobs: vec!["lint".to_string()],
+                log_tail: Some("tail".to_string()),
+                run_url: Some("https://ci/run/1".to_string()),
+            },
+        }
+        .into_item(&parent, at(6));
+        let tmp = NamedTempFile::new().expect("tempfile");
+        store(vec![parent, red]).save(tmp.path()).expect("save ledger");
+
+        let items = load_offline(tmp.path()).expect("load ledger");
+        let parent = items.iter().find(|item| item.id == "wi_parent").expect("the parent");
+        let ci = parent.ci.as_ref().expect("the watch");
+        assert_eq!(
+            (ci.state.as_str(), ci.repo.as_str(), ci.branch.as_str(), ci.commit.as_str()),
+            ("failed", "o/alpha", "main", "abcdef0123")
+        );
+        assert_eq!(ci.failing_jobs, vec!["lint"]);
+        assert_eq!(ci.concluded_at, Some(at(6).to_rfc3339()));
+        let wire = items.iter().find(|item| item.kind == "follow_up").expect("the follow-up");
+        assert_eq!(wire.state, "failed");
+        assert_eq!(
+            wire.follow_up,
+            Some(crate::proto::WorkItemFollowUp {
+                of: "wi_parent".to_string(),
+                commit: Some("abcdef0123".to_string()),
+                obligation: "trunk_ci".to_string(),
+                failing_jobs: vec!["lint".to_string()],
+                log_tail: Some("tail".to_string()),
+                run_url: Some("https://ci/run/1".to_string()),
+                ..crate::proto::WorkItemFollowUp::default()
+            })
+        );
+        assert_eq!(wire.ci, None);
     }
 
     // ── offline command paths ─────────────────────────────────────────────────

@@ -189,6 +189,7 @@ fn item_to_proto(item: &WorkItem) -> ProtoWorkItem {
         not_before: item.not_before.map(|at| at.to_rfc3339()),
         continues: item.continues.clone(),
         follow_up: item.follow_up.as_ref().map(follow_up_to_proto),
+        ci: item.ci.as_ref().map(trunk_ci_to_proto),
     }
 }
 
@@ -196,14 +197,43 @@ fn item_to_proto(item: &WorkItem) -> ProtoWorkItem {
 fn follow_up_to_proto(
     follow_up: &foundry_sdk::work_item::FollowUp,
 ) -> crate::proto::WorkItemFollowUp {
-    let gaps = match &follow_up.obligation {
-        foundry_sdk::work_item::FollowUpObligation::Remainder { gaps } => gaps.clone(),
-    };
-    crate::proto::WorkItemFollowUp {
+    let mut wire = crate::proto::WorkItemFollowUp {
         of: follow_up.of.clone(),
         commit: follow_up.commit.clone(),
         obligation: follow_up.obligation.tag().to_string(),
-        gaps,
+        ..crate::proto::WorkItemFollowUp::default()
+    };
+    match &follow_up.obligation {
+        foundry_sdk::work_item::FollowUpObligation::Remainder { gaps } => {
+            wire.gaps.clone_from(gaps);
+        }
+        foundry_sdk::work_item::FollowUpObligation::TrunkCi {
+            failing_jobs,
+            log_tail,
+            run_url,
+        } => {
+            wire.failing_jobs.clone_from(failing_jobs);
+            wire.log_tail.clone_from(log_tail);
+            wire.run_url.clone_from(run_url);
+        }
+    }
+    wire
+}
+
+/// Wire form of a trunk CI watch.
+fn trunk_ci_to_proto(watch: &foundry_sdk::trunk_ci::TrunkCiWatch) -> crate::proto::WorkItemTrunkCi {
+    crate::proto::WorkItemTrunkCi {
+        state: watch.state.tag().to_string(),
+        commit: watch.commit.clone(),
+        branch: watch.branch.clone(),
+        run_url: watch.run_url.clone(),
+        failing_jobs: watch.failing_jobs.clone(),
+        log_tail: watch.log_tail.clone(),
+        detail: watch.detail.clone(),
+        follow_up: watch.follow_up.clone(),
+        requested_at: watch.requested_at.to_rfc3339(),
+        concluded_at: watch.concluded_at.map(|at| at.to_rfc3339()),
+        repo: watch.repo.clone(),
     }
 }
 

@@ -384,6 +384,9 @@ pub fn item_detail(item: &WorkItem) -> String {
     if let Some(follow_up) = &item.follow_up {
         follow_up_fields(&mut out, follow_up);
     }
+    if let Some(watch) = &item.ci {
+        trunk_ci_fields(&mut out, watch);
+    }
     if !item.depends_on.is_empty() {
         let _ = writeln!(out, "{:<18}{}", "Depends on:", item.depends_on.join(", "));
     }
@@ -423,6 +426,31 @@ fn follow_up_fields(out: &mut String, follow_up: &crate::proto::WorkItemFollowUp
         let label = if index == 0 { "Gaps:" } else { "" };
         let _ = writeln!(out, "{label:<18}- {gap}");
     }
+    optional_field(out, "Red run:", follow_up.run_url.as_deref());
+    for (index, job) in follow_up.failing_jobs.iter().enumerate() {
+        let label = if index == 0 { "Failing jobs:" } else { "" };
+        let _ = writeln!(out, "{label:<18}- {job}");
+    }
+    if let Some(tail) = follow_up.log_tail.as_deref().filter(|tail| !tail.trim().is_empty()) {
+        let _ = writeln!(out, "Log tail:");
+        for line in tail.lines() {
+            let _ = writeln!(out, "    {line}");
+        }
+    }
+}
+
+/// A watched item's trunk CI: where the watch stands, on which commit, and
+/// the run that decided it; then why, and the follow-up red opened, when
+/// recorded.
+fn trunk_ci_fields(out: &mut String, watch: &crate::proto::WorkItemTrunkCi) {
+    let run = watch.run_url.as_deref().map_or_else(String::new, |url| format!(" {url}"));
+    let _ = writeln!(
+        out,
+        "{:<18}{} at {} on {}{run}",
+        "Trunk CI:", watch.state, watch.commit, watch.branch
+    );
+    optional_field(out, "CI detail:", watch.detail.as_deref());
+    optional_field(out, "CI follow-up:", watch.follow_up.as_deref());
 }
 
 /// The heading above an item's events in `queue show`.
@@ -539,6 +567,8 @@ pub(crate) struct JsonItem<'a> {
     continues: &'a [String],
     #[serde(skip_serializing_if = "Option::is_none")]
     follow_up: Option<JsonFollowUp<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ci: Option<JsonTrunkCi<'a>>,
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     depends_on: &'a [String],
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -575,6 +605,12 @@ struct JsonFollowUp<'a> {
     obligation: &'a str,
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     gaps: &'a [String],
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    failing_jobs: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    log_tail: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run_url: Option<&'a str>,
 }
 
 impl<'a> From<&'a crate::proto::WorkItemFollowUp> for JsonFollowUp<'a> {
@@ -584,6 +620,49 @@ impl<'a> From<&'a crate::proto::WorkItemFollowUp> for JsonFollowUp<'a> {
             commit: follow_up.commit.as_deref(),
             obligation: &follow_up.obligation,
             gaps: &follow_up.gaps,
+            failing_jobs: &follow_up.failing_jobs,
+            log_tail: follow_up.log_tail.as_deref(),
+            run_url: follow_up.run_url.as_deref(),
+        }
+    }
+}
+
+/// JSON projection of a trunk CI watch: the same keys the ledger writes.
+#[derive(Serialize)]
+struct JsonTrunkCi<'a> {
+    repo: &'a str,
+    branch: &'a str,
+    commit: &'a str,
+    state: &'a str,
+    requested_at: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    concluded_at: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run_url: Option<&'a str>,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    failing_jobs: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    log_tail: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    follow_up: Option<&'a str>,
+}
+
+impl<'a> From<&'a crate::proto::WorkItemTrunkCi> for JsonTrunkCi<'a> {
+    fn from(watch: &'a crate::proto::WorkItemTrunkCi) -> Self {
+        Self {
+            repo: &watch.repo,
+            branch: &watch.branch,
+            commit: &watch.commit,
+            state: &watch.state,
+            requested_at: &watch.requested_at,
+            concluded_at: watch.concluded_at.as_deref(),
+            run_url: watch.run_url.as_deref(),
+            failing_jobs: &watch.failing_jobs,
+            log_tail: watch.log_tail.as_deref(),
+            detail: watch.detail.as_deref(),
+            follow_up: watch.follow_up.as_deref(),
         }
     }
 }
@@ -617,6 +696,7 @@ impl<'a> From<&'a WorkItem> for JsonItem<'a> {
             resumes: item.resumes.as_deref(),
             continues: &item.continues,
             follow_up: item.follow_up.as_ref().map(JsonFollowUp::from),
+            ci: item.ci.as_ref().map(JsonTrunkCi::from),
             project: &item.project,
             objective: &item.objective,
             kind: &item.kind,
@@ -770,6 +850,7 @@ mod tests {
             not_before: None,
             continues: Vec::new(),
             follow_up: None,
+            ci: None,
         }
     }
 
@@ -1362,6 +1443,7 @@ mod tests {
                 "Document the flag.".to_string(),
                 "Cover it with a test.".to_string(),
             ],
+            ..crate::proto::WorkItemFollowUp::default()
         });
         item
     }
@@ -1419,6 +1501,111 @@ mod tests {
         let groups = group(std::slice::from_ref(&follow_up));
         assert_eq!(ids(&groups.open), vec!["wi_follow"]);
         assert!(queue_overview(&[follow_up], &[]).contains(row));
+    }
+
+    /// An open red-CI follow-up of the landed `wi_parent`, as the daemon sends it.
+    fn trunk_ci_follow_up() -> WorkItem {
+        let mut item = item("wi_red", "failed");
+        item.kind = "follow_up".to_string();
+        item.origin = "follow-up of wi_parent".to_string();
+        item.reason = "trunk CI red at abcdef0 after wi_parent: test (macos), lint".to_string();
+        item.started_at = None;
+        item.follow_up = Some(crate::proto::WorkItemFollowUp {
+            of: "wi_parent".to_string(),
+            commit: Some("abcdef0123".to_string()),
+            obligation: "trunk_ci".to_string(),
+            failing_jobs: vec!["test (macos)".to_string(), "lint".to_string()],
+            log_tail: Some("error: failed\n  at src/lib.rs:9".to_string()),
+            run_url: Some("https://ci/run/9".to_string()),
+            ..crate::proto::WorkItemFollowUp::default()
+        });
+        item
+    }
+
+    /// The landed `wi_parent` whose CI watch went red.
+    fn watched_item() -> WorkItem {
+        let mut item = item("wi_parent", "landed");
+        item.ci = Some(crate::proto::WorkItemTrunkCi {
+            state: "failed".to_string(),
+            commit: "abcdef0123".to_string(),
+            branch: "main".to_string(),
+            repo: "o/r".to_string(),
+            run_url: Some("https://ci/run/9".to_string()),
+            failing_jobs: vec!["lint".to_string()],
+            follow_up: Some("wi_red".to_string()),
+            requested_at: "2026-10-20T12:00:00+00:00".to_string(),
+            concluded_at: Some("2026-10-20T12:09:00+00:00".to_string()),
+            ..crate::proto::WorkItemTrunkCi::default()
+        });
+        item
+    }
+
+    #[test]
+    fn show_prints_a_watched_items_trunk_ci_and_nothing_for_an_unwatched_one() {
+        let detail = item_detail(&watched_item());
+        assert!(
+            detail.contains(
+                "Trunk CI:         failed at abcdef0123 on main https://ci/run/9\n\
+                 CI follow-up:     wi_red\n"
+            ),
+            "{detail}"
+        );
+        assert!(!detail.contains("CI detail:"), "an absent detail prints nothing: {detail}");
+        assert!(!item_detail(&item("wi_task", "landed")).contains("Trunk CI:"));
+    }
+
+    #[test]
+    fn show_prints_a_red_ci_follow_ups_jobs_one_per_line_and_its_log_tail_indented() {
+        let detail = item_detail(&trunk_ci_follow_up());
+        assert!(
+            detail.contains(
+                "Obligation:       trunk_ci\n\
+                 Red run:          https://ci/run/9\n\
+                 Failing jobs:     - test (macos)\n\
+                 \x20                 - lint\n\
+                 Log tail:\n\
+                 \x20   error: failed\n\
+                 \x20     at src/lib.rs:9\n"
+            ),
+            "{detail}"
+        );
+        assert!(!detail.contains("Gaps:"), "{detail}");
+    }
+
+    #[test]
+    fn json_carries_the_trunk_ci_watch_and_the_red_follow_up_and_omits_them_when_unset() {
+        let json: serde_json::Value =
+            serde_json::from_str(&items_json(&[watched_item(), trunk_ci_follow_up()], &[]))
+                .unwrap();
+        assert_eq!(
+            json["items"][0]["ci"],
+            serde_json::json!({"repo": "o/r", "branch": "main", "commit": "abcdef0123",
+                "state": "failed", "requested_at": "2026-10-20T12:00:00+00:00",
+                "concluded_at": "2026-10-20T12:09:00+00:00", "run_url": "https://ci/run/9",
+                "failing_jobs": ["lint"], "follow_up": "wi_red"})
+        );
+        assert_eq!(
+            json["items"][1]["follow_up"],
+            serde_json::json!({"of": "wi_parent", "commit": "abcdef0123",
+                "obligation": "trunk_ci", "failing_jobs": ["test (macos)", "lint"],
+                "log_tail": "error: failed\n  at src/lib.rs:9", "run_url": "https://ci/run/9"})
+        );
+        let plain: serde_json::Value =
+            serde_json::from_str(&items_json(&[item("wi_task", "landed")], &[])).unwrap();
+        assert!(plain["items"][0].get("ci").is_none());
+    }
+
+    #[test]
+    fn a_red_ci_follow_up_reads_as_one_open_failed_row() {
+        let follow_up = trunk_ci_follow_up();
+        let open = open_only(std::slice::from_ref(&follow_up), &[]);
+        let row = open.lines().find(|line| line.contains("wi_red")).expect("an open row");
+        assert!(row.contains("follow_up"), "{row}");
+        assert!(row.contains("failed"), "{row}");
+        assert!(
+            row.ends_with("trunk CI red at abcdef0 after wi_parent: test (macos), lint"),
+            "{row}"
+        );
     }
 
     // ── escalated campaigns ───────────────────────────────────────────────────
