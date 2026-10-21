@@ -227,7 +227,17 @@ Complete work with passing required gates lands on trunk. A converging
 gate passed; its reviewer gaps become the campaign's next objective. A
 standalone task that lands that way opens a `follow_up` item holding the gaps
 (`needs_decision`, shown by `queue open` and `queue show`); `queue resume` it
-to run a task from trunk that continues it, or `queue close` it. Every other
+to run a task from trunk that continues it, or `queue close` it.
+
+After any task or campaign cycle lands, Foundry watches the branch's GitHub CI
+on the landed commit (`ci` on the item: `pending`, then `passed`, `failed`,
+`no_run` after 15 min without a run, or `unavailable` after 2 h). Red opens a
+`follow_up` with `obligation: trunk_ci` in `failed`, holding the failing jobs
+and the failed-log tail (`queue open`, `queue show`); a later green landing
+settles it. A campaign stands down (`awaiting trunk CI on <commit>`) while its
+project's CI is pending and re-advances when it concludes; while CI is red,
+formation's `done` becomes a fix cycle and `campaign complete` is refused. Task
+agents never push or watch CI. Every other
 non-complete result is committed and preserved on a named remote branch, with a
 Git bundle fallback when push is unavailable. The task formation never retries.
 
