@@ -7,6 +7,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.57.1] - 2026-10-23
+
+### Fixed
+
+- Audit work uses ecosystem-native, account-free tools without adding language
+  runtimes or commercial service requirements. Agents report coverage and
+  unavailable checks without claiming supply-chain safety is guaranteed.
+- Campaign formation and initiative steering require evidence proportionate to
+  the authorized outcome. Impossible criteria require an owner decision instead
+  of repeated work or expanded infrastructure.
+- Swift advisory scans report native coverage as unavailable instead of invoking
+  the external OSV scanner.
+
+### Changed
+
+- Updated in-range dependencies, including Tokio 1.54.1.
+
 ## [0.57.0] - 2026-10-21
 
 ### Added
