@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing semantic release tag to publish
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -11,8 +17,38 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  prepare:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      commit: ${{ steps.release.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Resolve and validate existing release
+        id: release
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected an existing stable semantic release tag" >&2
+            exit 1
+          fi
+          COMMIT=$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")
+          git show "$COMMIT:Cargo.toml" | python3 -c '
+          import os, sys, tomllib
+          version = tomllib.loads(sys.stdin.read())["workspace"]["package"]["version"]
+          if "v" + version != os.environ["RELEASE_TAG"]:
+              sys.exit("Release tag and workspace version differ")
+          '
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.target }}
+    needs: prepare
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -28,6 +64,8 @@ jobs:
             archive: foundry-linux-x64.tar.gz
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.94.0"
@@ -38,7 +76,9 @@ jobs:
 
       - name: Install protoc (Ubuntu)
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y protobuf-compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
 
       - name: Install protoc (macOS)
         if: runner.os == 'macOS'
@@ -77,10 +117,12 @@ jobs:
 
   release:
     name: Create Release
-    needs: build
+    needs: [prepare, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@v8
@@ -91,15 +133,16 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "${{ github.ref_name }}" \
+          gh release create "$RELEASE_TAG" --verify-tag \
+            --title "$RELEASE_TAG" \
             --generate-notes \
             artifacts/*
 
   homebrew:
     name: Update Homebrew Tap
-    needs: [release, build]
+    needs: [prepare, release, build]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -117,7 +160,9 @@ jobs:
 
       - name: Extract version
         id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
 
       - name: Generate Homebrew formula
         run: |
