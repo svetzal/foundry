@@ -255,3 +255,18 @@ clean result. When `scan_error` is set:
 |----------|---------|---------|
 | `FOUNDRY_SUPPLY_CHAIN_DIR` | `~/.foundry/supply-chain` | Digest output directory |
 | `FOUNDRY_SUPPLY_CHAIN_REMEDIATE` | _(unset → off)_ | Set truthy (`1`/`true`/`yes`/`on`) to enable the auto-fix engine. Off by default. |
+
+## Audit scope constraints
+
+Every CLI agent invocation includes the shared audit policy, including task
+execution, gate discovery, maintenance, remediation and review. Use maintained
+ecosystem-native tools to check resolved direct and transitive dependencies.
+Do not add another language runtime, a commercial service or an external account
+without an explicit owner exception. Report coverage, findings and unavailable
+checks. A passing scan means no matching known advisories within that coverage;
+it does not prove the supply chain is safe.
+
+An unavailable required check stays blocked. Do not weaken vulnerability
+thresholds or hide findings. Optional analyzers for unrelated ecosystems may be
+disabled with a coverage explanation. Reviewers apply this bounded scope rather
+than treating every scanner default as required coverage.

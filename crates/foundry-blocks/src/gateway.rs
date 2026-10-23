@@ -1015,11 +1015,11 @@ mod claude_agent_gateway_streaming_tests {
         // capped at MAX_ARG_STRLEN (131072 bytes) on Linux.
         assert!(!captured.iter().any(|a| a == "x"), "prompt must not be in argv: {captured:?}");
         assert_eq!(captured.last().map(String::as_str), Some("-p"), "args: {captured:?}");
-        assert_eq!(
-            stdin_seen.lock().unwrap().as_deref(),
-            Some(b"x".as_slice()),
-            "prompt should be delivered on stdin"
-        );
+        let delivered = stdin_seen.lock().unwrap().clone().unwrap();
+        let delivered = String::from_utf8(delivered).unwrap();
+        assert!(delivered.starts_with("x\n\nSupply-chain audit constraints"));
+        assert!(delivered.contains("never a successful audit"));
+        assert!(!captured.iter().any(|arg| arg.contains("Supply-chain audit constraints")));
         assert!(captured.iter().any(|a| a == "--output-format"), "args: {captured:?}");
         assert!(captured.iter().any(|a| a == "stream-json"), "args: {captured:?}");
         assert!(captured.iter().any(|a| a == "--verbose"), "args: {captured:?}");
