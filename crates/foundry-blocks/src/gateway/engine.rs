@@ -271,10 +271,17 @@ Check resolved direct and transitive dependencies for known advisories using mai
 State coverage, findings, and unavailable checks. No matching known advisories within stated coverage is not proof that the supply chain is safe.
 An unavailable check remains an explicit limitation or blocked audit, never a successful audit. Do not silently pass, lower vulnerability thresholds, suppress real findings, or remove required ecosystem coverage.
 Optional analyzers for unrelated ecosystems may be disabled with an explicit coverage explanation; this is not automatically an audit bypass. Review against this bounded scope rather than requiring every scanner default.
+Do not build bespoke scanners, feed mirrors, caches, downloaders, or verification infrastructure solely to satisfy an unavailable check without explicit owner authorization to expand tooling scope. Ordinary configuration and existing tool caching remain allowed.
 If verification cannot meet these constraints, report the limitation and stop infrastructure expansion.";
 
+const EVIDENCE_POLICY: &str = "Diligence and bounded evidence for tasks, campaigns, and initiatives:
+Formation, derivation, steering, execution, review, and completion must use observable acceptance evidence proportionate to the authorized outcome. Do not invent universal guarantees, exhaustive absence-of-defects claims, or extra acceptance criteria from generic quality aspirations such as clean, safe, complete, or production-ready.
+Use the existing project gates and owner criteria. Do not expand the authorized scope, add infrastructure or services, or create further campaigns merely to chase certainty. A passing check supports only its stated coverage and checked revision; report residual risks and unavailable checks explicitly.
+Preserve explicit owner acceptance criteria, required gates, and required owner confirmation. Missing evidence is not success, and limitations do not waive a criterion. If an explicit criterion demands an impossible guarantee or evidence outside authorized scope, ask or escalate with the exact criterion, available evidence, limitation, and smallest bounded decision the owner can make. Do not silently reinterpret it or repeat cycles pursuing certainty.
+Once the authorized outcome and required evidence are satisfied, propose completion with the remaining limitations; do not invent more work for hypothetical perfection.";
+
 fn bounded_audit_prompt(prompt: &str) -> String {
-    format!("{prompt}\n\n{AUDIT_POLICY}")
+    format!("{prompt}\n\n{AUDIT_POLICY}\n\n{EVIDENCE_POLICY}")
 }
 
 impl<A: CliAgentAdapter + Send + Sync + 'static> AgentGateway for CliAgentGateway<A> {
@@ -406,6 +413,21 @@ mod tests {
                     assert!(request.prompt.contains("tools native to the project's ecosystem"));
                     assert!(request.prompt.contains("Do not add other-language runtimes, commercial services, or external accounts"));
                     assert!(request.prompt.contains("never a successful audit"));
+                    assert!(request.prompt.contains(
+                        "Do not build bespoke scanners, feed mirrors, caches, downloaders"
+                    ));
+                    assert!(request.prompt.contains(
+                        "Ordinary configuration and existing tool caching remain allowed"
+                    ));
+                    assert!(request.prompt.contains(
+                        "Formation, derivation, steering, execution, review, and completion"
+                    ));
+                    assert!(request.prompt.contains("limitations do not waive a criterion"));
+                    assert!(
+                        request
+                            .prompt
+                            .contains("do not invent more work for hypothetical perfection")
+                    );
                     assert!(
                         request.prompt.contains(
                             "Optional analyzers for unrelated ecosystems may be disabled"
