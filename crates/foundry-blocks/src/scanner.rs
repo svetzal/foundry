@@ -433,6 +433,9 @@ fn audit_plan(path: &Path, stack: &Stack) -> AuditPlan {
             "Package.resolved not found (commit the resolved SwiftPM lockfile to audit it)"
                 .to_string(),
         ),
+        Stack::Swift => AuditPlan::Unavailable(
+            "Swift native advisory check unavailable: no ecosystem-native scanner is configured; dependencies were not scanned (no cross-ecosystem scanner was invoked)".to_string(),
+        ),
         Stack::Kotlin => {
             let wrapper = path.join("gradlew");
             if !wrapper.exists() {
@@ -471,7 +474,7 @@ fn audit_plan(path: &Path, stack: &Stack) -> AuditPlan {
             AuditPlan::MixProjects { dirs }
         }
         Stack::TypeScript => javascript_plan(path),
-        Stack::Rust | Stack::Swift => {
+        Stack::Rust => {
             let (command, args) = audit_command(stack);
             AuditPlan::Stdout {
                 command: command.to_string(),
@@ -578,17 +581,7 @@ fn audit_command(stack: &Stack) -> (&'static str, Vec<&'static str>) {
         Stack::Rust => ("cargo", vec!["audit", "--json"]),
         Stack::TypeScript => ("npm", vec!["audit", "--json"]),
         Stack::Elixir => ("mix", vec!["deps.audit", "--format=json"]),
-        Stack::Swift => (
-            "osv-scanner",
-            vec![
-                "scan",
-                "source",
-                "--format",
-                "json",
-                "--lockfile",
-                "Package.resolved",
-            ],
-        ),
+        Stack::Swift => unreachable!("Swift reports its unavailable native check in audit_plan"),
         Stack::Python => unreachable!("Python resolves pip-audit from .venv in audit_plan"),
         Stack::Kotlin => unreachable!("Kotlin runs the project's Gradle wrapper in audit_plan"),
         Stack::Cpp => unreachable!("C++ has no audit tool; audit_plan never asks for one"),
@@ -2336,33 +2329,27 @@ mod tests {
         assert_eq!(bare_version(""), None);
     }
 
-    // --- Swift (osv-scanner) ---
+    // --- Swift native audit availability and shared OSV parsing ---
 
-    #[test]
-    fn swift_uses_osv_scanner_on_package_resolved() {
-        let (cmd, args) = audit_command(&Stack::Swift);
-        assert_eq!(cmd, "osv-scanner");
-        assert_eq!(
-            args,
-            [
-                "scan",
-                "source",
-                "--format",
-                "json",
-                "--lockfile",
-                "Package.resolved"
-            ]
-        );
-    }
-
-    #[test]
-    fn swift_plan_runs_osv_scanner_when_package_resolved_exists() {
+    #[tokio::test]
+    async fn swift_with_package_resolved_reports_unavailable_without_running_a_command() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("Package.resolved"), "{}").unwrap();
+        touch(dir.path(), "Package.swift");
+        touch(dir.path(), "Package.resolved");
         assert!(matches!(
             audit_plan(dir.path(), &Stack::Swift),
-            AuditPlan::Stdout { ref command, .. } if command == "osv-scanner"
+            AuditPlan::Unavailable(ref reason) if reason.contains("Swift native advisory check unavailable")
         ));
+        let result = run_audit(dir.path(), &Stack::Swift).await.unwrap();
+        assert!(result.vulnerabilities.is_empty());
+        assert!(!result.nothing_to_audit);
+        assert!(
+            result
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("Swift native advisory check unavailable")
+                    && error.contains("dependencies were not scanned"))
+        );
     }
 
     #[tokio::test]

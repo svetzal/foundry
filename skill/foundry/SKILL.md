@@ -765,8 +765,9 @@ Missing or duplicate projects surface typed `NotFound` and `AlreadyExists`
 daemon statuses.
 
 Valid `--stack` values: `rust`, `python`, `typescript`, `elixir`, `cpp`,
-`swift`, `kotlin`. The stack picks the audit tool: Swift runs `osv-scanner` on
-`Package.resolved`; Kotlin runs the project's own
+`swift`, `kotlin`. Swift reports its native advisory check unavailable under
+"Not scanned"; it does not invoke a cross-ecosystem scanner, even with
+`Package.resolved`. Kotlin runs the project's own
 `./gradlew dependencyCheckAggregate` and reads its JSON report.
 
 ```bash

@@ -37,8 +37,8 @@ nightly-supply-chain sentinel  →  SupplyChainScanStarted
 ```
 
 - **`ScanSupplyChain`** iterates every active registry project, runs the
-  stack's audit tool (`cargo audit`, `npm audit`, `mix deps.audit`,
-  `osv-scanner` on Swift's `Package.resolved`) against the working-tree
+  stack's audit tool (`cargo audit`, `npm audit`, `mix deps.audit`) against the
+  working-tree
   lockfile, classifies each advisory against that repo's committed
   allowlist, and emits `SupplyChainScanned`. Each finding carries a **fix
   version** when the audit tool reports one and, where npm supplies it, the
@@ -58,7 +58,10 @@ nightly-supply-chain sentinel  →  SupplyChainScanStarted
   ecosystem's tool: `Cargo.lock` with `cargo audit`, `package-lock.json`
   with `npm audit`, a text `bun.lock`, `yarn.lock` or `pnpm-lock.yaml` with
   `osv-scanner`, `uv.lock` with the project's `pip-audit`,
-  `Package.resolved` with `osv-scanner`, and `gradlew` with Dependency-Check.
+  `gradlew` with Dependency-Check. Swift reports an unavailable native advisory
+  check under "Not scanned", even when `Package.resolved` exists. Foundry does
+  not invoke a cross-ecosystem scanner for Swift. A missing Swift lockfile
+  retains its separate missing-lockfile diagnostic.
   Mix projects are found as before. A binary `bun.lockb` is reported as not
   scanned. The results are merged: every finding is kept, and any part that
   could not be audited makes the project "not scanned", with the failing
