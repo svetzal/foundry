@@ -266,12 +266,26 @@ struct SettledRun {
     failure: Option<AgentFailureMetadata>,
 }
 
+const AUDIT_POLICY: &str = "Supply-chain audit constraints (unless the owner explicitly authorizes an exception):
+Check resolved direct and transitive dependencies for known advisories using maintained tools native to the project's ecosystem. Do not add other-language runtimes, commercial services, or external accounts to satisfy an audit.
+State coverage, findings, and unavailable checks. No matching known advisories within stated coverage is not proof that the supply chain is safe.
+An unavailable check remains an explicit limitation or blocked audit, never a successful audit. Do not silently pass, lower vulnerability thresholds, suppress real findings, or remove required ecosystem coverage.
+Optional analyzers for unrelated ecosystems may be disabled with an explicit coverage explanation; this is not automatically an audit bypass. Review against this bounded scope rather than requiring every scanner default.
+If verification cannot meet these constraints, report the limitation and stop infrastructure expansion.";
+
+fn bounded_audit_prompt(prompt: &str) -> String {
+    format!("{prompt}\n\n{AUDIT_POLICY}")
+}
+
 impl<A: CliAgentAdapter + Send + Sync + 'static> AgentGateway for CliAgentGateway<A> {
     fn invoke<'a>(
         &'a self,
         request: &'a AgentRequest,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<AgentResponse>> + Send + 'a>> {
         Box::pin(async move {
+            let mut bounded_request = request.clone();
+            bounded_request.prompt = bounded_audit_prompt(&request.prompt);
+            let request = &bounded_request;
             if request.env.iter().any(|(k, _)| k == "FOUNDRY_WRITABLE_ROOT")
                 && !self.adapter.provider().enforces_writable_root()
             {
@@ -388,7 +402,19 @@ mod tests {
             _session_log_dir: &Path,
         ) -> Result<Invocation> {
             Ok(Invocation {
-                args: vec![request.prompt.clone()],
+                args: {
+                    assert!(request.prompt.contains("tools native to the project's ecosystem"));
+                    assert!(request.prompt.contains("Do not add other-language runtimes, commercial services, or external accounts"));
+                    assert!(request.prompt.contains("never a successful audit"));
+                    assert!(
+                        request.prompt.contains(
+                            "Optional analyzers for unrelated ecosystems may be disabled"
+                        )
+                    );
+                    assert!(request.prompt.contains("lower vulnerability thresholds"));
+                    assert!(request.prompt.contains("not proof that the supply chain is safe"));
+                    vec![request.prompt.clone()]
+                },
                 env: vec![],
                 stdin: None,
                 last_message_path: None,
