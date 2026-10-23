@@ -1433,3 +1433,21 @@ that is the intended prerequisite, or name an evidence milestone such as
 `member:contract-published`. Readiness and exact wait reasons appear in
 `initiative show`; ordinary dependency waits need no owner decision.
 See [readiness and dependencies](initiatives.md#readiness-and-dependencies).
+
+## Diligence and acceptance evidence
+
+Campaigns and initiatives use observable evidence proportionate to the authorized
+outcome. Passing checks describe the checked revision and their coverage; they
+cannot guarantee the absence of defects or supply-chain compromise. Formation,
+derivation, steering and review must not turn general quality aspirations into
+new acceptance criteria, infrastructure, or speculative follow-up campaigns.
+An unavailable audit does not authorize a bespoke scanner, feed mirror, cache
+or downloader. Ordinary tool configuration and existing caching are allowed;
+expanding tooling scope requires explicit owner authorization.
+
+Required gates, explicit owner criteria and owner confirmation still apply.
+Missing evidence remains missing. If a criterion demands an impossible guarantee
+or exceeds authorized scope, escalate with the evidence, limitation and smallest
+bounded decision needed. Do not waive the criterion or spend repeated cycles
+chasing certainty. When the authorized criteria are met, propose completion and
+state residual risks.
