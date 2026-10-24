@@ -225,37 +225,25 @@ brings the continuation onto current trunk:
 3. If not, it rebases the preserved commits onto trunk in the new task
    worktree. The worker then starts from trunk plus the preserved work. The
    preservation ref is not rewritten; only the new task branch moves.
-4. If that rebase conflicts, Foundry refuses the continuation before any agent
-   session and removes the worktree it made.
+4. If that rebase conflicts, Foundry starts one reconciliation session on
+   current trunk.
 
-An agent cannot repair a conflicting continuation. It may not rewrite history,
-so finalize would replay the same preserved commits onto trunk and hit the
-same conflict after the full session. The refused run ends with
-`runner_error`, `landed: false`, no `preservation_ref`, and `land_blocked:
-continuation_conflict`. Its summary names the continuation ref, the preserved
-commit, how many commits it was behind and each conflicting file. Its work
-item settles `failed` with that summary as the reason. The preserved work
-stays at its ref, and the item that preserved it stays open.
+The session uses the same admitted task and repository slot. It does not reserve
+other projects or add a campaign cycle. The original preserved ref stays unchanged.
+The `reconciliation` field records the source ref, resolved commit, observed trunk,
+and conflicting paths through execution, review and completion events.
 
-A campaign does not escalate a refused continuation as a runner fault.
-Formation runs as usual and sees the refusal in the last run result. The next
-cycle starts from trunk, because the refused run carries no preservation ref,
-so formation cannot ask for the same refused base again. To keep the
-preserved work, formation cuts an objective that reapplies it onto trunk (the
-preserved commit is readable with `git show`). Otherwise it cuts the next
-objective from trunk, or escalates. The refused cycle counts against the cycle
-budget like any other dispatched cycle, but it spends no agent session.
+The agent compares the preserved changes with trunk and reapplies the remaining
+intended behavior. It must explain adaptations and omissions. It cannot rewrite
+the source history. Acceptance proof, required gates, review and normal landing
+checks still apply. A later trunk change uses the normal landing checks.
 
-When the refused cycle was the last one the budget allowed, the campaign
-escalates. The escalation reason says that the cycle was refused before any
-agent session ran, and it includes the refusal summary (the ref, the preserved
-commit, how far behind trunk it was and the conflicting files). It also says
-what to do next: add a cycle with `foundry campaign resume <name> --add-cycles
-1` and advance, and the next cycle starts from trunk with the refusal in front
-of formation. If you already reconciled that work onto trunk by hand, close its
-work item with `foundry queue close`. Foundry does not give the refused cycle
-back: a refund would reuse its cycle number, and the ledger only carries an
-open cycle forward when a later cycle has a higher number.
+If reconciliation does not land, the campaign enters recovery instead of starting
+another automatic cycle. A product choice keeps its explicit owner question.
+Operational blockers keep their typed recovery. An explicit recovery recheck can
+permit further work; it does not silently refund or add cycles. Standalone tasks
+retain the normal explicit resume control. Legacy refused-continuation events
+remain readable.
 
 A `complete` with a `land_blocked` reason is preserved work to reconcile, not
 a defect. Its work item settles `preserved` and its reason names the block.

@@ -182,14 +182,15 @@ impl TaskBlock for ExecutePlan {
                     }
                     _ => crate::workspace::run_workspace_id(&run_id),
                 };
-                match super::task_workspace::prepare_task_workspace(
+                let prepared = prepare_with_reconciliation(
                     &*shell,
                     &entry,
                     &workspace_id,
-                    base_ref,
+                    base_ref.map(str::to_owned),
+                    &mut execution_payload,
                 )
-                .await
-                {
+                .await;
+                match prepared {
                     Ok(workspace) => {
                         execution_payload["task_worktree"] =
                             serde_json::json!(workspace.path.to_string_lossy());
@@ -218,8 +219,10 @@ impl TaskBlock for ExecutePlan {
             let mut prompt = build_execution_prompt(&project, plan, principle, gates);
             prompt.push_str(&task_prompt_suffix(
                 workflow,
-                execution_payload.get("campaign").is_some(),
+                execution_payload.get("campaign").is_some()
+                    || execution_payload.get("reconciliation").is_some(),
             ));
+            append_reconciliation_prompt(&mut prompt, &execution_payload);
             let ctx = ExecutionContext {
                 trace_id: trace_id.clone(),
                 project: &project,
@@ -241,6 +244,50 @@ impl TaskBlock for ExecutePlan {
             )
             .await)
         })
+    }
+}
+
+async fn prepare_with_reconciliation(
+    shell: &dyn ShellGateway,
+    entry: &foundry_sdk::registry::ProjectEntry,
+    workspace_id: &str,
+    base_ref: Option<String>,
+    payload: &mut serde_json::Value,
+) -> anyhow::Result<super::task_workspace::TaskWorkspace> {
+    match super::task_workspace::prepare_task_workspace(
+        shell,
+        entry,
+        workspace_id,
+        base_ref.as_deref(),
+    )
+    .await
+    {
+        Err(error) if payload.get("reconciliation").is_none() => {
+            let Some(conflict) =
+                error.downcast_ref::<super::task_workspace::ContinuationConflict>()
+            else {
+                return Err(error);
+            };
+            payload["reconciliation"] = serde_json::json!(foundry_sdk::payload::Reconciliation {
+                source_ref: conflict.base_ref.clone(),
+                preserved: conflict.preserved.clone(),
+                trunk: conflict.trunk.clone(),
+                files: conflict.files.clone(),
+            });
+            super::task_workspace::prepare_task_workspace(shell, entry, workspace_id, None).await
+        }
+        other => other,
+    }
+}
+
+fn append_reconciliation_prompt(prompt: &mut String, payload: &serde_json::Value) {
+    use std::fmt::Write as _;
+    if let Some(reconciliation) = payload.get("reconciliation") {
+        // Writing to String is infallible.
+        let _ = write!(
+            prompt,
+            "\nBOUNDED RECONCILIATION: one attempt in this task, starting on current trunk. Immutable source evidence: {reconciliation}\nRead the original objective and review findings above. Inspect the preserved commit with git show and compare its changes with current trunk. Reapply the remaining intended behavior in this worktree, retaining trunk changes and omitting source changes already satisfied by trunk. Explain each adaptation or omission in your result. Do not checkout, reset to, rebase, rewrite or delete the source ref; do not edit another worktree. Do not commit or push. Run acceptance proof and normal gates. If a product choice is needed, write .foundry/blocker.json with the exact question. If reconciliation cannot be completed, retain useful work and report the obstacle; do not dispatch another attempt.\n"
+        );
     }
 }
 
@@ -532,11 +579,10 @@ mod tests {
         assert_eq!(events[0].payload["workflow"], "iterate");
     }
 
-    /// A continuation whose preserved work conflicts with trunk is refused
-    /// before the agent runs, with a typed reason the ledger and campaign
-    /// read, and no preservation ref of its own: the work stays where it was.
+    /// A conflict starts one adaptation session on trunk. Finalization lands
+    /// the adapted behavior without rewriting the original preserved branch.
     #[tokio::test]
-    async fn a_conflicting_continuation_ends_typed_without_invoking_the_agent() {
+    async fn a_conflicting_continuation_gets_one_session_on_trunk_and_retains_source() {
         use crate::blocks::test_helpers::git_repo::{CleanProcessShellGateway, commit, git, repo};
 
         let fixture = repo();
@@ -565,28 +611,57 @@ mod tests {
 
         let result = block.execute(&trigger).await.unwrap();
 
-        assert!(agent.invocations().is_empty(), "no agent session may be spent");
-        assert!(!result.success);
-        assert_eq!(result.events.len(), 1);
+        let invocations = agent.invocations();
+        assert_eq!(invocations.len(), 1);
+        assert!(invocations[0].prompt.contains("BOUNDED RECONCILIATION"));
+        assert!(invocations[0].prompt.contains("foundry-task/refused"));
         let payload = &result.events[0].payload;
-        assert_eq!(result.events[0].event_type, EventType::TaskRunCompleted);
-        assert_eq!(payload["land_blocked"], "continuation_conflict");
-        assert_eq!(payload["verdict"], "runner_error");
-        assert!(payload.get("preservation_ref").is_none());
-        let summary = payload["summary"].as_str().unwrap();
-        assert!(summary.contains("README.md"), "{summary}");
-        assert!(summary.contains("foundry-task/refused"), "{summary}");
-        assert!(
-            result.summary.contains("continuation refused before its agent session"),
-            "{}",
-            result.summary
+        assert_eq!(result.events[0].event_type, EventType::ExecutionCompleted);
+        assert_eq!(payload["reconciliation"]["source_ref"], "foundry-task/refused");
+        assert_eq!(payload["reconciliation"]["files"], serde_json::json!(["README.md"]));
+        let path = std::path::Path::new(payload["task_worktree"].as_str().unwrap());
+        let trunk = git(&fixture.work, &["rev-parse", "main"]);
+        assert_eq!(git(path, &["rev-parse", "HEAD"]), trunk);
+        assert_eq!(std::fs::read_to_string(path.join("README.md")).unwrap(), "trunk edit");
+        let preserved = git(&fixture.work, &["show", "foundry-task/refused:README.md"]);
+        assert_eq!(preserved, "preserved edit");
+        assert_eq!(git(&fixture.work, &["status", "--porcelain"]), "");
+        // Model the coding gateway's adaptation, then exercise the real finalizer.
+        std::fs::write(path.join("README.md"), "trunk edit\npreserved behavior adapted\n").unwrap();
+        let review = Event::new(
+            EventType::TaskReviewed,
+            "execute-plan-refusal".into(),
+            foundry_sdk::throttle::Throttle::Full,
+            Event::serialize_payload(&foundry_sdk::payload::TaskReviewedPayload {
+                project: "execute-plan-refusal".into(),
+                objective: "continue the preserved work".into(),
+                review: "adapted preserved behavior while retaining trunk".into(),
+                gate_results: vec![],
+                verdict: foundry_sdk::payload::TaskVerdict::Complete,
+                context: foundry_sdk::payload::LoopContext::extract_from(payload),
+                failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
+            })
+            .unwrap(),
         );
-        let (path, _) = crate::workspace::task_workspace_paths(
-            "execute-plan-refusal",
-            &crate::workspace::run_workspace_id(&trigger.id),
+        let finalizer = super::super::FinalizeTask::with_gateways(
+            test_helpers::registry_with_project(
+                "execute-plan-refusal",
+                fixture.work.to_str().unwrap(),
+            ),
+            Arc::new(CleanProcessShellGateway),
+        );
+        let landed = finalizer.execute(&review).await.unwrap();
+        assert_eq!(landed.events[0].payload["landed"], true);
+        assert_eq!(landed.events[0].payload["reconciliation"], payload["reconciliation"]);
+        assert_eq!(
+            git(&fixture.work, &["show", "main:README.md"]),
+            "trunk edit\npreserved behavior adapted"
+        );
+        assert_eq!(
+            git(&fixture.work, &["show", "foundry-task/refused:README.md"]),
+            "preserved edit"
         );
         assert!(!path.exists());
-        let _ = std::fs::remove_dir(path.parent().unwrap());
     }
 
     /// The start preparation recorded travels with the run, so finalize can

@@ -747,6 +747,25 @@ mod tests {
     }
 
     #[test]
+    fn a_reconciliation_uses_only_its_admitted_repository_slot() {
+        let mut reconciliation = running("wi_reconcile", "alpha", WorkItemKind::Task);
+        reconciliation.started_root = Some(root("alpha"));
+        reconciliation.started_root.as_mut().unwrap().payload["reconciliation"] = serde_json::json!({"source_ref": "preserved", "preserved": "old", "trunk": "new", "files": ["src/lib.rs"]});
+        let items = vec![
+            reconciliation,
+            queued("wi_same", "alpha", WorkLane::Interactive, 1),
+            queued("wi_other", "beta", WorkLane::Interactive, 2),
+        ];
+        assert_eq!(
+            decisions(&items, &Limits::default(), &PauseState::default()),
+            vec![
+                ("wi_same".into(), Decision::Wait("repository busy: wi_reconcile".into())),
+                ("wi_other".into(), Decision::Start),
+            ]
+        );
+    }
+
+    #[test]
     fn a_running_maintenance_item_occupies_its_repository() {
         let items = vec![
             running("wi_nightly", "alpha", WorkItemKind::Maintenance),

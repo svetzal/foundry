@@ -1340,6 +1340,26 @@ fn persist_or_terminal(
     }
 }
 
+fn reconciliation_recovery(result: &TaskRunCompletedPayload) -> Option<AdvanceOutcome> {
+    if result.context.reconciliation.is_some()
+        && !result.landed
+        && !matches!(
+            result.verdict,
+            TaskVerdict::BlockedOnDecision { .. } | TaskVerdict::BlockedOnRecovery { .. }
+        )
+    {
+        Some(AdvanceOutcome::Recovery {
+            kind: foundry_sdk::recovery::RecoveryKind::UnmetPrecondition,
+            detail: format!(
+                "bounded reconciliation did not land; preserved work requires recovery: {}",
+                result.summary
+            ),
+        })
+    } else {
+        None
+    }
+}
+
 /// Record the arriving run and return the outcome it forces, if any.
 ///
 /// `redispatch_on_outage` lets a run the provider refused as unavailable go
@@ -1386,6 +1406,9 @@ fn update_run_and_forced_outcome(
     }
     let recovered_run = recovery_rechecked_for_run(campaign, request);
     if let Some(result) = request.run_result.as_ref().filter(|_| !recovered_run) {
+        if let Some(outcome) = reconciliation_recovery(result) {
+            return Some(outcome);
+        }
         match &result.verdict {
             TaskVerdict::BlockedOnDecision { finding, options } => {
                 return Some(AdvanceOutcome::OwnerQuestion {
@@ -4629,6 +4652,35 @@ mod tests {
             },
             failure: foundry_sdk::gateway::AgentFailureMetadata::default(),
         }
+    }
+
+    #[test]
+    fn an_unlanded_reconciliation_stops_automatic_cycles_but_keeps_its_work() {
+        let mut campaign = campaign_for_accumulation_test();
+        let mut result = run_result_with(TaskVerdict::Defect {
+            diagnosis: "adaptation failed".into(),
+        });
+        result.context.reconciliation = Some(foundry_sdk::payload::Reconciliation {
+            source_ref: "foundry-task/original".into(),
+            preserved: "preserved".into(),
+            trunk: "trunk".into(),
+            files: vec!["src/lib.rs".into()],
+        });
+        let request = CampaignAdvanceRequestedPayload {
+            campaign: campaign.name.clone(),
+            run_event_id: Some("reconcile-run".into()),
+            run_result: Some(result.clone()),
+            operator_origin: None,
+            providers: foundry_sdk::gateway::StageProviders::default(),
+        };
+        assert!(matches!(
+            update_run_and_forced_outcome(&mut campaign, &request, true),
+            Some(AdvanceOutcome::Recovery {
+                kind: foundry_sdk::recovery::RecoveryKind::UnmetPrecondition,
+                ..
+            })
+        ));
+        assert_eq!(campaign.pending_run_result.as_ref(), Some(&result));
     }
 
     #[test]

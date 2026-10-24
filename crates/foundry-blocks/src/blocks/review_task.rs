@@ -402,6 +402,27 @@ fn task_review_prompt(
     prompt
 }
 
+fn reconciliation_review_prompt(
+    objective: &str,
+    results: &[foundry_sdk::gates::GateResult],
+    context: &LoopContext,
+) -> String {
+    use std::fmt::Write as _;
+    let mut prompt = task_review_prompt(
+        objective,
+        results,
+        context.campaign.is_some() || context.reconciliation.is_some(),
+    );
+    if let Some(source) = &context.reconciliation {
+        // Writing to String is infallible.
+        let _ = write!(
+            prompt,
+            "\nRECONCILIATION SOURCE: {source:?}\nCompare the preserved changes with current trunk and this worktree. Verify remaining intended behavior is retained, trunk changes survive, and each adaptation or omission is justified. Unexplained loss of required behavior is a defect."
+        );
+    }
+    prompt
+}
+
 fn campaign_proof_review(
     directory: &std::path::Path,
     throttle: Throttle,
@@ -413,7 +434,8 @@ fn campaign_proof_review(
     if throttle == Throttle::DryRun {
         return None;
     }
-    let (verdict, review) = if context.campaign_limits.is_some() {
+    let (verdict, review) = if context.campaign_limits.is_some() || context.reconciliation.is_some()
+    {
         early_evidence_verdict(directory)?
     } else {
         match read_blocker(directory) {
@@ -528,7 +550,7 @@ impl TaskBlock for ReviewTask {
             return stop_for_review(project, throttle, reviewed);
         }
         let prompt = super::with_initiative_context(
-            &task_review_prompt(&objective, &p.results, context.campaign.is_some()),
+            &reconciliation_review_prompt(&objective, &p.results, &context),
             &payload,
         );
         let provider =
@@ -1042,6 +1064,34 @@ mod tests {
             invalid["verdict"], "defect",
             "unknown operational kinds cannot silently become owner choices"
         );
+    }
+
+    #[test]
+    fn standalone_reconciliation_requires_proof_and_review_of_source_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let context = LoopContext {
+            reconciliation: Some(foundry_sdk::payload::Reconciliation {
+                source_ref: "foundry-task/source".into(),
+                preserved: "source-commit".into(),
+                trunk: "trunk-commit".into(),
+                files: vec!["src/lib.rs".into()],
+            }),
+            ..LoopContext::default()
+        };
+        let result = campaign_proof_review(
+            directory.path(),
+            Throttle::Full,
+            &context,
+            "retain behavior",
+            "p",
+            &[],
+        )
+        .unwrap();
+        assert!(matches!(result.verdict, foundry_sdk::payload::TaskVerdict::Defect { .. }));
+        let prompt = super::reconciliation_review_prompt("retain behavior", &[], &context);
+        assert!(prompt.contains("source-commit"));
+        assert!(prompt.contains("Unexplained loss of required behavior is a defect"));
+        assert!(prompt.contains("proof.json"));
     }
 
     #[test]
