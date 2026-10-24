@@ -16,8 +16,8 @@ use super::single_event_result;
 /// Sinks on:
 /// - `VulnerabilityDetected` — reads vulnerability info from the trigger payload.
 /// - `ProjectChangesPushed` — post-push audit: looks up the project in the
-///   registry and emits a clean `ReleaseTagAudited` if the project is known;
-///   emits nothing when the project is not in the registry.
+///   registry and scans when auditing is enabled; emits nothing when the project
+///   is unknown or auditing is disabled.
 pub struct AuditReleaseTag {
     registry: Arc<RwLock<Registry>>,
     shell: Arc<dyn ShellGateway>,
@@ -69,8 +69,8 @@ impl Default for AuditReleaseTag {
 impl AuditReleaseTag {
     /// Handle the `ProjectChangesPushed` trigger path.
     ///
-    /// Looks up the project in the registry and emits a clean `ReleaseTagAudited`
-    /// event when found, or returns an empty result when the project is unknown.
+    /// Scans registered projects with auditing enabled. Unknown projects and
+    /// disabled audits return no events and make no claim about advisory coverage.
     fn audit_after_push(
         &self,
         trigger: &Event,
@@ -95,6 +95,11 @@ impl AuditReleaseTag {
             tracing::info!(%project, "project not in registry, skipping post-push audit");
             return skip!("Skipped: project not in registry");
         };
+
+        if !entry.actions.audit {
+            tracing::info!(%project, "audit disabled in registry, skipping post-push audit");
+            return skip!("Skipped: post-push audit disabled in registry");
+        }
 
         tracing::info!(%project, stack = %entry.stack, path = %entry.path, "post-push audit");
 
@@ -581,6 +586,12 @@ mod tests {
     use super::super::test_helpers;
     use super::*;
 
+    fn audited_project_entry(name: &str, path: &str) -> foundry_sdk::registry::ProjectEntry {
+        let mut entry = test_helpers::project_entry(name, path);
+        entry.actions.audit = true;
+        entry
+    }
+
     // -- sinks_on --
 
     #[test]
@@ -629,7 +640,7 @@ mod tests {
     #[tokio::test]
     async fn tag_scan_no_tags_falls_back_to_payload() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+        let registry = test_helpers::registry_with_entry(audited_project_entry(
             "test-project",
             dir.path().to_str().unwrap(),
         ));
@@ -677,7 +688,7 @@ mod tests {
     #[tokio::test]
     async fn tag_scan_with_vulnerabilities_emits_vulnerable_true() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+        let registry = test_helpers::registry_with_entry(audited_project_entry(
             "test-project",
             dir.path().to_str().unwrap(),
         ));
@@ -780,7 +791,7 @@ mod tests {
     #[tokio::test]
     async fn tag_scan_cleanup_failures_are_logged_but_do_not_fail_the_audit() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+        let registry = test_helpers::registry_with_entry(audited_project_entry(
             "test-project",
             dir.path().to_str().unwrap(),
         ));
@@ -849,7 +860,7 @@ mod tests {
     #[tokio::test]
     async fn records_scan_error_when_tag_listing_fails() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+        let registry = test_helpers::registry_with_entry(audited_project_entry(
             "test-project",
             dir.path().to_str().unwrap(),
         ));
@@ -921,7 +932,7 @@ mod tests {
     #[tokio::test]
     async fn project_changes_pushed_known_clean_project_emits_clean_audit() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+        let registry = test_helpers::registry_with_entry(audited_project_entry(
             "test-project",
             dir.path().to_str().unwrap(),
         ));
@@ -946,7 +957,7 @@ mod tests {
     #[tokio::test]
     async fn project_changes_pushed_scanner_error_emits_scan_error() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+        let registry = test_helpers::registry_with_entry(audited_project_entry(
             "test-project",
             dir.path().to_str().unwrap(),
         ));
@@ -979,10 +990,51 @@ mod tests {
         );
     }
 
+    struct UnexpectedScanner;
+
+    impl ScannerGateway for UnexpectedScanner {
+        fn run_audit<'a>(
+            &'a self,
+            _path: &'a std::path::Path,
+            _stack: &'a foundry_sdk::registry::Stack,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = anyhow::Result<crate::scanner::AuditResult>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            panic!("disabled post-push audit must not invoke the scanner")
+        }
+    }
+
+    #[tokio::test]
+    async fn disabled_post_push_audit_skips_without_claiming_a_scan() {
+        let mut entry = audited_project_entry("swift-lib", "/unused");
+        entry.stack = foundry_sdk::registry::Stack::Swift;
+        entry.actions.audit = false;
+        let shell = FakeShellGateway::success();
+        let block = AuditReleaseTag::with_gateways(
+            test_helpers::registry_with_entry(entry),
+            Arc::clone(&shell) as _,
+            Arc::new(UnexpectedScanner),
+        );
+        let trigger = test_helpers::make_trigger(
+            EventType::ProjectChangesPushed,
+            "swift-lib",
+            serde_json::json!({"cve": "none"}),
+        );
+        let result = block.execute(&trigger).await.unwrap();
+        assert!(result.success);
+        assert!(result.events.is_empty(), "a skipped audit is not a clean scan");
+        assert!(result.summary.contains("disabled"));
+        assert!(shell.invocations().is_empty());
+    }
+
     #[tokio::test]
     async fn post_push_scanner_failure_is_not_ok() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+        let registry = test_helpers::registry_with_entry(audited_project_entry(
             "coach_phoenix",
             dir.path().to_str().unwrap(),
         ));
@@ -1012,7 +1064,7 @@ mod tests {
             r#"{"version": 1, "allowed": [{"cve": "CVE-2026-45829", "reason": "chromadb path not exposed", "expires": "2099-12-24"}]}"#,
         )
         .unwrap();
-        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+        let registry = test_helpers::registry_with_entry(audited_project_entry(
             "zk-chat",
             dir.path().to_str().unwrap(),
         ));
@@ -1059,7 +1111,7 @@ mod tests {
             r#"{"version": 1, "allowed": [{"cve": "CVE-2026-45829", "reason": "r", "expires": "2020-01-01"}]}"#,
         )
         .unwrap();
-        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+        let registry = test_helpers::registry_with_entry(audited_project_entry(
             "zk-chat",
             dir.path().to_str().unwrap(),
         ));
@@ -1093,7 +1145,7 @@ mod tests {
     #[tokio::test]
     async fn tag_scan_checkout_failure_does_not_scan_and_reports_scan_error() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+        let registry = test_helpers::registry_with_entry(audited_project_entry(
             "test-project",
             dir.path().to_str().unwrap(),
         ));
@@ -1181,7 +1233,7 @@ mod tests {
     #[tokio::test]
     async fn tag_scan_scanner_error_falls_back_to_payload_with_scan_error() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+        let registry = test_helpers::registry_with_entry(audited_project_entry(
             "test-project",
             dir.path().to_str().unwrap(),
         ));
@@ -1257,7 +1309,7 @@ mod tests {
     #[tokio::test]
     async fn tag_scan_scanner_gateway_failure_falls_back_to_payload_with_scan_error() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let registry = test_helpers::registry_with_entry(test_helpers::project_entry(
+        let registry = test_helpers::registry_with_entry(audited_project_entry(
             "test-project",
             dir.path().to_str().unwrap(),
         ));

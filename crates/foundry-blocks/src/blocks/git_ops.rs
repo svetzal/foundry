@@ -110,9 +110,9 @@ impl CommitAndPush {
         // Extract synchronously before any .await point so the lock is not held across yields.
         let entry_data = super::read_registry(&registry)?
             .find_project(&project)
-            .map(|e| (e.path.clone(), e.branch.clone(), e.actions.push));
+            .map(|e| (e.path.clone(), e.branch.clone(), e.actions.push, e.timeout()));
 
-        let Some((path_str, branch, push_enabled)) = entry_data else {
+        let Some((path_str, branch, push_enabled, timeout)) = entry_data else {
             tracing::warn!(project = %project, "project not found in registry");
             return Ok(TaskBlockResult::project_not_found(&project));
         };
@@ -134,7 +134,7 @@ impl CommitAndPush {
         } else if run_failed {
             keep_failed_run_local(&*shell, path, &branch).await?
         } else {
-            push_if_ahead(&*shell, path, &project, &branch, &cve).await?
+            push_if_ahead(&*shell, path, &project, &branch, &cve, timeout).await?
         };
 
         if let PushOutcome::Refused { failure, detail } = &push {
@@ -256,6 +256,7 @@ async fn push_if_ahead(
     project: &str,
     branch: &str,
     cve: &str,
+    timeout: std::time::Duration,
 ) -> anyhow::Result<PushOutcome> {
     let rebased = match integrate_remote_before_push(shell, path, project, branch).await? {
         PrePushSync::Refused { failure, detail } => {
@@ -283,7 +284,7 @@ async fn push_if_ahead(
     }
 
     tracing::info!(%project, commits, %cve, "pushing commits ahead of origin");
-    let push = shell.run(path, "git", &["push", "origin", branch], None, None).await?;
+    let push = shell.run(path, "git", &["push", "origin", branch], None, Some(timeout)).await?;
     if push.success {
         Ok(PushOutcome::Pushed { commits })
     } else {
@@ -803,6 +804,26 @@ mod tests {
         assert!(result.success);
         let types: Vec<String> = result.events.iter().map(|e| e.event_type.as_str()).collect();
         assert_eq!(types, ["project_changes_committed", "project_changes_pushed"]);
+    }
+
+    #[tokio::test]
+    async fn push_hooks_receive_project_timeout_or_long_command_default() {
+        for configured in [None, Some(1800)] {
+            let dir = TempDir::new().unwrap();
+            let mut entry = test_helpers::project_entry("my-project", dir.path().to_str().unwrap());
+            entry.timeout_secs = configured;
+            entry.actions.push = true;
+            let expected = entry.timeout();
+            let registry = test_helpers::registry_with_entry(entry);
+            let shell = dirty_sequence();
+            let block = CommitAndPush::with_gateways(registry, Arc::clone(&shell) as _);
+            let result = block.execute(&make_trigger("my-project", "none")).await.unwrap();
+            assert!(result.success);
+            let calls = shell.invocations();
+            let push = calls.iter().find(|call| call.args == ["push", "origin", "main"]).unwrap();
+            assert_eq!(push.timeout, Some(expected));
+            assert!(push.env.is_empty(), "push hooks must remain enabled");
+        }
     }
 
     fn ok(stdout: &str) -> CommandResult {

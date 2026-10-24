@@ -194,9 +194,7 @@ async fn vuln_dirty_path_remediates_and_installs() {
             "remediation_completed",
             "project_changes_committed",
             "project_changes_pushed",
-            // AuditReleaseTag now sinks on ProjectChangesPushed and performs a
-            // post-push re-audit (stub: reports clean, vulnerable=false).
-            "release_tag_audited",
+            // Audit is disabled: skip the post-push scan while installation continues.
             "local_install_completed",
         ]
     );
@@ -284,8 +282,7 @@ async fn vuln_dry_run_full_chain_with_simulated_events() {
             "remediation_completed",     // simulated
             "project_changes_committed", // simulated
             "project_changes_pushed",    // simulated
-            // AuditReleaseTag sinks on ProjectChangesPushed (Observer, runs for real)
-            "release_tag_audited",
+            // Disabled audits skip even in dry runs; installation still continues.
             "local_install_completed", // simulated
         ]
     );

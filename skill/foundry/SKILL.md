@@ -20,7 +20,7 @@ compatibility:
   Requires foundryd daemon running locally (Rust binary, gRPC on
   127.0.0.1:50051)
 metadata:
-  version: "0.57.1"
+  version: "0.57.2"
   author: Stacey Vetzal
 ---
 
@@ -1240,3 +1240,7 @@ An unavailable required check stays blocked. Do not weaken vulnerability
 thresholds or hide findings. Optional analyzers for unrelated ecosystems may be
 disabled with a coverage explanation. Reviewers apply this bounded scope rather
 than treating every scanner default as required coverage.
+
+Maintenance pushes use the project's `timeout_secs` (60 minutes by default),
+including enforced pre-push hooks. Post-push scans honor `actions.audit`;
+disabled scans report a skip without claiming clean coverage.

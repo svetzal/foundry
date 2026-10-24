@@ -7,6 +7,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.57.2] - 2026-10-24
+
+### Fixed
+
+- Maintenance pushes honor the project's long-command timeout (60 minutes by
+  default), so enforced pre-push validation can finish without the shell's
+  five-minute limit. Hooks remain enabled.
+- Post-push audits respect `actions.audit = false`. A disabled audit reports a
+  skip without invoking a scanner or emitting a clean scan. Installation still
+  receives the push event; enabled scanner failures remain failures.
+
 ## [0.57.1] - 2026-10-23
 
 ### Fixed
