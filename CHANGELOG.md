@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.58.0] - 2026-10-24
+
 ### Added
 
 - Conflicting continuations receive one reconciliation session on current trunk
