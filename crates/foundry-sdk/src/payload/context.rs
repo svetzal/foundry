@@ -196,6 +196,9 @@ impl ChainContext {
 /// `execute_plan`, `run_verify_gates`, `retry_execution`, `direct_prompt`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoopContext {
+    /// One bounded reconciliation session, prepared on trunk after replay conflicted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconciliation: Option<Reconciliation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub loop_context: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -257,6 +260,19 @@ pub struct LoopContext {
     /// task runs started before this was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_base: Option<WorkspaceBase>,
+}
+
+/// Immutable input to a bounded reconciliation session. The source ref is never rewritten.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reconciliation {
+    /// Original continuation reference.
+    pub source_ref: String,
+    /// Resolved preserved commit, retained even if its branch later moves.
+    pub preserved: String,
+    /// Trunk observed when the conflict was found.
+    pub trunk: String,
+    /// Paths where replay conflicted.
+    pub files: Vec<String>,
 }
 
 /// Where an isolated task workspace started, and the trunk it was measured
@@ -351,6 +367,9 @@ impl LoopContext {
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
             run_base: payload.get("run_base").and_then(|v| serde_json::from_value(v.clone()).ok()),
+            reconciliation: payload
+                .get("reconciliation")
+                .and_then(|v| serde_json::from_value(v.clone()).ok()),
             workspace_base: payload
                 .get("workspace_base")
                 .and_then(|v| serde_json::from_value(v.clone()).ok()),

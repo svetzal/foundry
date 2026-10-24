@@ -7,6 +7,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Conflicting continuations receive one reconciliation session on current trunk
+  in their existing task slot. Structured events retain the original source ref,
+  preserved commit, observed trunk and conflicting paths. The source ref is never
+  rewritten. Acceptance proof, gates, review and landing checks remain required.
+  An unlanded reconciliation stops automatic campaign cycles and enters recovery.
+  Other repositories remain eligible under the existing host capacity limit.
+
 ## [0.57.2] - 2026-10-24
 
 ### Fixed

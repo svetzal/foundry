@@ -240,6 +240,12 @@ formation's `done` becomes a fix cycle and `campaign complete` is refused. Task
 agents never push or watch CI. Every other
 non-complete result is committed and preserved on a named remote branch, with a
 Git bundle fallback when push is unavailable. The task formation never retries.
+A continuation whose replay conflicts gets one reconciliation session on current
+trunk within its existing task slot. Its original preserved ref stays unchanged.
+The agent adapts the remaining behavior and supplies acceptance proof. Required
+gates, review and normal landing checks still apply. An unlanded reconciliation
+puts its campaign into recovery; it does not start another automatic cycle.
+Other projects remain eligible under the normal host capacity limit.
 
 While the command is waiting, it streams both workflow events and non-routable
 block progress messages such as `running block Run Verify Gates` and
