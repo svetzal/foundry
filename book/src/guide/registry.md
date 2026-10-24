@@ -4,6 +4,10 @@ The registry is Foundry's source of truth for which projects exist on your
 machine and what automation applies to each one. Without a populated registry,
 the daemon starts successfully but skips all project-specific work.
 
+Post-push audits honor `actions.audit`. When disabled, the audit is skipped
+without claiming clean advisory coverage. Installation still handles the push
+event independently. Enabled audit errors remain failures.
+
 ## Where the Registry Lives
 
 By default: `~/.foundry/registry.json`
@@ -85,7 +89,7 @@ foundry --offline registry add --name my-tool …   # direct registry.json recov
 | `install` | No | object | How to reinstall locally after automation — see [InstallConfig](#installconfig) |
 | `installs_skill` | No | bool or object | Whether to install the project's agent skill after the local install — see [Skill install](#skill-install) |
 | `notes` | No | string | Human-readable notes about the project (informational only) |
-| `timeout_secs` | No | number | Timeout in seconds for long-running commands. Defaults to `3600` (60 minutes) when absent |
+| `timeout_secs` | No | number | Timeout in seconds for long-running commands, including maintenance pushes and their enforced hooks. Defaults to `3600` (60 minutes) when absent |
 | `update_policy` | No | string | How far nightly maintenance may move dependencies: `"patch"`, `"minor"` or `"major"`. Absent means not set: maintenance behaves as `"minor"` and the maintenance summary flags the project. See [Dependency update policy](dependency-update-policy.md) |
 | `audit_exceptions` | No | string[] (default `[]`) | Legacy: advisory IDs accepted without an expiry. Kept for compatibility. Prefer the repository's `.supply-chain-allow.json`, which records a reason and an expiry in git. |
 
