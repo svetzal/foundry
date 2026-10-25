@@ -13,8 +13,8 @@ use foundry_sdk::task_block::{BlockKind, TaskBlock};
 
 use crate::gateway::{ProcessShellGateway, ShellGateway};
 use crate::workspace::{
-    PROOF_FILE, checked, clean_foundry_dir, commit_worktree, preserve, remove_workspace, run,
-    run_best_effort, unlanded_foundry_files,
+    PROOF_FILE, checked, clean_foundry_dir, commit_worktree, git_failure_detail, preserve,
+    remove_workspace, run, run_best_effort, unlanded_foundry_files,
 };
 
 use super::SimulatedSuccess;
@@ -199,7 +199,10 @@ async fn land_on_trunk(
         code => {
             return Err(LandAttemptError::Blocked(
                 LandBlocked::GitFailed,
-                format!("git merge-base --is-ancestor failed ({code}): {}", ancestry.stderr.trim()),
+                format!(
+                    "git merge-base --is-ancestor failed ({code}): {}",
+                    git_failure_detail(&ancestry.stderr)
+                ),
             ));
         }
     }
@@ -266,7 +269,7 @@ impl StartDrift {
             }
             code => anyhow::bail!(
                 "git merge-base --is-ancestor failed ({code}): {}",
-                ancestry.stderr.trim()
+                git_failure_detail(&ancestry.stderr)
             ),
         }
     }
@@ -446,7 +449,7 @@ async fn rebase_and_verify(
         // not also reset.
         run_best_effort(shell, worktree, &["rebase", "--abort"]).await;
         let (reason, why) = cause.conflict();
-        return Err((reason, format!("{why}: {}", rebase.stderr.trim())));
+        return Err((reason, format!("{why}: {}", git_failure_detail(&rebase.stderr))));
     }
     let failed = rerun_required_gates(shell, worktree, cause).await?;
     if failed.is_empty() {
@@ -1595,6 +1598,46 @@ mod tests {
         assert!(payload.get("trunk_arrivals").is_none());
         assert!(!log.exists(), "gates must not be re-run when trunk did not move");
         assert_eq!(origin_main(&shared.checkout), task_head);
+    }
+
+    /// The ops-01 incident of 2026-10-25: the registered checkout's pre-push
+    /// hook wrote a whole validation run to git's stderr and the push failed.
+    /// The run's summary is stored in its event and read by campaign
+    /// formation, so it carries git's final lines, not the hook's flood.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_push_failure_behind_a_noisy_hook_keeps_the_summary_bounded() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let branch = "foundry-task/noisy-pre-push";
+        let shared = shared_trunk(dir.path(), branch, "true");
+        let hook = shared.checkout.join(".git/hooks/pre-push");
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\n\
+             yes 'validate: test output line that a hook prints for every case it runs' \
+             | head -n 6000 >&2\n\
+             echo 'client_loop: send disconnect: Broken pipe' >&2\n\
+             exit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let payload = finalize_complete(&shared, branch).await;
+
+        assert_eq!(payload["landed"], false);
+        assert_eq!(payload["land_blocked"], "git_failed");
+        let summary = payload["summary"].as_str().unwrap();
+        assert!(summary.contains("git push origin main failed"), "{summary}");
+        assert!(summary.contains("client_loop: send disconnect: Broken pipe"), "{summary}");
+        assert!(summary.contains("failed to push some refs"), "{summary}");
+        assert!(summary.contains("bytes omitted"), "{summary}");
+        assert!(
+            summary.len() < crate::workspace::GIT_FAILURE_DETAIL_BYTES + 512,
+            "{} bytes",
+            summary.len()
+        );
     }
 
     /// The ops-01 incident: two documentation commits reached trunk while a

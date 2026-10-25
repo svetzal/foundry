@@ -7,6 +7,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A failed git command reports only the last 4 KiB of its error output, with a
+  note that gives the number of omitted bytes. A pre-push hook that ran a full
+  validation had made one failed landing push store a 420 KB task summary.
+- Campaign formation quotes at most the last 4 KiB of the previous run's
+  summary, so an oversized summary already in the event stream no longer
+  pushes the formation prompt over its byte budget on every advance. Recovery
+  and escalation reasons that quote the summary are bounded the same way.
+
 ## [0.58.0] - 2026-10-24
 
 ### Added
