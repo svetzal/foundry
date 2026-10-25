@@ -20,6 +20,7 @@ use foundry_engine::engine::Engine;
 use foundry_engine::event_writer::EventWriter;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::pacing::{PacingPaths, PauseState};
+use foundry_sdk::payload::work_item::WorkItemEventPayload;
 use foundry_sdk::registry::Registry;
 use foundry_sdk::sentinel::SentinelStore;
 use foundry_sdk::throttle::Throttle;
@@ -78,6 +79,9 @@ struct Daemon {
     addr: String,
     ledger: PathBuf,
     pacing: PacingPaths,
+    /// The daemon's Watch broadcast, so a test can order a settlement event
+    /// against the ledger change it announces.
+    event_tx: broadcast::Sender<Event>,
     _state: TempDir,
 }
 
@@ -107,7 +111,7 @@ async fn daemon_over(items: Vec<WorkItem>) -> Daemon {
         )),
         workflow_tracker: Arc::new(WorkflowTracker::new()),
         trace_writer,
-        event_tx,
+        event_tx: event_tx.clone(),
         registry: Arc::new(RwLock::new(Registry {
             version: 2,
             projects: vec![],
@@ -143,6 +147,7 @@ async fn daemon_over(items: Vec<WorkItem>) -> Daemon {
         addr: format!("http://127.0.0.1:{port}"),
         ledger,
         pacing,
+        event_tx,
         _state: state,
     }
 }
@@ -232,6 +237,7 @@ fn pacing_show_with_no_daemon_fails_and_names_the_offline_form() {
             limits: state.path().join("pacing.json"),
             state: state.path().join("pacing-state.json"),
         },
+        event_tx: broadcast::channel(1).0,
         _state: state,
     };
     let home = tempfile::tempdir().unwrap();
@@ -360,18 +366,18 @@ async fn pacing_drain_prints_each_item_as_it_settles_then_exits_zero() {
         assert!(read > 0, "drain exited before it waited; got:\n{out}");
     }
 
-    // An owner close is the one settlement an operator can make from outside
-    // a run.
+    // Announce the settlement while the ledger still says running, then
+    // settle the ledger. Drain's occupancy poll can only find the item gone
+    // after the event is on its stream, so the order is explicit rather than
+    // a race between a hand-written ledger and a slower `queue close`.
     let mut store = WorkItemStore::load(&daemon.ledger).unwrap();
-    store.find_mut("wi_run").unwrap().settle_failed("stopped by hand", Utc::now());
+    let item = store.find_mut("wi_run").unwrap();
+    item.settle_cancelled("drained", None, Utc::now());
+    let payload = Event::serialize_payload(&WorkItemEventPayload::from_item(item)).unwrap();
+    let settled =
+        Event::new(EventType::WorkItemSettled, item.project.clone(), Throttle::Full, payload);
+    daemon.event_tx.send(settled).expect("drain is subscribed to Watch");
     store.save(&daemon.ledger).unwrap();
-    let closed = run_foundry(
-        home.path(),
-        &daemon,
-        &daemon.addr,
-        &["queue", "close", "wi_run", "--reason", "drained"],
-    );
-    assert_command_succeeded(&closed);
 
     stdout.read_to_string(&mut out).expect("read drain stdout");
     let mut stderr = String::new();
