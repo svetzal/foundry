@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.58.1] - 2026-10-25
+
 ### Fixed
 
 - A failed git command reports only the last 4 KiB of its error output, with a
