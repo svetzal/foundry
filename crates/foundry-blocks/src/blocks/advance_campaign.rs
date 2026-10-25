@@ -370,6 +370,28 @@ fn condense(text: &str) -> String {
     }
 }
 
+/// Most of the last run's summary that formation sees, and that a recovery
+/// detail or an escalation reason quotes.
+///
+/// A task's own summary is a few lines, so ordinary summaries pass whole. A
+/// summary that is larger carries raw command output: on 2026-10-25 a failed
+/// `git push` whose pre-push hook ran a whole validation stored a 420 KB
+/// summary, and every later formation prompt exceeded its budget. The run
+/// event is immutable, so formation must bound what it reads, not only what
+/// new runs write. 4 KiB leaves a 32 KiB default budget room for the mission,
+/// owner decisions, history, gates and snapshot.
+const LAST_RUN_SUMMARY_BYTES: usize = 4 * 1024;
+
+/// The last run's summary, bounded to [`LAST_RUN_SUMMARY_BYTES`].
+///
+/// Unlike [`condense`], this keeps the tail. An oversized summary is command
+/// output, and command output names its failure last (`fatal: the remote end
+/// hung up unexpectedly`). Line breaks are kept too: the typed result is read
+/// as a record, not as one entry of a list.
+fn last_run_summary(summary: &str) -> String {
+    crate::gate_runner::output::tail_bytes(summary.trim(), LAST_RUN_SUMMARY_BYTES)
+}
+
 fn outcome_label(outcome: Option<&CycleOutcome>) -> String {
     let Some(outcome) = outcome else {
         return "dispatched, no result recorded".to_string();
@@ -517,7 +539,7 @@ fn decision_prompt(
                           sub-structs — no non-string map keys or non-finite floats"
             )]
             let typed = serde_json::to_string_pretty(&serde_json::json!({
-                "summary": result.summary,
+                "summary": last_run_summary(&result.summary),
                 "verdict": result.verdict,
                 "landed": result.landed,
                 "preservation_ref": result.preservation_ref,
@@ -1352,7 +1374,7 @@ fn reconciliation_recovery(result: &TaskRunCompletedPayload) -> Option<AdvanceOu
             kind: foundry_sdk::recovery::RecoveryKind::UnmetPrecondition,
             detail: format!(
                 "bounded reconciliation did not land; preserved work requires recovery: {}",
-                result.summary
+                last_run_summary(&result.summary)
             ),
         })
     } else {
@@ -1485,7 +1507,7 @@ fn refused_at_budget_reason(campaign: &Campaign, result: &TaskRunCompletedPayloa
          formation sees this refusal. If that preserved work was already reconciled onto trunk \
          by hand, close its work item with `foundry queue close` so it leaves the open list",
         budget = campaign.budget.max_cycles,
-        refusal = result.summary.trim().trim_end_matches('.'),
+        refusal = last_run_summary(&result.summary).trim_end_matches('.'),
         name = campaign.name,
     )
 }
@@ -2901,10 +2923,11 @@ mod tests {
     use crate::gateway::{AgentFailureKind, AgentProvider, AgentResponse};
 
     use super::{
-        AdvanceCampaign, AdvanceOutcome, DECISION_ATTEMPTS, Recheck, RedTrunkCi, TrunkCiStanding,
-        enforce_campaign_budget, enforce_done_gate_truth, enforce_trunk_ci_truth,
-        formation_gate_results, last_run_line, outcome_label, parse_decision, recheck,
-        settled_base, trunk_ci_section, update_run_and_forced_outcome,
+        AdvanceCampaign, AdvanceOutcome, DECISION_ATTEMPTS, LAST_RUN_SUMMARY_BYTES, Recheck,
+        RedTrunkCi, TrunkCiStanding, enforce_campaign_budget, enforce_done_gate_truth,
+        enforce_trunk_ci_truth, formation_gate_results, last_run_line, last_run_summary,
+        outcome_label, parse_decision, recheck, reconciliation_recovery, settled_base,
+        trunk_ci_section, update_run_and_forced_outcome,
     };
     use foundry_sdk::work_item::{WorkItemKind, WorkItemStore};
 
@@ -5841,6 +5864,79 @@ mod tests {
             terminal_reason(&result, &EventType::CampaignRecoveryRecorded).contains("stage budget")
         );
     }
+
+    /// A stored run summary as large as the one from 2026-10-25: a failed
+    /// push's stderr carrying a pre-push hook's whole validation output, with
+    /// git's verdict on the last line.
+    fn flooded_run_summary() -> String {
+        format!(
+            "complete work preserved but could not land on trunk (git_failed): git push origin \
+             next failed (1): {}client_loop: send disconnect: Broken pipe\n\
+             fatal: the remote end hung up unexpectedly",
+            "> npm run validate: PASS src/reading/screen.test.tsx (412 ms)\n".repeat(7_000)
+        )
+    }
+
+    /// The run event is immutable, so an oversized summary already in the
+    /// stream must not stop every later advance at the formation budget.
+    #[tokio::test]
+    async fn an_oversized_stored_summary_still_forms_within_the_default_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store_path, registry) = staged_active_campaign(dir.path());
+        let agent = FakeAgentGateway::success_with(
+            "```json\n{\"decision\":\"advance\",\"objective\":\"Land the preserved work.\",\"reason\":\"push lost its connection\"}\n```",
+        );
+        let block = advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path);
+        let summary = flooded_run_summary();
+        assert!(summary.len() > 420_000, "fixture must match the incident's scale");
+        let mut trigger = manual_advance_trigger();
+        trigger.payload["run_event_id"] = serde_json::json!("push-lost");
+        trigger.payload["run_result"] = serde_json::json!({
+            "project":"p", "success":false, "landed":false, "summary":summary,
+            "verdict":"complete", "land_blocked":"git_failed",
+            "preservation_ref":"foundry-task/p/preserved", "trunk_arrivals":[]
+        });
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        let invocations = agent.invocations();
+        assert_eq!(invocations.len(), 1, "formation must run: {}", result.summary);
+        let prompt = &invocations[0].prompt;
+        assert!(prompt.len() < 32 * 1024, "prompt is {} bytes", prompt.len());
+        assert!(prompt.contains("fatal: the remote end hung up unexpectedly"));
+        assert!(prompt.contains("client_loop: send disconnect: Broken pipe"));
+        assert!(prompt.contains("bytes omitted"), "the cut must be visible to formation");
+        assert!(!prompt.contains("could not land on trunk (git_failed)"), "the head is cut");
+    }
+
+    #[test]
+    fn a_reconciliation_recovery_quotes_only_the_tail_of_an_oversized_summary() {
+        let mut result = run_result_with(TaskVerdict::Complete);
+        result.summary = flooded_run_summary();
+        result.context.reconciliation = Some(foundry_sdk::payload::Reconciliation {
+            source_ref: "foundry-task/p/preserved".to_string(),
+            preserved: "abc123".to_string(),
+            trunk: "def456".to_string(),
+            files: vec!["src/lib.rs".to_string()],
+        });
+
+        let Some(AdvanceOutcome::Recovery { detail, .. }) = reconciliation_recovery(&result) else {
+            panic!("an unlanded reconciliation records a recovery");
+        };
+
+        assert!(detail.starts_with("bounded reconciliation did not land"), "{detail}");
+        assert!(detail.ends_with("fatal: the remote end hung up unexpectedly"), "{detail}");
+        assert!(detail.contains("bytes omitted"));
+        assert!(detail.len() < LAST_RUN_SUMMARY_BYTES + 256, "{} bytes", detail.len());
+    }
+
+    #[test]
+    fn an_ordinary_summary_reaches_formation_whole() {
+        let summary = "task completed, reviewed, and landed after rebasing onto 2 trunk \
+                       commit(s) that arrived during the run\nsecond line kept";
+        assert_eq!(last_run_summary(summary), summary);
+    }
+
     #[tokio::test]
     async fn exhausted_campaign_retains_result_through_extension_and_resume() {
         let dir = tempfile::tempdir().unwrap();

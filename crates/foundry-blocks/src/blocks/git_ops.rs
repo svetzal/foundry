@@ -290,7 +290,10 @@ async fn push_if_ahead(
     } else {
         Ok(PushOutcome::Refused {
             failure: GitSyncFailure::PushFailed,
-            detail: format!("git push origin {branch} failed: {}", push.stderr.trim()),
+            detail: format!(
+                "git push origin {branch} failed: {}",
+                crate::workspace::git_failure_detail(&push.stderr)
+            ),
         })
     }
 }
@@ -535,9 +538,10 @@ async fn commit_changes(
             tracing::info!(%project, "git commit found nothing to commit");
             Ok(None)
         }
-        CommitOutcome::Failed => {
-            Err(anyhow::anyhow!("git commit failed: {}", commit.stderr.trim()))
-        }
+        CommitOutcome::Failed => Err(anyhow::anyhow!(
+            "git commit failed: {}",
+            crate::workspace::git_failure_detail(&commit.stderr)
+        )),
     }
 }
 

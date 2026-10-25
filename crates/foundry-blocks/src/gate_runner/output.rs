@@ -115,7 +115,10 @@ fn split_sections(output: &str) -> Vec<(Option<&str>, String)> {
 
 /// The last `max_bytes` of `text`, rounded to a char boundary, with a note in
 /// front when anything was cut.
-fn tail_bytes(text: &str, max_bytes: usize) -> String {
+///
+/// The kept tail never exceeds `max_bytes`; the note line comes on top of it.
+/// Text that already fits is returned unchanged.
+pub(crate) fn tail_bytes(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {
         return text.to_string();
     }

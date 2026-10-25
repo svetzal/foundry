@@ -114,10 +114,34 @@ pub(crate) async fn run(
     shell.run(cwd, "git", args, None, None).await
 }
 
+/// Most of a failed git command's stderr that an error message carries.
+///
+/// Git runs repository hooks inside the command, and a hook's output goes to
+/// git's stderr. On 2026-10-25 a pre-push hook that ran a project's whole
+/// validation made one failed `git push` write 420 KB of stderr. That text
+/// became the task run's stored summary and was copied into the campaign's
+/// formation prompt, which then exceeded its budget on every advance. Git
+/// prints its own verdict last (`fatal: the remote end hung up unexpectedly`),
+/// so the tail is kept. 4 KiB holds several dozen lines: far more than any
+/// error git writes itself, and small enough to embed in an event or prompt.
+pub(crate) const GIT_FAILURE_DETAIL_BYTES: usize = 4 * 1024;
+
+/// The part of a failed git command's stderr that an error carries: its last
+/// [`GIT_FAILURE_DETAIL_BYTES`], after a note saying how many bytes were
+/// omitted when any were.
+pub(crate) fn git_failure_detail(stderr: &str) -> String {
+    crate::gate_runner::output::tail_bytes(stderr.trim(), GIT_FAILURE_DETAIL_BYTES)
+}
+
 pub(crate) async fn checked(shell: &dyn ShellGateway, cwd: &Path, args: &[&str]) -> Result<String> {
     let result = run(shell, cwd, args).await?;
     if !result.success {
-        bail!("git {} failed ({}): {}", args.join(" "), result.exit_code, result.stderr.trim());
+        bail!(
+            "git {} failed ({}): {}",
+            args.join(" "),
+            result.exit_code,
+            git_failure_detail(&result.stderr)
+        );
     }
     Ok(result.stdout.trim().to_string())
 }
@@ -130,7 +154,7 @@ pub(crate) async fn run_best_effort(shell: &dyn ShellGateway, cwd: &Path, args: 
             tracing::warn!(
                 git_args = %args.join(" "),
                 exit_code = result.exit_code,
-                stderr = %result.stderr.trim(),
+                stderr = %git_failure_detail(&result.stderr),
                 "best-effort cleanup command failed"
             );
         }
@@ -435,5 +459,54 @@ mod tests {
     fn non_campaign_workspace_id_is_the_run_id_fragment() {
         assert_eq!(run_workspace_id("evt_abcdef1234567890"), "abcdef123456");
         assert_eq!(run_workspace_id("short"), "short");
+    }
+
+    // --- failure detail stays bounded --------------------------------------
+
+    /// What git's stderr looked like on 2026-10-25: a pre-push hook's whole
+    /// validation output, then git's own verdict on the last lines.
+    fn flooded_push_stderr() -> String {
+        let hook =
+            "validate: ✓ renders the reading screen without layout shift (12 ms)\n".repeat(6_000);
+        format!(
+            "{hook}client_loop: send disconnect: Broken pipe\n\
+             send-pack: unexpected disconnect while reading sideband packet\n\
+             fatal: the remote end hung up unexpectedly\n"
+        )
+    }
+
+    #[tokio::test]
+    async fn a_git_failure_with_flooded_stderr_keeps_its_final_lines() {
+        let stderr = flooded_push_stderr();
+        assert!(stderr.len() > 400_000, "fixture must match the incident's scale");
+        let shell = crate::gateway::fakes::FakeShellGateway::failure(stderr);
+
+        let error = checked(&*shell, Path::new("/repo"), &["push", "origin", "next"])
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.starts_with("git push origin next failed (1): "), "{error}");
+        assert!(error.ends_with("fatal: the remote end hung up unexpectedly"), "{error}");
+        assert!(error.contains("client_loop: send disconnect: Broken pipe"));
+        assert!(error.contains("bytes omitted"), "the cut must be visible: {error}");
+        assert!(error.len() <= GIT_FAILURE_DETAIL_BYTES + 128, "{} bytes", error.len());
+    }
+
+    #[tokio::test]
+    async fn a_git_failure_with_short_stderr_is_reported_whole() {
+        let shell = crate::gateway::fakes::FakeShellGateway::failure(
+            "error: failed to push some refs to 'origin'\n",
+        );
+
+        let error = checked(&*shell, Path::new("/repo"), &["push", "origin", "main"])
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert_eq!(
+            error,
+            "git push origin main failed (1): error: failed to push some refs to 'origin'"
+        );
     }
 }

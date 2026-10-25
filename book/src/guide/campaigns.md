@@ -199,6 +199,11 @@ false`, `success: false`, and a typed `land_blocked` reason in the
 | `checkout_not_ready`       | The registered checkout was dirty or on the wrong branch                              |
 | `git_failed`               | Another git operation needed to land failed                                           |
 
+A `git_failed` summary quotes only the last 4 KiB of git's error output, after
+a note that gives the number of omitted bytes. Git writes the output of
+repository hooks to the same stream, and a pre-push hook can write a full
+validation run. The error from git itself is at the end.
+
 Foundry tells "moved during the run" from "started behind" by the start the
 executor records when it prepares the task worktree (`workspace_base`: the
 worktree's first commit and the trunk commit it observed). A run that recorded
@@ -910,6 +915,10 @@ Formation's `LAST TYPED RUN RESULT` starts with one line that says whether the
 last run started and why it ended, for example `last run: did not start
 (provider unavailable: ...)` or `last run: started, ended with verdict defect:
 ...`.
+
+The typed result quotes the run's summary up to 4 KiB. A longer summary
+contains command output, so formation gets its end, after a note that gives the
+number of omitted bytes. The `task_run_completed` event keeps the full summary.
 
 The stop emits a `campaign_paused` event carrying the reason. It is deliberately
 not a terminal event — it neither ends the campaign nor requires resurrection —

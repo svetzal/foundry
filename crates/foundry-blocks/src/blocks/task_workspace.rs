@@ -5,7 +5,7 @@ use foundry_sdk::payload::WorkspaceBase;
 use foundry_sdk::registry::ProjectEntry;
 
 use crate::gateway::ShellGateway;
-use crate::workspace::task_workspace_paths;
+use crate::workspace::{checked, git_failure_detail, task_workspace_paths};
 
 pub(crate) struct TaskWorkspace {
     pub path: PathBuf,
@@ -55,25 +55,6 @@ impl std::fmt::Display for ContinuationConflict {
 
 impl std::error::Error for ContinuationConflict {}
 
-async fn checked(
-    shell: &dyn ShellGateway,
-    cwd: &Path,
-    command: &str,
-    args: &[&str],
-) -> Result<String> {
-    let result = shell.run(cwd, command, args, None, None).await?;
-    if !result.success {
-        bail!(
-            "{} {} failed ({}): {}",
-            command,
-            args.join(" "),
-            result.exit_code,
-            result.stderr.trim()
-        );
-    }
-    Ok(result.stdout.trim().to_string())
-}
-
 async fn ref_exists_locally(shell: &dyn ShellGateway, cwd: &Path, reference: &str) -> Result<bool> {
     let result = shell
         .run(cwd, "git", &["rev-parse", "--verify", "--quiet", reference], None, None)
@@ -84,13 +65,7 @@ async fn ref_exists_locally(shell: &dyn ShellGateway, cwd: &Path, reference: &st
 /// The exact commit `reference` names, so a later fetch that rewrites
 /// `FETCH_HEAD` cannot change what preparation acts on.
 async fn commit_of(shell: &dyn ShellGateway, cwd: &Path, reference: &str) -> Result<String> {
-    checked(
-        shell,
-        cwd,
-        "git",
-        &["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
-    )
-    .await
+    checked(shell, cwd, &["rev-parse", "--verify", &format!("{reference}^{{commit}}")]).await
 }
 
 /// Whether `ancestor` is reachable from `descendant`.
@@ -106,7 +81,10 @@ async fn is_ancestor(
     match result.exit_code {
         0 => Ok(true),
         1 => Ok(false),
-        code => bail!("git merge-base --is-ancestor failed ({code}): {}", result.stderr.trim()),
+        code => bail!(
+            "git merge-base --is-ancestor failed ({code}): {}",
+            git_failure_detail(&result.stderr)
+        ),
     }
 }
 
@@ -119,7 +97,7 @@ async fn is_ancestor(
 /// HEAD" — reading the ref keeps the work already sitting in `~/.foundry/preserved`
 /// recoverable.
 async fn bundle_branch_ref(shell: &dyn ShellGateway, repo: &Path, bundle: &str) -> Result<String> {
-    let heads = checked(shell, repo, "git", &["bundle", "list-heads", bundle]).await?;
+    let heads = checked(shell, repo, &["bundle", "list-heads", bundle]).await?;
     heads
         .lines()
         .filter_map(|line| line.split_whitespace().nth(1))
@@ -138,12 +116,12 @@ async fn continuation_commit(
 ) -> Result<String> {
     if let Some(bundle) = base_ref.strip_prefix("bundle:") {
         let reference = bundle_branch_ref(shell, repo, bundle).await?;
-        checked(shell, repo, "git", &["fetch", bundle, &reference]).await?;
+        checked(shell, repo, &["fetch", bundle, &reference]).await?;
         commit_of(shell, repo, "FETCH_HEAD").await
     } else if ref_exists_locally(shell, repo, base_ref).await? {
         commit_of(shell, repo, base_ref).await
     } else {
-        checked(shell, repo, "git", &["fetch", "origin", base_ref]).await?;
+        checked(shell, repo, &["fetch", "origin", base_ref]).await?;
         commit_of(shell, repo, "FETCH_HEAD").await
     }
 }
@@ -157,7 +135,7 @@ async fn continuation_commit(
 /// down, which is when bundles get written. The local branch is what finalize
 /// lands onto, so it is a truthful trunk for that run.
 async fn continuation_trunk(shell: &dyn ShellGateway, repo: &Path, branch: &str) -> Result<String> {
-    match checked(shell, repo, "git", &["fetch", "--no-tags", "origin", branch]).await {
+    match checked(shell, repo, &["fetch", "--no-tags", "origin", branch]).await {
         Ok(_) => commit_of(shell, repo, "FETCH_HEAD").await,
         Err(error) => {
             tracing::warn!(
@@ -234,15 +212,15 @@ async fn prepare_task_workspace_unchecked(
         let trunk = continuation_trunk(shell, repo, &entry.branch).await?;
         (preserved, trunk)
     } else {
-        checked(shell, repo, "git", &["fetch", "origin", &entry.branch]).await?;
+        checked(shell, repo, &["fetch", "origin", &entry.branch]).await?;
         let trunk = commit_of(shell, repo, "FETCH_HEAD").await?;
         (trunk.clone(), trunk)
     };
 
     let path_text = path.to_string_lossy().to_string();
-    checked(shell, repo, "git", &["worktree", "add", "-b", &branch, &path_text, &source]).await?;
+    checked(shell, repo, &["worktree", "add", "-b", &branch, &path_text, &source]).await?;
 
-    let actual = checked(shell, &path, "git", &["rev-parse", "--show-toplevel"]).await?;
+    let actual = checked(shell, &path, &["rev-parse", "--show-toplevel"]).await?;
     let expected = path
         .canonicalize()
         .with_context(|| format!("canonicalize task worktree {}", path.display()))?;
@@ -284,20 +262,16 @@ async fn rebase_onto_trunk(
     preserved: &str,
     trunk: &str,
 ) -> Result<()> {
-    let behind = checked(
-        shell,
-        worktree,
-        "git",
-        &["rev-list", "--count", &format!("{preserved}..{trunk}")],
-    )
-    .await?
-    .parse::<u64>()
-    .context("parse the count of trunk commits a continuation lacks")?;
+    let behind =
+        checked(shell, worktree, &["rev-list", "--count", &format!("{preserved}..{trunk}")])
+            .await?
+            .parse::<u64>()
+            .context("parse the count of trunk commits a continuation lacks")?;
     let rebase = shell.run(worktree, "git", &["rebase", trunk], None, None).await?;
     if rebase.success {
         return Ok(());
     }
-    let files = checked(shell, worktree, "git", &["diff", "--name-only", "--diff-filter=U"])
+    let files = checked(shell, worktree, &["diff", "--name-only", "--diff-filter=U"])
         .await
         .unwrap_or_default();
     // Best-effort: the workspace is discarded next whether or not the abort
@@ -308,7 +282,7 @@ async fn rebase_onto_trunk(
     if files.is_empty() {
         bail!(
             "rebasing the continuation {base_ref} ({preserved}) onto trunk ({trunk}) failed: {}",
-            rebase.stderr.trim()
+            git_failure_detail(&rebase.stderr)
         );
     }
     Err(ContinuationConflict {
