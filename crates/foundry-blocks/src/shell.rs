@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use tokio::process::Command;
 
 /// The default command timeout: 5 minutes.
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
+pub(crate) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 
 // `CommandResult` is part of the SDK gateway contract. Re-exported here so the
 // existing `crate::shell::CommandResult` paths keep resolving.

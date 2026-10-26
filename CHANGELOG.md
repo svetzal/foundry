@@ -7,6 +7,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Finalize Task gives the git commands that run repository hooks (the pull,
+  merge and push that land on trunk, and the push that preserves the task
+  branch) the sum of the project's required gate timeouts from
+  `.hone-gates.json`, scaled by `FOUNDRY_GATE_TIMEOUT_SCALE`, between 5 minutes
+  and 2 hours. A pre-push hook that runs the project's whole validation no
+  longer fails a landing at the shell's five-minute default. Hooks remain
+  enabled.
+- A landing command still running at that limit blocks the landing with the
+  new typed reason `git_hook_timed_out` instead of failing the run. The summary
+  names the command, the limit and how it was derived. The verdict stands and
+  the work stays preserved on its task branch.
+- A preservation push still running at its limit falls back to a local bundle,
+  with a warning, instead of turning the whole finalize into a runner error.
+- A gate timeout too large to scale saturates instead of panicking.
+
 ## [0.58.1] - 2026-10-25
 
 ### Fixed

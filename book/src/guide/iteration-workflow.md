@@ -43,7 +43,7 @@ from the trigger event is forwarded through the chain so that gate routing
 can chain into the maintenance workflow afterwards.
 
 Each gate has a `name`, a `command`, a `required` flag, an optional
-`timeout` (seconds; 10 minutes when absent; both multiplied by the daemon's `FOUNDRY_GATE_TIMEOUT_SCALE`), and an optional **`fix_command`** — an in-place command
+`timeout` (seconds; 10 minutes when absent; both multiplied by the daemon's `FOUNDRY_GATE_TIMEOUT_SCALE`; the required gates' sum also limits the git commands that run repository hooks when a task lands, see [Git hooks and their time limit](campaigns.md#git-hooks-and-their-time-limit)), and an optional **`fix_command`** — an in-place command
 that mechanically repairs the gate's failure. A gate looks like:
 
 ```json

@@ -139,6 +139,16 @@ pub enum LandBlocked {
     /// The registered checkout was not safe to land into (dirty, or on the
     /// wrong branch).
     CheckoutNotReady,
+    /// A git command needed to land (the pull, the fast-forward merge or the
+    /// push to trunk) was still running when it reached its limit, most likely
+    /// inside a repository hook such as a pre-push hook that runs the project's
+    /// validation. The limit is derived from the project's required gate
+    /// timeouts, and the summary names the command, the limit and how it was
+    /// derived. Hooks are never bypassed. The work stays preserved on its task
+    /// branch (or bundle); landing it needs a hook that finishes within the
+    /// limit, or a longer limit from the gate file or the host's gate-timeout
+    /// scale.
+    GitHookTimedOut,
     /// A git operation needed to land failed for any other reason.
     GitFailed,
 }
@@ -156,6 +166,7 @@ impl LandBlocked {
             Self::ContinuationConflict => "continuation_conflict",
             Self::TrunkMovedRepeatedly => "trunk_moved_repeatedly",
             Self::CheckoutNotReady => "checkout_not_ready",
+            Self::GitHookTimedOut => "git_hook_timed_out",
             Self::GitFailed => "git_failed",
         }
     }
@@ -289,6 +300,7 @@ mod tests {
             LandBlocked::ContinuationConflict,
             LandBlocked::TrunkMovedRepeatedly,
             LandBlocked::CheckoutNotReady,
+            LandBlocked::GitHookTimedOut,
             LandBlocked::GitFailed,
         ] {
             assert_eq!(serde_json::to_value(reason).unwrap(), reason.tag());

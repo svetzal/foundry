@@ -1019,7 +1019,7 @@ Foundry already captures rich event data about agent activity — iterations, ma
 | `FOUNDRY_OPS_EVENTS_DIR` | `~/Work/Operations/Events/intake` | MBOS JSONL intake directory |
 | `FOUNDRY_TRIAGE_DIR` | `~/.foundry/triage` | Post-maintenance triage digest output directory |
 | `FOUNDRY_SUPPLY_CHAIN_DIR` | `~/.foundry/supply-chain` | Nightly supply-chain advisory digest output directory |
-| `FOUNDRY_GATE_TIMEOUT_SCALE` | `1.0` | Multiplies every gate timeout on this host (a gate's own `timeout` and the 10-minute default). Set on slower hosts so gate files stay calibrated to the fastest machine; ops-01 sets `2.0` in `~/.config/foundry/foundryd.env`. |
+| `FOUNDRY_GATE_TIMEOUT_SCALE` | `1.0` | Multiplies every gate timeout on this host (a gate's own `timeout` and the 10-minute default), and so the Finalize Task git-hook limit derived from the required gates (5 minutes to 2 hours). Set on slower hosts so gate files stay calibrated to the fastest machine; ops-01 sets `2.0` in `~/.config/foundry/foundryd.env`. |
 | `FOUNDRY_MIN_FREE_DISK_GB` | `15` | A filesystem is low when its free space is under this many GB **and** under `FOUNDRY_MIN_FREE_DISK_PERCENT`. Tasks and maintenance refuse to start on a low filesystem ("insufficient disk"); the summary and the ops digest report it. `0` turns the check off. |
 | `FOUNDRY_MIN_FREE_DISK_PERCENT` | `10` | The percentage half of the low-disk test above. |
 | `FOUNDRY_MAJOR_TASKS_PER_PROJECT` | `2` | Most major-upgrade tasks the nightly majors lane dispatches for one project. Overflow is reported in the summary with its `foundry task` command. |

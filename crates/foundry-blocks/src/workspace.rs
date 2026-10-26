@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 
 use crate::gateway::ShellGateway;
+use crate::git_hook_timeout::{GitCommandTimedOut, GitHookTimeout, is_shell_timeout};
 
 /// Reduce a project or campaign name to something safe in a path and a git ref.
 pub(crate) fn slug(value: &str) -> String {
@@ -135,6 +136,49 @@ pub(crate) fn git_failure_detail(stderr: &str) -> String {
 
 pub(crate) async fn checked(shell: &dyn ShellGateway, cwd: &Path, args: &[&str]) -> Result<String> {
     let result = run(shell, cwd, args).await?;
+    succeeded(args, &result)
+}
+
+/// Run a git command that can run repository hooks (`push`, `pull`, `merge`)
+/// under `timeout` instead of the shell's general default.
+///
+/// Hooks are never bypassed, so the command is given the time the project's
+/// validation needs. When it is still running at the limit, the error carries
+/// a [`GitCommandTimedOut`] that names the command, the limit and how the
+/// limit was derived; find it with `anyhow::Error::downcast_ref`.
+pub(crate) async fn run_with_hook_timeout(
+    shell: &dyn ShellGateway,
+    cwd: &Path,
+    args: &[&str],
+    timeout: &GitHookTimeout,
+) -> Result<crate::shell::CommandResult> {
+    shell.run(cwd, "git", args, None, Some(timeout.limit)).await.map_err(|error| {
+        if is_shell_timeout(&error) {
+            error.context(GitCommandTimedOut {
+                command: args.join(" "),
+                timeout: *timeout,
+            })
+        } else {
+            error
+        }
+    })
+}
+
+/// [`checked`] for a git command that can run repository hooks; see
+/// [`run_with_hook_timeout`].
+pub(crate) async fn checked_with_hook_timeout(
+    shell: &dyn ShellGateway,
+    cwd: &Path,
+    args: &[&str],
+    timeout: &GitHookTimeout,
+) -> Result<String> {
+    let result = run_with_hook_timeout(shell, cwd, args, timeout).await?;
+    succeeded(args, &result)
+}
+
+/// The trimmed stdout of a git command that succeeded, or an error carrying
+/// the bounded tail of its stderr.
+fn succeeded(args: &[&str], result: &crate::shell::CommandResult) -> Result<String> {
     if !result.success {
         bail!(
             "git {} failed ({}): {}",
@@ -337,6 +381,11 @@ pub(crate) async fn clean_foundry_dir(
 
 /// Push the task branch somewhere durable, falling back to a local bundle.
 ///
+/// The push runs the repository's pre-push hook, so it gets the limit derived
+/// from the worktree's required gates ([`GitHookTimeout::for_tree`]). A push
+/// that fails, or is still running at that limit, falls back to the bundle:
+/// the work stays durable either way.
+///
 /// Returns the ref by which the work can be recovered: a branch name, or
 /// `bundle:{path}`.
 pub(crate) async fn preserve(
@@ -345,9 +394,20 @@ pub(crate) async fn preserve(
     project: &str,
     branch: &str,
 ) -> Result<String> {
-    let push = run(shell, worktree, &["push", "-u", "origin", branch]).await?;
-    if push.success {
-        return Ok(branch.to_string());
+    let timeout = GitHookTimeout::for_tree(worktree);
+    match run_with_hook_timeout(shell, worktree, &["push", "-u", "origin", branch], &timeout).await
+    {
+        Ok(push) if push.success => return Ok(branch.to_string()),
+        Ok(_) => {}
+        Err(error) if error.downcast_ref::<GitCommandTimedOut>().is_some() => {
+            tracing::warn!(
+                %project,
+                %branch,
+                error = %error,
+                "preservation push timed out; preserving the task branch as a local bundle instead"
+            );
+        }
+        Err(error) => return Err(error),
     }
 
     let dir = foundry_sdk::paths::preserved_dir().join(project);
