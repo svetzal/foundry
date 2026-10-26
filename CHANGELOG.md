@@ -23,6 +23,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - A preservation push still running at its limit falls back to a local bundle,
   with a warning, instead of turning the whole finalize into a runner error.
 - A gate timeout too large to scale saturates instead of panicking.
+- A landing merge or push that fails, including one that reaches its limit, no longer
+  leaves the registered checkout's base branch at the task head, ahead of
+  origin. Finalize Task puts it back on the commit the merge found
+  (`git reset --keep`), so a later pull does not fail as diverged and a later
+  cycle with no new commits does not report the unpushed work as landed. The
+  blocked reason is unchanged. When the reset itself fails, the summary says
+  the checkout was left at the task head and needs repair.
 
 ## [0.58.1] - 2026-10-25
 

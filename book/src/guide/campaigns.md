@@ -205,6 +205,13 @@ a note that gives the number of omitted bytes. Git writes the output of
 repository hooks to the same stream, and a pre-push hook can write a full
 validation run. The error from git itself is at the end.
 
+When the merge or the push to trunk fails or reaches its limit, the registered
+checkout's base branch goes back to the commit it was on before the
+fast-forward merge, so it is never left ahead of origin. If that reset fails
+(for example, because a hook edited a file that the task changed), the summary
+says that the checkout was left at the task head. Repair the checkout before
+the next cycle lands.
+
 #### Git hooks and their time limit
 
 Git runs a repository's hooks inside the command that triggers them. A
