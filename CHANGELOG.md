@@ -7,6 +7,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.58.2] - 2026-10-26
+
+### Changed
+
+- Updated in-range dependencies: cc 1.10.0 and smallvec 1.16.4.
+
 ### Fixed
 
 - Finalize Task gives the git commands that run repository hooks (the pull,
