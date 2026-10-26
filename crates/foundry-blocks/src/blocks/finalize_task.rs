@@ -176,6 +176,14 @@ fn git_land_blocked(error: &anyhow::Error) -> LandBlocked {
 /// under the limit derived from the required gates of the tree it runs in
 /// ([`GitHookTimeout::for_tree`]). After the fast-forward merge the checkout
 /// holds the task's tree, so the push's limit comes from the task's gates.
+///
+/// When pushing, origin's trunk is the landing and the local merge only
+/// stages it. A merge or push that fails, for any reason, puts the checkout's base
+/// branch back where the merge found it ([`rewind_unpushed_merge`]). Left at
+/// the task head, it would run ahead of origin: a later pull would fail as
+/// diverged once origin moved, and a later cycle with nothing new would count
+/// the unpushed work as already landed. Without push the local merge is the
+/// landing and stays.
 async fn land_on_trunk(
     shell: &dyn ShellGateway,
     checkout: &Path,
@@ -229,25 +237,91 @@ async fn land_on_trunk(
             ));
         }
     }
-    checked_with_hook_timeout(
+    // The checkout is clean and on the base branch, so HEAD is the base.
+    let pre_merge_head = if push_enabled {
+        Some(checked(shell, checkout, &["rev-parse", "HEAD"]).await.map_err(git_failed)?)
+    } else {
+        None
+    };
+    if let Err(error) = checked_with_hook_timeout(
         shell,
         checkout,
         &["merge", "--ff-only", task_branch],
         &GitHookTimeout::for_tree(checkout),
     )
     .await
-    .map_err(git_failed)?;
-    if push_enabled {
-        checked_with_hook_timeout(
+    {
+        let (reason, detail) = (git_land_blocked(&error), error.to_string());
+        // Git moves the ref before it runs the post-merge hook, so a merge
+        // killed in that hook has already advanced the base. Rewinding a base
+        // the merge never moved changes nothing.
+        return Err(match &pre_merge_head {
+            Some(head) => {
+                rewind_unpushed_merge(shell, checkout, base_branch, head, reason, detail).await
+            }
+            None => LandAttemptError::Blocked(reason, detail),
+        });
+    }
+    if let Some(pre_merge_head) = pre_merge_head
+        && let Err(error) = checked_with_hook_timeout(
             shell,
             checkout,
             &["push", "origin", base_branch],
             &GitHookTimeout::for_tree(checkout),
         )
         .await
-        .map_err(git_failed)?;
+    {
+        let (reason, detail) = (git_land_blocked(&error), error.to_string());
+        return Err(rewind_unpushed_merge(
+            shell,
+            checkout,
+            base_branch,
+            &pre_merge_head,
+            reason,
+            detail,
+        )
+        .await);
     }
     Ok(())
+}
+
+/// Put the registered checkout's base branch back on `pre_merge_head` after
+/// the landing merge or push failed, and return that failure's blocked reason.
+///
+/// `reset --keep` refuses rather than discard anything a hook wrote into the
+/// checkout. A push that reached origin but still reported failure is safe to
+/// rewind too: the local base is then behind origin, and the next
+/// `pull --ff-only` catches up.
+///
+/// A reset that fails does not replace the push's reason. Its detail gains
+/// what an operator must repair: the base left at the task head.
+async fn rewind_unpushed_merge(
+    shell: &dyn ShellGateway,
+    checkout: &Path,
+    base_branch: &str,
+    pre_merge_head: &str,
+    reason: LandBlocked,
+    detail: String,
+) -> LandAttemptError {
+    match checked(shell, checkout, &["reset", "--keep", pre_merge_head]).await {
+        Ok(_) => LandAttemptError::Blocked(reason, detail),
+        Err(error) => {
+            tracing::warn!(
+                checkout = %checkout.display(),
+                base_branch,
+                pre_merge_head,
+                %error,
+                "could not reset the registered checkout after a failed landing push"
+            );
+            LandAttemptError::Blocked(
+                reason,
+                format!(
+                    "{detail}; the registered checkout's '{base_branch}' was left at the task \
+                     head, ahead of origin, and could not be reset to {pre_merge_head}: {error}"
+                ),
+            )
+        }
+    }
 }
 
 /// Most rebases one finalize may attempt: the first after trunk is found to
@@ -2525,6 +2599,7 @@ mod tests {
             "the preserved branch reached origin"
         );
         assert_eq!(origin_main(&shared.checkout), trunk_before, "trunk did not move");
+        assert_checkout_rewound_to(&shared.checkout, &trunk_before);
         let summary = payload["summary"].as_str().unwrap();
         assert!(
             summary.starts_with(
@@ -2539,6 +2614,173 @@ mod tests {
                 "The limit is the sum of the 2 required gate timeout(s) in .hone-gates.json"
             ),
             "{summary}"
+        );
+    }
+
+    /// Runs every command for real, but reports the landing merge as killed at
+    /// its limit after it ran: what git does when a post-merge hook outlasts
+    /// the merge's limit, since git moves the ref before running that hook.
+    struct PostMergeHookTimesOutShellGateway;
+
+    impl ShellGateway for PostMergeHookTimesOutShellGateway {
+        fn run<'a>(
+            &'a self,
+            working_dir: &'a Path,
+            command: &'a str,
+            args: &'a [&'a str],
+            env: Option<&'a [(String, String)]>,
+            timeout: Option<Duration>,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<CommandResult>> + Send + 'a>> {
+            Box::pin(async move {
+                let result =
+                    CleanProcessShellGateway.run(working_dir, command, args, env, timeout).await?;
+                if command == "git" && args.starts_with(&["merge", "--ff-only"]) {
+                    let elapsed =
+                        tokio::time::timeout(Duration::ZERO, std::future::pending::<()>()).await;
+                    anyhow::Context::with_context(elapsed, || {
+                        format!("command timed out after 0.0s: {command}")
+                    })?;
+                }
+                Ok(result)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_merge_killed_in_its_post_merge_hook_rewinds_the_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let branch = "foundry-task/hung-post-merge";
+        let shared = shared_trunk(dir.path(), branch, "true");
+        let trunk_before = origin_main(&shared.checkout);
+        let registry =
+            super::super::test_helpers::registry_with_entry(pushing_entry(&shared.checkout));
+        let block = FinalizeTask::with_gateways(
+            registry,
+            std::sync::Arc::new(PostMergeHookTimesOutShellGateway),
+        );
+        let mut trigger = task_trigger_with_gates(
+            &shared.worktree,
+            branch,
+            TaskVerdict::Complete,
+            vec![required_gate(true)],
+        );
+        trigger.payload["workspace_base"] = serde_json::to_value(shared.start.clone()).unwrap();
+
+        let payload = block.execute(&trigger).await.unwrap().events[0].payload.clone();
+
+        assert_eq!(payload["landed"], false, "{payload}");
+        assert_eq!(payload["land_blocked"], "git_hook_timed_out", "{payload}");
+        assert_eq!(payload["preservation_ref"], branch, "the work stays on its task branch");
+        assert_eq!(origin_main(&shared.checkout), trunk_before, "trunk did not move");
+        assert_checkout_rewound_to(&shared.checkout, &trunk_before);
+        let summary = payload["summary"].as_str().unwrap();
+        assert!(summary.contains("git merge --ff-only"), "{summary}");
+        assert!(!summary.contains("could not be reset"), "{summary}");
+    }
+
+    /// The registered checkout's local base is back on the commit the merge
+    /// found, and nothing a hook wrote was discarded to put it there.
+    fn assert_checkout_rewound_to(checkout: &Path, pre_merge_head: &str) {
+        assert_eq!(
+            git(checkout, &["rev-parse", "main"]),
+            pre_merge_head,
+            "the checkout's main is not left ahead of origin at the task head"
+        );
+        assert_eq!(git(checkout, &["branch", "--show-current"]), "main");
+        assert!(git(checkout, &["status", "--porcelain"]).is_empty(), "the checkout is clean");
+    }
+
+    #[cfg(unix)]
+    fn install_hook(hook: &Path, script: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::write(hook, script).unwrap();
+        std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Origin refuses the landing push outright. The checkout's main goes back
+    /// to origin's, so the next cycle neither diverges on pull nor counts the
+    /// work as landed, and the work stays on its task branch.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_rejected_landing_push_rewinds_the_checkout_and_keeps_its_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let branch = "foundry-task/rejected-landing-push";
+        let shared = shared_trunk(dir.path(), branch, "true");
+        let task_head = git(&shared.worktree, &["rev-parse", "HEAD"]);
+        let trunk_before = origin_main(&shared.checkout);
+        install_hook(
+            &dir.path().join("remote.git/hooks/pre-receive"),
+            "#!/bin/sh\n\
+             while read old new ref; do\n\
+               if [ \"$ref\" = refs/heads/main ]; then echo 'main is protected' >&2; exit 1; fi\n\
+             done\n",
+        );
+
+        let payload = finalize_complete(&shared, branch).await;
+
+        assert_eq!(payload["landed"], false);
+        assert_eq!(payload["land_blocked"], "git_failed");
+        assert_eq!(payload["verdict"], "complete", "a blocked landing keeps the verdict");
+        let summary = payload["summary"].as_str().unwrap();
+        assert!(summary.contains("git push origin main failed"), "{summary}");
+        assert!(summary.contains("main is protected"), "{summary}");
+        assert!(!summary.contains("could not be reset"), "{summary}");
+        assert_eq!(origin_main(&shared.checkout), trunk_before, "trunk did not move");
+        assert_checkout_rewound_to(&shared.checkout, &trunk_before);
+        assert_eq!(payload["preservation_ref"], branch, "the work stays on its task branch");
+        assert_eq!(git(&shared.checkout, &["rev-parse", branch]), task_head);
+        let preserved =
+            git(&shared.checkout, &["ls-remote", "origin", &format!("refs/heads/{branch}")]);
+        assert!(preserved.starts_with(&task_head), "the preserved branch reached origin");
+    }
+
+    /// A pre-push hook edits a file the task changed and then fails the push.
+    /// `reset --keep` refuses to discard that edit, so the checkout stays at
+    /// the task head. The push's reason stands and the summary tells an
+    /// operator what to repair.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_rewind_that_fails_keeps_the_push_reason_and_reports_the_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let branch = "foundry-task/unrewindable-landing-push";
+        let shared = shared_trunk(dir.path(), branch, "true");
+        let task_head = git(&shared.worktree, &["rev-parse", "HEAD"]);
+        let trunk_before = origin_main(&shared.checkout);
+        install_hook(
+            &shared.checkout.join(".git/hooks/pre-push"),
+            "#!/bin/sh\n\
+             while read local_ref local_sha remote_ref remote_sha; do\n\
+               if [ \"$remote_ref\" = refs/heads/main ]; then\n\
+                 echo 'hook scribble' >> README.md\n\
+                 echo 'pre-push rejected main' >&2\n\
+                 exit 1\n\
+               fi\n\
+             done\n",
+        );
+
+        let payload = finalize_complete(&shared, branch).await;
+
+        assert_eq!(payload["landed"], false);
+        assert_eq!(payload["land_blocked"], "git_failed", "the push's reason is kept");
+        let summary = payload["summary"].as_str().unwrap();
+        assert!(summary.contains("git push origin main failed"), "{summary}");
+        assert!(summary.contains("pre-push rejected main"), "{summary}");
+        assert!(
+            summary.contains(
+                "the registered checkout's 'main' was left at the task head, ahead of origin, \
+                 and could not be reset to"
+            ),
+            "{summary}"
+        );
+        assert!(summary.contains("git reset --keep"), "{summary}");
+        assert_eq!(origin_main(&shared.checkout), trunk_before, "trunk did not move");
+        assert_eq!(git(&shared.checkout, &["rev-parse", "main"]), task_head);
+        assert!(
+            std::fs::read_to_string(shared.checkout.join("README.md"))
+                .unwrap()
+                .contains("hook scribble"),
+            "the hook's edit was not discarded"
         );
     }
 
