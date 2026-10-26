@@ -390,7 +390,7 @@ impl Harness {
             })
             .unwrap(),
         );
-        tokio::time::timeout(Duration::from_secs(10), self.engine.process(event))
+        tokio::time::timeout(SETTLE, self.engine.process(event))
             .await
             .expect("the automatic advance settled");
     }
