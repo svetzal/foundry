@@ -21,6 +21,7 @@ pub mod dependency_updates;
 pub mod gate_file;
 pub mod gate_runner;
 pub mod gateway;
+pub(crate) mod git_hook_timeout;
 pub mod scanner;
 pub mod shell;
 pub mod summary;

@@ -12,9 +12,10 @@ use foundry_sdk::registry::{ProjectEntry, Registry};
 use foundry_sdk::task_block::{BlockKind, TaskBlock};
 
 use crate::gateway::{ProcessShellGateway, ShellGateway};
+use crate::git_hook_timeout::{GitCommandTimedOut, GitHookTimeout};
 use crate::workspace::{
-    PROOF_FILE, checked, clean_foundry_dir, commit_worktree, git_failure_detail, preserve,
-    remove_workspace, run, run_best_effort, unlanded_foundry_files,
+    PROOF_FILE, checked, checked_with_hook_timeout, clean_foundry_dir, commit_worktree,
+    git_failure_detail, preserve, remove_workspace, run, run_best_effort, unlanded_foundry_files,
 };
 
 use super::SimulatedSuccess;
@@ -155,10 +156,26 @@ enum LandAttemptError {
     Blocked(LandBlocked, String),
 }
 
+/// The typed reason for a git error during landing: a hook-running command
+/// still running at its derived limit is [`LandBlocked::GitHookTimedOut`],
+/// anything else [`LandBlocked::GitFailed`].
+fn git_land_blocked(error: &anyhow::Error) -> LandBlocked {
+    if error.downcast_ref::<GitCommandTimedOut>().is_some() {
+        LandBlocked::GitHookTimedOut
+    } else {
+        LandBlocked::GitFailed
+    }
+}
+
 /// One attempt to fast-forward trunk onto the task branch.
 ///
 /// Trunk movement is detected before the merge, so a moved trunk leaves the
 /// registered checkout exactly as the pull left it.
+///
+/// The pull, merge and push can run the repository's hooks, so each runs
+/// under the limit derived from the required gates of the tree it runs in
+/// ([`GitHookTimeout::for_tree`]). After the fast-forward merge the checkout
+/// holds the task's tree, so the push's limit comes from the task's gates.
 async fn land_on_trunk(
     shell: &dyn ShellGateway,
     checkout: &Path,
@@ -166,8 +183,9 @@ async fn land_on_trunk(
     task_branch: &str,
     push_enabled: bool,
 ) -> Result<(), LandAttemptError> {
-    let git_failed =
-        |error: anyhow::Error| LandAttemptError::Blocked(LandBlocked::GitFailed, error.to_string());
+    let git_failed = |error: anyhow::Error| {
+        LandAttemptError::Blocked(git_land_blocked(&error), error.to_string())
+    };
     let dirty = checked(shell, checkout, &["status", "--porcelain"]).await.map_err(git_failed)?;
     if !dirty.is_empty() {
         return Err(LandAttemptError::Blocked(
@@ -186,9 +204,14 @@ async fn land_on_trunk(
         ));
     }
     if push_enabled {
-        checked(shell, checkout, &["pull", "--ff-only", "origin", base_branch])
-            .await
-            .map_err(git_failed)?;
+        checked_with_hook_timeout(
+            shell,
+            checkout,
+            &["pull", "--ff-only", "origin", base_branch],
+            &GitHookTimeout::for_tree(checkout),
+        )
+        .await
+        .map_err(git_failed)?;
     }
     let ancestry = run(shell, checkout, &["merge-base", "--is-ancestor", base_branch, task_branch])
         .await
@@ -206,13 +229,23 @@ async fn land_on_trunk(
             ));
         }
     }
-    checked(shell, checkout, &["merge", "--ff-only", task_branch])
+    checked_with_hook_timeout(
+        shell,
+        checkout,
+        &["merge", "--ff-only", task_branch],
+        &GitHookTimeout::for_tree(checkout),
+    )
+    .await
+    .map_err(git_failed)?;
+    if push_enabled {
+        checked_with_hook_timeout(
+            shell,
+            checkout,
+            &["push", "origin", base_branch],
+            &GitHookTimeout::for_tree(checkout),
+        )
         .await
         .map_err(git_failed)?;
-    if push_enabled {
-        checked(shell, checkout, &["push", "origin", base_branch])
-            .await
-            .map_err(git_failed)?;
     }
     Ok(())
 }
@@ -2330,5 +2363,218 @@ mod tests {
         );
         // Test fixture owns this evidence archive; this is not a worktree removal.
         std::fs::remove_dir_all(mirror.parent().unwrap()).unwrap();
+    }
+
+    // --- git hooks inside push: the derived limit --------------------------
+
+    /// Stands in for a repository hook that makes selected git commands slow.
+    ///
+    /// A matching command waits `duration` under the timeout it was given,
+    /// exactly as the real gateway bounds a child process, and fails with the
+    /// real gateway's timeout error when the wait exceeds it. Otherwise it
+    /// runs the real git command. Every matching command's timeout is
+    /// recorded. Run under paused tokio time so the wait costs nothing.
+    struct SlowHookShellGateway {
+        is_slow: fn(&[&str]) -> bool,
+        duration: Duration,
+        timeouts: std::sync::Mutex<Vec<(String, Option<Duration>)>>,
+    }
+
+    impl SlowHookShellGateway {
+        fn new(is_slow: fn(&[&str]) -> bool, duration: Duration) -> std::sync::Arc<Self> {
+            std::sync::Arc::new(Self {
+                is_slow,
+                duration,
+                timeouts: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+
+        fn timeouts(&self) -> Vec<(String, Option<Duration>)> {
+            self.timeouts.lock().unwrap().clone()
+        }
+    }
+
+    impl ShellGateway for SlowHookShellGateway {
+        fn run<'a>(
+            &'a self,
+            working_dir: &'a Path,
+            command: &'a str,
+            args: &'a [&'a str],
+            env: Option<&'a [(String, String)]>,
+            timeout: Option<Duration>,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<CommandResult>> + Send + 'a>> {
+            Box::pin(async move {
+                if command == "git" && (self.is_slow)(args) {
+                    self.timeouts.lock().unwrap().push((args.join(" "), timeout));
+                    let limit = timeout.unwrap_or(crate::shell::DEFAULT_TIMEOUT);
+                    anyhow::Context::with_context(
+                        tokio::time::timeout(limit, tokio::time::sleep(self.duration)).await,
+                        || {
+                            format!(
+                                "command timed out after {:.1}s: {command}",
+                                limit.as_secs_f64()
+                            )
+                        },
+                    )?;
+                }
+                CleanProcessShellGateway.run(working_dir, command, args, env, timeout).await
+            })
+        }
+    }
+
+    fn is_landing_push(args: &[&str]) -> bool {
+        args == ["push", "origin", "main"]
+    }
+
+    fn is_preservation_push(args: &[&str]) -> bool {
+        args.starts_with(&["push", "-u", "origin"])
+    }
+
+    /// Two required gates of 20 minutes each, and an optional one the hook
+    /// limit must ignore, committed on the task branch.
+    fn hook_gates_on_task_branch(worktree: &Path) {
+        let gates = serde_json::json!({"gates": [
+            {"name": "lint", "command": "true", "required": true, "timeout": 1200},
+            {"name": "test", "command": "true", "required": true, "timeout": 1200},
+            {"name": "e2e", "command": "true", "required": false, "timeout": 90000}
+        ]});
+        std::fs::write(worktree.join(".hone-gates.json"), gates.to_string()).unwrap();
+        git(worktree, &["add", ".hone-gates.json"]);
+        git(worktree, &["commit", "-m", "gate timeouts"]);
+    }
+
+    /// The limit those gates give on this host.
+    fn hook_gates_limit() -> Duration {
+        Duration::from_secs(2_400)
+            .mul_f64(crate::gate_runner::host_gate_timeout_scale())
+            .min(crate::git_hook_timeout::GIT_HOOK_TIMEOUT_CEILING)
+    }
+
+    async fn finalize_with(
+        shared: &SharedTrunk,
+        branch: &str,
+        shell: std::sync::Arc<SlowHookShellGateway>,
+        verdict: TaskVerdict,
+    ) -> serde_json::Value {
+        let registry =
+            super::super::test_helpers::registry_with_entry(pushing_entry(&shared.checkout));
+        let block = FinalizeTask::with_gateways(registry, shell);
+        let mut trigger =
+            task_trigger_with_gates(&shared.worktree, branch, verdict, vec![required_gate(true)]);
+        trigger.payload["workspace_base"] = serde_json::to_value(shared.start.clone()).unwrap();
+        let result = block.execute(&trigger).await.unwrap();
+        result.events[0].payload.clone()
+    }
+
+    /// The ops-01 incident of 2026-10-26: a pre-push hook that ran the
+    /// project's whole validation outlasted the shell's five-minute default,
+    /// and landing-eligible work stayed off trunk. A push that takes longer
+    /// than five minutes but less than the project's required gates allow
+    /// now lands.
+    #[tokio::test(start_paused = true)]
+    async fn a_push_whose_hook_outlasts_the_shell_default_but_not_the_gates_lands() {
+        let dir = tempfile::tempdir().unwrap();
+        let branch = "foundry-task/slow-pre-push";
+        let shared = shared_trunk(dir.path(), branch, "true");
+        hook_gates_on_task_branch(&shared.worktree);
+        let task_head = git(&shared.worktree, &["rev-parse", "HEAD"]);
+        let push = Duration::from_secs(301);
+        assert!(push > crate::shell::DEFAULT_TIMEOUT && push < hook_gates_limit());
+        let shell = SlowHookShellGateway::new(is_landing_push, push);
+
+        let payload = finalize_with(
+            &shared,
+            branch,
+            std::sync::Arc::clone(&shell),
+            TaskVerdict::Remainder {
+                gaps: vec!["docs".to_string()],
+            },
+        )
+        .await;
+
+        assert_eq!(payload["landed"], true, "{payload}");
+        assert!(payload.get("land_blocked").is_none(), "{payload}");
+        assert_eq!(origin_main(&shared.checkout), task_head);
+        assert_eq!(
+            shell.timeouts(),
+            [("push origin main".to_string(), Some(hook_gates_limit()))],
+            "the landing push runs under the limit derived from the task's required gates"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_push_still_running_at_the_derived_limit_is_a_typed_blocked_landing() {
+        let dir = tempfile::tempdir().unwrap();
+        let branch = "foundry-task/hung-pre-push";
+        let shared = shared_trunk(dir.path(), branch, "true");
+        hook_gates_on_task_branch(&shared.worktree);
+        let trunk_before = origin_main(&shared.checkout);
+        let shell =
+            SlowHookShellGateway::new(is_landing_push, hook_gates_limit() + Duration::from_secs(1));
+
+        let payload =
+            finalize_with(&shared, branch, std::sync::Arc::clone(&shell), TaskVerdict::Complete)
+                .await;
+
+        assert_eq!(payload["landed"], false);
+        assert_eq!(payload["land_blocked"], "git_hook_timed_out");
+        assert_eq!(payload["verdict"], "complete", "a blocked landing keeps the verdict");
+        assert_eq!(payload["preservation_ref"], branch, "the work stays on its task branch");
+        assert!(
+            !git(&shared.checkout, &["ls-remote", "--heads", "origin", branch]).is_empty(),
+            "the preserved branch reached origin"
+        );
+        assert_eq!(origin_main(&shared.checkout), trunk_before, "trunk did not move");
+        let summary = payload["summary"].as_str().unwrap();
+        assert!(
+            summary.starts_with(
+                "complete work preserved but could not land on trunk (git_hook_timed_out): \
+                 git push origin main was still running when it reached its"
+            ),
+            "{summary}"
+        );
+        assert!(summary.contains("git hook (pre-push, for a push) was most likely still running"));
+        assert!(
+            summary.contains(
+                "The limit is the sum of the 2 required gate timeout(s) in .hone-gates.json"
+            ),
+            "{summary}"
+        );
+    }
+
+    /// Preservation's push runs the same hook. Still running at its limit, it
+    /// falls back to a bundle instead of failing the whole finalize.
+    #[tokio::test(start_paused = true)]
+    async fn a_preservation_push_still_running_at_its_limit_falls_back_to_a_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let branch = "foundry-task/hung-preservation-push";
+        let shared = shared_trunk(dir.path(), branch, "true");
+        hook_gates_on_task_branch(&shared.worktree);
+        let shell = SlowHookShellGateway::new(
+            is_preservation_push,
+            hook_gates_limit() + Duration::from_secs(1),
+        );
+
+        let payload = finalize_with(
+            &shared,
+            branch,
+            std::sync::Arc::clone(&shell),
+            TaskVerdict::Defect {
+                diagnosis: "not yet".to_string(),
+            },
+        )
+        .await;
+
+        assert_eq!(payload["verdict"], "defect", "not a runner error: {payload}");
+        assert_eq!(payload["diagnosis"], "not yet");
+        let preserved = payload["preservation_ref"].as_str().unwrap();
+        let bundle = preserved.strip_prefix("bundle:").expect("preserved as a bundle");
+        assert_eq!(
+            shell.timeouts(),
+            [(format!("push -u origin {branch}"), Some(hook_gates_limit()))]
+        );
+        assert!(git(&shared.checkout, &["bundle", "list-heads", bundle]).contains(branch));
+        // Test fixture owns this preservation bundle.
+        std::fs::remove_file(bundle).unwrap();
     }
 }

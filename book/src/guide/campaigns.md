@@ -197,12 +197,44 @@ false`, `success: false`, and a typed `land_blocked` reason in the
 | `stale_base_gates_failed`  | The run started behind trunk; the rebase was clean, but a required gate failed        |
 | `trunk_moved_repeatedly`   | Trunk moved again after the second rebase                                             |
 | `checkout_not_ready`       | The registered checkout was dirty or on the wrong branch                              |
+| `git_hook_timed_out`       | A landing pull, merge or push was still running at its limit, likely in a hook        |
 | `git_failed`               | Another git operation needed to land failed                                           |
 
 A `git_failed` summary quotes only the last 4 KiB of git's error output, after
 a note that gives the number of omitted bytes. Git writes the output of
 repository hooks to the same stream, and a pre-push hook can write a full
 validation run. The error from git itself is at the end.
+
+#### Git hooks and their time limit
+
+Git runs a repository's hooks inside the command that triggers them. A
+pre-push hook that runs the project's validation makes `git push` take as long
+as that validation. Foundry never bypasses a hook (no `--no-verify`, no
+`core.hooksPath` override). It gives each git command that can run hooks in
+Finalize Task (the pull, the fast-forward merge and the push to trunk, and the
+push that preserves the task branch) a limit derived from the project's own
+gate file:
+
+- The limit is the sum of the timeouts of the required gates in the
+  `.hone-gates.json` of the tree the command runs in. A gate without a
+  `timeout` counts as 10 minutes. The daemon's `FOUNDRY_GATE_TIMEOUT_SCALE`
+  multiplies each one, as it does for the gates themselves. Optional gates do
+  not count.
+- The limit is never less than 5 minutes, the shell's general limit. A project
+  without required gates, or without a gate file, behaves as before. A gate
+  file that cannot be read also gets 5 minutes.
+- The limit is never more than 2 hours. A mistaken gate timeout (seconds
+  written where milliseconds were meant) cannot let a hung hook hold a task
+  for days.
+
+A landing command that is still running at its limit blocks the landing with
+`git_hook_timed_out`. The summary names the git command, the limit, and how
+the limit was derived. The reviewer's verdict does not change, and the work
+stays preserved on its task branch. To land it, make the hook finish within
+the limit, or raise the required gate timeouts or the host's scale. A
+preservation push that is still running at its limit falls back to a local
+bundle (`bundle:<path>`), as a failed preservation push does, and the daemon
+logs a warning that says why.
 
 Foundry tells "moved during the run" from "started behind" by the start the
 executor records when it prepares the task worktree (`workspace_base`: the

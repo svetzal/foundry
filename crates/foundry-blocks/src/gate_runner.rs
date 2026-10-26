@@ -48,16 +48,21 @@ pub fn parse_gate_timeout_scale(raw: Option<&str>) -> f64 {
 }
 
 /// The timeout a gate runs under: its own, or [`DEFAULT_GATE_TIMEOUT`], scaled
-/// by `factor`.
+/// by `factor`. A product too large for a [`Duration`](std::time::Duration)
+/// saturates instead of panicking, so a mistaken gate file cannot crash a block.
 #[must_use]
 pub fn effective_gate_timeout(
     own: Option<std::time::Duration>,
     factor: f64,
 ) -> std::time::Duration {
-    own.unwrap_or(DEFAULT_GATE_TIMEOUT).mul_f64(factor)
+    let own = own.unwrap_or(DEFAULT_GATE_TIMEOUT);
+    // The same product `Duration::mul_f64` computes, without its panic.
+    std::time::Duration::try_from_secs_f64(own.as_secs_f64() * factor)
+        .unwrap_or(std::time::Duration::MAX)
 }
 
-fn host_gate_timeout_scale() -> f64 {
+/// This host's gate-timeout scale ([`GATE_TIMEOUT_SCALE_ENV`]), read once.
+pub(crate) fn host_gate_timeout_scale() -> f64 {
     static SCALE: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
     *SCALE.get_or_init(|| {
         let raw = std::env::var(GATE_TIMEOUT_SCALE_ENV).ok();
@@ -279,6 +284,13 @@ mod tests {
             effective_gate_timeout(Some(Duration::from_secs(60)), 1.5),
             Duration::from_secs(90)
         );
+    }
+
+    #[test]
+    fn a_scaled_timeout_too_large_to_represent_saturates() {
+        use std::time::Duration;
+        let absurd = Some(Duration::from_secs(u64::MAX));
+        assert_eq!(effective_gate_timeout(absurd, 2.0), Duration::MAX);
     }
 
     #[test]
