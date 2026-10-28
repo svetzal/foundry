@@ -1016,10 +1016,15 @@ async fn on_origin(root: &Path, branch: &str) -> bool {
 }
 
 async fn assert_prune_deletes_only_orphans_origin_contains() {
-    for patch_equivalent in [false, true] {
+    // A current checkout proves containment with its local trunk first; pruning
+    // must still establish that origin's trunk holds the work.
+    for (patch_equivalent, local_current) in [(false, false), (true, false), (false, true)] {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
         let (checkout, _, _) = trunk_fixture(root, false, patch_equivalent).await;
+        if local_current {
+            git(&checkout, &["pull", "-q", "--ff-only", "origin", "main"]).await;
+        }
         // Work origin's trunk never received, pushed from another clone.
         let producer = root.join("producer");
         git(&producer, &["checkout", "-b", "foundry-task/unlanded", "main"]).await;
@@ -1063,7 +1068,7 @@ async fn assert_prune_deletes_only_orphans_origin_contains() {
                 "refs/remotes/origin/foundry-task/orphan",
                 "refs/remotes/origin/foundry-task/preserved"
             ],
-            "patch_equivalent={patch_equivalent}"
+            "patch_equivalent={patch_equivalent} local_current={local_current}"
         );
         assert!(!on_origin(root, "foundry-task/orphan").await);
         assert!(!on_origin(root, "foundry-task/preserved").await);

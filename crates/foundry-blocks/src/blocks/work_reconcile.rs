@@ -339,7 +339,20 @@ impl ReconcileWork {
             let detail = format!("commit={hash}; trunk={}; {trunk_status}", project.branch);
             // Pruning acts only on what origin's registered branch holds: a
             // local trunk ahead of origin is not where the work is durable.
-            if prune && !unknown_running && proved_by == Some(&origin_trunk_name) {
+            // The report names the first trunk that proved it, usually the
+            // local one, so origin is proved separately when it was not that.
+            let on_origin = match proved_by {
+                _ if !prune || unknown_running => false,
+                None => false,
+                Some(name) if *name == origin_trunk_name => true,
+                Some(_) => match trunks.iter().find(|(name, _)| *name == origin_trunk_name) {
+                    Some((_, commit)) => {
+                        prove_commit_supersession(checkout, commit, hash).await.is_ok()
+                    }
+                    None => false,
+                },
+            };
+            if on_origin {
                 let remote = reference.starts_with("refs/remotes/origin/");
                 let name = format!("refs/heads/{branch}");
                 match super::work_branch_cleanup::prune(project, &name, remote).await {
