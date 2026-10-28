@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use anyhow::{Result, ensure};
 use foundry_sdk::registry::{ProjectEntry, Registry};
 use foundry_sdk::work_item::{
-    BranchCleanup, WorkItem, WorkItemState, WorkItemStore, ledger_write_gate,
+    BranchCleanup, WorkItem, WorkItemKind, WorkItemState, WorkItemStore, ledger_write_gate,
 };
 
 use super::work_supersession::{prove_commit_supersession, verified_commit};
@@ -146,7 +146,120 @@ pub(super) async fn cleanup(
     registry: Option<&Arc<RwLock<Registry>>>,
     item: &mut WorkItem,
 ) {
-    if item.state != WorkItemState::Landed || owned(item).is_empty() {
+    if item.state == WorkItemState::Landed {
+        cleanup_settled(ledger, registry, item).await;
+    }
+}
+
+/// The earlier cycles of `landed`'s campaign that the campaign carried
+/// forward and whose refs cleanup has never examined.
+///
+/// A campaign forms each cycle from the previous cycle's preserved ref, and
+/// [`super::carry_campaign_work`] settles the carried cycle `cancelled` when
+/// the next one starts. Its work reaches trunk only when a later cycle lands,
+/// so that landing is the moment to look at the carried refs. Being a
+/// candidate authorizes nothing: each ref is still deleted only with fresh
+/// proof that the registered trunk contains it, so a cycle whose work never
+/// reached trunk keeps its branch.
+///
+/// A cycle an owner closed or cancelled (it records an `operator_action`) is
+/// never a candidate: that was a person's decision about the work, and its
+/// branch stays until a person removes it.
+///
+/// Only cycles with no recorded cleanup are returned. A cycle is examined at
+/// the first later landing of its campaign; a ref retained then stays visible
+/// in the reconciler's orphan-branch findings.
+pub(super) fn carried_cycles(store: &WorkItemStore, landed: &WorkItem) -> Vec<WorkItem> {
+    let Some(campaign) = landed.campaign_name().filter(|_| landed.state == WorkItemState::Landed)
+    else {
+        return Vec::new();
+    };
+    store
+        .items
+        .iter()
+        .filter(|item| {
+            item.id != landed.id
+                && item.kind == WorkItemKind::CampaignCycle
+                && item.project == landed.project
+                && item.campaign_name() == Some(campaign)
+                && item.state == WorkItemState::Cancelled
+                && item.operator_action.is_none()
+                && !owned(item).is_empty()
+                && item.disposition.as_ref().is_some_and(|d| d.branch_cleanup.is_empty())
+        })
+        .cloned()
+        .collect()
+}
+
+/// Examine and, with proof, delete the refs of every cycle `landed` carried
+/// (see [`carried_cycles`]). Returns those cycles with their recorded evidence.
+pub(super) async fn cleanup_carried(
+    ledger: &Path,
+    registry: Option<&Arc<RwLock<Registry>>>,
+    landed: &WorkItem,
+) -> Vec<WorkItem> {
+    let path = ledger.to_owned();
+    let snapshot = landed.clone();
+    let candidates = tokio::task::spawn_blocking(move || -> Result<Vec<WorkItem>> {
+        let _guard = ledger_write_gate().lock().map_err(|e| anyhow::anyhow!("ledger gate: {e}"))?;
+        Ok(carried_cycles(&WorkItemStore::load(&path)?, &snapshot))
+    })
+    .await
+    .map_err(anyhow::Error::from)
+    .and_then(std::convert::identity);
+    let mut candidates = match candidates {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            // Best-effort: the landing is durable; carried refs stay until a
+            // later landing or an operator prune examines them.
+            tracing::warn!(item_id = %landed.id, %error, "carried cycle cleanup unavailable");
+            return Vec::new();
+        }
+    };
+    for item in &mut candidates {
+        cleanup_settled(ledger, registry, item).await;
+    }
+    candidates
+}
+
+/// One line for the settling block's summary naming what branch cleanup did
+/// across `items`: how many refs it deleted, and each ref it retained with
+/// the first line of its reason. `None` when no item recorded cleanup.
+pub(super) fn describe(items: &[WorkItem]) -> Option<String> {
+    let evidence: Vec<(&WorkItem, &BranchCleanup)> = items
+        .iter()
+        .filter_map(|item| Some((item, item.disposition.as_ref()?)))
+        .flat_map(|(item, d)| d.branch_cleanup.iter().map(move |e| (item, e)))
+        .collect();
+    if evidence.is_empty() {
+        return None;
+    }
+    let deleted = evidence.iter().filter(|(_, e)| e.deleted).count();
+    let retained: Vec<String> = evidence
+        .iter()
+        .filter(|(_, e)| !e.deleted)
+        .map(|(item, e)| {
+            let place = if e.remote { "origin" } else { "local" };
+            let reason = e.error.as_deref().and_then(|r| r.lines().next()).unwrap_or("unknown");
+            let reason: String = reason.chars().take(160).collect();
+            format!("{place} {} of {} ({reason})", e.reference, item.id)
+        })
+        .collect();
+    let line = format!("branch cleanup deleted {deleted} ref(s)");
+    if retained.is_empty() {
+        return Some(line);
+    }
+    Some(format!("{line}; retained {}: {}", retained.len(), retained.join("; ")))
+}
+
+/// Clean up the owned refs of a settled item whose work settlement has
+/// placed on trunk: a landed item, or a cycle a landed cycle carried.
+async fn cleanup_settled(
+    ledger: &Path,
+    registry: Option<&Arc<RwLock<Registry>>>,
+    item: &mut WorkItem,
+) {
+    if owned(item).is_empty() {
         return;
     }
     let projects = registry.and_then(|registry| match registry.read() {
@@ -265,7 +378,7 @@ async fn cleanup_owned(
             .iter_mut()
             .find(|item| item.id == expected.id)
             .ok_or_else(|| anyhow::anyhow!("item removed during branch cleanup"))?;
-        if current.state != WorkItemState::Landed || owned(current) != owned(&expected) {
+        if current.state != expected.state || owned(current) != owned(&expected) {
             // Best-effort: a concurrent state or ownership change takes priority
             // over cleanup evidence; never restore an obsolete settlement.
             tracing::warn!(item_id = %expected.id, "item changed during branch cleanup");
@@ -289,7 +402,8 @@ async fn cleanup_owned(
 )]
 mod tests {
     use super::*;
-    use foundry_sdk::work_item::{WorkDisposition, WorkItemKind, WorkItemSpec, WorkLane};
+    use foundry_sdk::work_item::{WorkDisposition, WorkItemSpec, WorkLane};
+    use foundry_sdk::work_source::WorkSource;
 
     async fn isolated(name: &str) -> bool {
         if std::env::var_os("FOUNDRY_BRANCH_CLEANUP_TEST_CHILD").is_some() {
@@ -606,5 +720,204 @@ mod tests {
             .unwrap()
             .is_empty()
         );
+    }
+
+    /// A cycle of `campaign` in project `test`, owning `branch` locally and
+    /// as its preservation ref on origin.
+    fn cycle(id: &str, campaign: &str, state: WorkItemState, branch: Option<&str>) -> WorkItem {
+        let mut item = WorkItem::dispatched(
+            WorkItemSpec {
+                project: "test".into(),
+                objective: "cycle".into(),
+                kind: WorkItemKind::CampaignCycle,
+                lane: WorkLane::Interactive,
+                origin: "test".into(),
+                trace_id: None,
+            },
+            chrono::Utc::now(),
+        )
+        .with_source(Some(WorkSource::campaign(campaign, 1)));
+        item.id = id.into();
+        item.state = state;
+        item.disposition = branch.map(|branch| WorkDisposition {
+            task_branch: Some(branch.into()),
+            preservation_ref: Some(branch.into()),
+            ..WorkDisposition::default()
+        });
+        item
+    }
+
+    #[test]
+    fn a_landed_cycle_carries_only_unexamined_cancelled_cycles_of_its_own_campaign() {
+        let carrier = cycle("wi_carrier", "ship", WorkItemState::Landed, Some("foundry-task/c5"));
+        let first_cycle = cycle("wi_c1", "ship", WorkItemState::Cancelled, Some("foundry-task/c1"));
+        let mut examined =
+            cycle("wi_c2", "ship", WorkItemState::Cancelled, Some("foundry-task/c2"));
+        examined.disposition.as_mut().unwrap().branch_cleanup.push(BranchCleanup {
+            reference: "refs/heads/foundry-task/c2".into(),
+            commit: None,
+            remote: true,
+            deleted: false,
+            error: Some("not contained".into()),
+        });
+        let preserved = cycle("wi_c3", "ship", WorkItemState::Preserved, Some("foundry-task/c3"));
+        let other_campaign =
+            cycle("wi_other", "other", WorkItemState::Cancelled, Some("foundry-task/o1"));
+        let mut other_project =
+            cycle("wi_elsewhere", "ship", WorkItemState::Cancelled, Some("foundry-task/e1"));
+        other_project.project = "elsewhere".into();
+        let mut task = cycle("wi_task", "ship", WorkItemState::Cancelled, Some("foundry-task/t1"));
+        task.kind = WorkItemKind::Task;
+        let bundled =
+            cycle("wi_bundle", "ship", WorkItemState::Cancelled, Some("bundle:/tmp/c4.bundle"));
+        let mut owner_closed =
+            cycle("wi_closed", "ship", WorkItemState::Cancelled, Some("foundry-task/c6"));
+        owner_closed.operator_action = Some(foundry_sdk::work_item::WorkItemOperatorAction {
+            command: "close".into(),
+            origin: "owner host".into(),
+            previous_state: WorkItemState::Preserved,
+            previous_reason: "preserved".into(),
+            previous_settled_at: None,
+        });
+        let store = WorkItemStore {
+            version: 1,
+            items: vec![
+                carrier.clone(),
+                first_cycle.clone(),
+                examined,
+                preserved,
+                other_campaign,
+                other_project,
+                task,
+                bundled,
+                owner_closed,
+            ],
+        };
+
+        let ids: Vec<_> =
+            carried_cycles(&store, &carrier).into_iter().map(|item| item.id).collect();
+        assert_eq!(ids, vec![first_cycle.id.clone()]);
+
+        // Only a landing carries: a preserved or failed cycle has put nothing on trunk.
+        for state in [
+            WorkItemState::Preserved,
+            WorkItemState::Failed,
+            WorkItemState::Cancelled,
+        ] {
+            let mut unlanded = carrier.clone();
+            unlanded.state = state;
+            assert!(carried_cycles(&store, &unlanded).is_empty(), "{state:?} carried work");
+        }
+        // A standalone task belongs to no campaign and carries nothing.
+        let mut standalone = carrier.clone();
+        standalone.source = None;
+        assert!(carried_cycles(&store, &standalone).is_empty());
+    }
+
+    #[test]
+    fn describe_counts_deletions_and_names_each_retained_ref_with_its_reason() {
+        assert_eq!(describe(&[]), None);
+        let untouched = cycle("wi_none", "ship", WorkItemState::Landed, Some("foundry-task/n"));
+        assert_eq!(describe(std::slice::from_ref(&untouched)), None);
+
+        let mut item = cycle("wi_c1", "ship", WorkItemState::Landed, Some("foundry-task/c1"));
+        let evidence = |remote, deleted, error: Option<&str>| BranchCleanup {
+            reference: "refs/heads/foundry-task/c1".into(),
+            commit: None,
+            remote,
+            deleted,
+            error: error.map(Into::into),
+        };
+        item.disposition.as_mut().unwrap().branch_cleanup = vec![
+            evidence(false, true, None),
+            evidence(true, false, Some("command timed out\nsecond line")),
+        ];
+        assert_eq!(
+            describe(&[item]).as_deref(),
+            Some(
+                "branch cleanup deleted 1 ref(s); retained 1: origin \
+                 refs/heads/foundry-task/c1 of wi_c1 (command timed out)"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn carried_cycle_refs_are_deleted_only_when_the_registered_branch_contains_them() {
+        if isolated("blocks::work_branch_cleanup::tests::carried_cycle_refs_are_deleted_only_when_the_registered_branch_contains_them").await { return; }
+        let (_dir, project, registry, ledger, _) = fixture().await;
+        let path = Path::new(&project.path);
+        let commit_on = |branch: &'static str, start: &'static str, file: &'static str| async move {
+            git(path, &["checkout", "-q", "-b", branch, start]).await.unwrap();
+            std::fs::write(path.join(file), file).unwrap();
+            git(path, &["add", file]).await.unwrap();
+            git(path, &["commit", "-q", "-m", file]).await.unwrap();
+            git(path, &["checkout", "-q", "main"]).await.unwrap();
+        };
+        git(path, &["branch", "next"]).await.unwrap();
+        commit_on("foundry-task/c1", "main", "ancestor").await;
+        commit_on("foundry-task/c2", "main", "rebased").await;
+        commit_on("foundry-task/c3", "main", "only-on-main").await;
+        commit_on("foundry-task/c4", "main", "nowhere").await;
+        // `next` holds c1 itself and a rebased copy of c2; `main` holds c3.
+        git(path, &["checkout", "-q", "next"]).await.unwrap();
+        git(path, &["merge", "-q", "--ff-only", "foundry-task/c1"]).await.unwrap();
+        git(path, &["cherry-pick", "foundry-task/c2"]).await.unwrap();
+        git(path, &["checkout", "-q", "main"]).await.unwrap();
+        git(path, &["merge", "-q", "--ff-only", "foundry-task/c3"]).await.unwrap();
+        git(
+            path,
+            &[
+                "push",
+                "-q",
+                "origin",
+                "main",
+                "next",
+                "foundry-task/c1",
+                "foundry-task/c2",
+                "foundry-task/c3",
+                "foundry-task/c4",
+            ],
+        )
+        .await
+        .unwrap();
+        // This project lands on `next`, so only `next` can prove containment.
+        registry.write().unwrap().projects[0].branch = "next".into();
+
+        let carrier = cycle("wi_carrier", "ship", WorkItemState::Landed, None);
+        let cycles: Vec<_> = (1..=4)
+            .map(|n| {
+                let branch = format!("foundry-task/c{n}");
+                cycle(&format!("wi_c{n}"), "ship", WorkItemState::Cancelled, Some(&branch))
+            })
+            .collect();
+        WorkItemStore {
+            version: 1,
+            items: std::iter::once(carrier.clone()).chain(cycles).collect(),
+        }
+        .save(&ledger)
+        .unwrap();
+
+        let examined = cleanup_carried(&ledger, Some(&registry), &carrier).await;
+        assert_eq!(examined.len(), 4);
+        for (n, contained) in [(1, true), (2, true), (3, false), (4, false)] {
+            let item = examined.iter().find(|item| item.id == format!("wi_c{n}")).unwrap();
+            assert_eq!(item.state, WorkItemState::Cancelled, "cleanup never resettles");
+            let evidence = &item.disposition.as_ref().unwrap().branch_cleanup;
+            assert_eq!(evidence.len(), 2, "c{n} examines its local and origin ref");
+            assert!(
+                evidence.iter().all(|e| e.deleted == contained),
+                "c{n}: expected deleted={contained}, got {evidence:?}"
+            );
+            let reference = format!("refs/heads/foundry-task/c{n}");
+            let on_origin = !git(path, &["ls-remote", "--heads", "origin", &reference])
+                .await
+                .unwrap()
+                .is_empty();
+            assert_eq!(on_origin, !contained, "c{n} on origin");
+            assert_eq!(verified_commit(path, &reference).await.is_ok(), !contained, "c{n} locally");
+            assert_eq!(WorkItemStore::load(&ledger).unwrap().find(&item.id), Some(item));
+        }
+        // Each cycle is examined once; a later landing does not retry it.
+        assert!(cleanup_carried(&ledger, Some(&registry), &carrier).await.is_empty());
     }
 }

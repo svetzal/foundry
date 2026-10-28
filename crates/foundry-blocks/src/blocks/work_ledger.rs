@@ -652,6 +652,7 @@ impl TaskBlock for SettleWorkItem {
         Box::pin(async move {
             let (verified, diagnostics) = self.verify_supersession(&trigger, &result).await;
             let mut settled = self.settle(&trigger, &result, &verified);
+            let mut cleanup = None;
             if let Some(settlement) = &mut settled {
                 // A follow-up owns no branch, so it has nothing to clean up.
                 for item in
@@ -664,6 +665,18 @@ impl TaskBlock for SettleWorkItem {
                     )
                     .await;
                 }
+                let carried = super::work_branch_cleanup::cleanup_carried(
+                    &self.store_path,
+                    self.registry.as_ref(),
+                    &settlement.child,
+                )
+                .await;
+                let examined: Vec<_> = std::iter::once(&settlement.child)
+                    .chain(&settlement.discharged)
+                    .chain(&carried)
+                    .cloned()
+                    .collect();
+                cleanup = super::work_branch_cleanup::describe(&examined);
             }
             let events =
                 settled.as_ref().map_or_else(Vec::new, |settlement| settlement.events(&trigger));
@@ -685,6 +698,12 @@ impl TaskBlock for SettleWorkItem {
                 summary
             } else {
                 format!("{summary}; {}", diagnostics.join("; "))
+            };
+            // A retained ref is a warning in the trace, never a failure: the
+            // landing is already durable.
+            let summary = match cleanup {
+                Some(cleanup) => format!("{summary}; {cleanup}"),
+                None => summary,
             };
             Ok(TaskBlockResult::success(summary, events))
         })
