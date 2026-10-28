@@ -106,11 +106,15 @@ async fn delete(project: &ProjectEntry, evidence: &mut BranchCleanup) -> Result<
         let fetch_url = git(path, &["remote", "get-url", "origin"]).await?;
         let push_urls = git(path, &["remote", "get-url", "--push", "--all", "origin"]).await?;
         ensure!(push_urls == fetch_url, "origin push destination differs from the proved remote");
-        // The lease refuses a ref that moved after the proof.
+        // The lease refuses a ref that moved after the proof. A deletion carries
+        // no code, so `--no-verify` skips the project's pre-push hook: some run
+        // their whole gate suite on every push, which turned deletions into
+        // failures and five-minute timeouts. The remote's own hooks still apply.
         git(
             path,
             &[
                 "push",
+                "--no-verify",
                 &format!("--force-with-lease={}:{}", evidence.reference, commit),
                 "origin",
                 &format!(":{}", evidence.reference),
@@ -560,5 +564,47 @@ mod tests {
             .unwrap();
             assert_eq!(remote.is_empty(), !reject);
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn origin_deletion_skips_the_projects_pre_push_hook() {
+        if isolated(
+            "blocks::work_branch_cleanup::tests::origin_deletion_skips_the_projects_pre_push_hook",
+        )
+        .await
+        {
+            return;
+        }
+        let (_dir, project, registry, ledger, mut item) = fixture().await;
+        let path = Path::new(&project.path);
+        git(path, &["push", "origin", "foundry-task/owned"]).await.unwrap();
+        item.disposition.as_mut().unwrap().preservation_ref = Some("foundry-task/owned".into());
+        // A project whose pre-push hook runs its whole gate suite would fail or
+        // time out here. A deletion carries no code, so the hook must not run.
+        foundry_sdk::test_support::write_executable(
+            &path.join(".git/hooks/pre-push"),
+            "#!/bin/sh\necho 'gate suite failed' >&2\nexit 1\n",
+        )
+        .unwrap();
+        save(&ledger, &item);
+        cleanup(&ledger, Some(&registry), &mut item).await;
+        let remote = &item.disposition.as_ref().unwrap().branch_cleanup[1];
+        assert!(remote.remote);
+        assert!(remote.deleted, "hook ran or deletion failed: {:?}", remote.error);
+        assert!(
+            git(
+                path,
+                &[
+                    "ls-remote",
+                    "--heads",
+                    "origin",
+                    "refs/heads/foundry-task/owned"
+                ]
+            )
+            .await
+            .unwrap()
+            .is_empty()
+        );
     }
 }
