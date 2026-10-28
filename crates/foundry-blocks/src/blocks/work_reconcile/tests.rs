@@ -981,3 +981,127 @@ fn a_superseded_follow_up_settles_the_items_it_continues() {
         Some("trunk-commit")
     );
 }
+
+/// Reconcile `checkout` against an empty ledger with the given started payload.
+async fn reconcile_unowned(
+    root: &Path,
+    checkout: &Path,
+    payload: serde_json::Value,
+) -> WorkReconcileCompletedPayload {
+    let ledger = root.join("ledger.json");
+    foundry_sdk::work_item::WorkItemStore {
+        version: 1,
+        items: Vec::new(),
+    }
+    .save(&ledger)
+    .unwrap();
+    let block = ReconcileWork::new(
+        registry_with_project("regression", checkout.to_str().unwrap()),
+        ledger,
+        root.join("worktrees"),
+        root.join("events"),
+        root.join("digest"),
+    );
+    let trigger =
+        make_trigger(foundry_sdk::event::EventType::WorkReconcileStarted, "system", payload);
+    let result = block.execute(&trigger).await.unwrap();
+    result.events.last().unwrap().parse_payload().unwrap()
+}
+
+async fn on_origin(root: &Path, branch: &str) -> bool {
+    let remote = root.join("remote.git");
+    !git(&remote, &["for-each-ref", &format!("refs/heads/{branch}")])
+        .await
+        .is_empty()
+}
+
+async fn assert_prune_deletes_only_orphans_origin_contains() {
+    for patch_equivalent in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let (checkout, _, _) = trunk_fixture(root, false, patch_equivalent).await;
+        // Work origin's trunk never received, pushed from another clone.
+        let producer = root.join("producer");
+        git(&producer, &["checkout", "-b", "foundry-task/unlanded", "main"]).await;
+        std::fs::write(producer.join("unlanded"), "not on trunk").unwrap();
+        git(&producer, &["add", "unlanded"]).await;
+        git(&producer, &["commit", "-m", "unlanded work"]).await;
+        git(&producer, &["push", "origin", "foundry-task/unlanded"]).await;
+        // A pre-push hook that runs the gate suite must not block a deletion.
+        foundry_sdk::test_support::write_executable(
+            &checkout.join(".git/hooks/pre-push"),
+            "#!/bin/sh\nexit 1\n",
+        )
+        .unwrap();
+
+        // Without the request, and on a scheduled run, orphans are only reported.
+        for payload in [
+            serde_json::json!({}),
+            serde_json::json!({"prune_branches": false}),
+        ] {
+            let report = reconcile_unowned(root, &checkout, payload).await;
+            assert!(report.success, "{:?}", report.errors);
+            assert!(report.findings.iter().all(|f| f.category != "pruned_branch"));
+            for branch in ["foundry-task/orphan", "foundry-task/unlanded"] {
+                assert!(on_origin(root, branch).await, "{branch} kept without a request");
+            }
+        }
+
+        let report =
+            reconcile_unowned(root, &checkout, serde_json::json!({"prune_branches": true})).await;
+        assert!(report.success, "{:?}", report.errors);
+        let pruned: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.category == "pruned_branch")
+            .map(|f| f.identity.as_str())
+            .collect();
+        // `foundry-task/preserved` points at the same contained commit.
+        assert_eq!(
+            pruned,
+            vec![
+                "refs/remotes/origin/foundry-task/orphan",
+                "refs/remotes/origin/foundry-task/preserved"
+            ],
+            "patch_equivalent={patch_equivalent}"
+        );
+        assert!(!on_origin(root, "foundry-task/orphan").await);
+        assert!(!on_origin(root, "foundry-task/preserved").await);
+        assert!(on_origin(root, "foundry-task/unlanded").await, "unlanded work is never pruned");
+        assert!(report.findings.iter().any(|f| f.category == "orphan_branch"
+            && f.identity == "refs/remotes/origin/foundry-task/unlanded"));
+        assert_eq!(report.orphan_branches, 1);
+        assert!(report.markdown.contains("pruned branches: 2"));
+    }
+}
+
+#[tokio::test]
+async fn pruning_deletes_only_orphan_branches_origins_trunk_contains() {
+    if std::env::var_os("RECONCILE_PRUNE_CHILD").is_some() {
+        assert_prune_deletes_only_orphans_origin_contains().await;
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let global = root.path().join("gitconfig");
+    std::fs::write(&global, "").unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "blocks::work_reconcile::tests::pruning_deletes_only_orphan_branches_origins_trunk_contains",
+            "--nocapture",
+        ])
+        .env("RECONCILE_PRUNE_CHILD", "1")
+        .env("GIT_CONFIG_GLOBAL", global)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("GIT_CONFIG_COUNT")
+        .env_remove("GIT_CONFIG_PARAMETERS")
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

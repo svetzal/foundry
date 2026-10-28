@@ -1010,7 +1010,11 @@ landing-triggered check.
 ### Work reconciliation
 
 `foundry queue reconcile` requires the daemon and prints that invocation's
-report; `--offline` is rejected. The canonical `work-reconciler` sentinel uses
+report; `--offline` is rejected. `foundry queue reconcile --prune-branches`
+also deletes each orphan `foundry-task/*` branch (no open or running owner),
+local or on origin, that origin's registered branch is proved to contain, and
+reports it as `pruned_branch`. Run it without the flag first: the plain report
+lists the same orphans with their proof. The scheduled run never prunes. The canonical `work-reconciler` sentinel uses
 `30 */3 * * *` and pairs `work_reconcile_started` with `work_reconcile_completed`.
 Inventory reports exact IDs, paths, branch refs and registered-trunk status.
 Conservative supersession may settle open work with a preservation ref without a task landing;

@@ -940,7 +940,7 @@ async fn scheduled_reconciliation_proves_registered_trunk_and_preserves_history(
             assert_eq!(fetched.state, "landed");
             assert_eq!(fetched.reason, format!("superseded by {trunk}"));
             let repeat = client
-                .reconcile_work(crate::proto::ReconcileWorkRequest {})
+                .reconcile_work(crate::proto::ReconcileWorkRequest::default())
                 .await
                 .unwrap()
                 .into_inner();
@@ -1050,7 +1050,10 @@ async fn reconcile_service_surfaces_fetch_git_ledger_and_digest_failures() {
         }
         let engine = reconciliation_engine(dir.path(), registry.clone(), output);
         let (mut client, server, mut events) = resume_service(dir.path(), registry, engine).await;
-        let error = client.reconcile_work(crate::proto::ReconcileWorkRequest {}).await.unwrap_err();
+        let error = client
+            .reconcile_work(crate::proto::ReconcileWorkRequest::default())
+            .await
+            .unwrap_err();
         assert_eq!(error.code(), tonic::Code::Internal);
         let mut observed = Vec::new();
         while let Ok(event) = events.try_recv() {
@@ -1119,10 +1122,9 @@ async fn reconcile_reloads_under_owner_gate_and_keeps_concurrent_cancellation_an
     let engine = reconciliation_engine(dir.path(), registry.clone(), dir.path().join("reconcile"));
     let (mut client, server, mut events) = resume_service(dir.path(), registry, engine).await;
     let mut runner = client.clone();
-    let invocation =
-        tokio::spawn(
-            async move { runner.reconcile_work(crate::proto::ReconcileWorkRequest {}).await },
-        );
+    let invocation = tokio::spawn(async move {
+        runner.reconcile_work(crate::proto::ReconcileWorkRequest::default()).await
+    });
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while !entered.exists() {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;

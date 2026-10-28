@@ -987,16 +987,19 @@ impl Foundry for FoundryService {
         pacing_ops::resume(&self.work_items_path, &self.pacing, &self.ctx, request).await
     }
 
-    #[tracing::instrument(skip(self, _request))]
+    #[tracing::instrument(skip(self, request))]
     async fn reconcile_work(
         &self,
-        _request: Request<crate::proto::ReconcileWorkRequest>,
+        request: Request<crate::proto::ReconcileWorkRequest>,
     ) -> Result<Response<crate::proto::ReconcileWorkResponse>, Status> {
+        let started = foundry_sdk::payload::WorkReconcileStartedPayload {
+            prune_branches: request.into_inner().prune_branches,
+        };
         let event = Event::new(
             foundry_sdk::event::EventType::WorkReconcileStarted,
             "system".into(),
             foundry_sdk::throttle::Throttle::Full,
-            serde_json::json!({}),
+            serde_json::to_value(started).map_err(|error| Status::internal(error.to_string()))?,
         )
         .with_trace_id(Some(foundry_sdk::event::mint_trace_id()));
         track_workflow(&event, &self.ctx.workflow_tracker);

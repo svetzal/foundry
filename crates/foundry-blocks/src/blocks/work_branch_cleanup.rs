@@ -138,6 +138,26 @@ async fn delete(project: &ProjectEntry, evidence: &mut BranchCleanup) -> Result<
     Ok(())
 }
 
+/// Delete one `foundry-task/*` ref that no ledger item owns, under the same
+/// guards as settlement cleanup: fresh containment proof against the
+/// registered trunk, no worktree holding it, and a lease on the observed
+/// commit. `reference` is the branch as `refs/heads/<name>`; `remote` selects
+/// the origin ref rather than the local one.
+pub(super) async fn prune(project: &ProjectEntry, reference: &str, remote: bool) -> Result<()> {
+    ensure!(
+        reference.starts_with("refs/heads/foundry-task/"),
+        "only foundry-task branches are pruned"
+    );
+    let mut evidence = BranchCleanup {
+        reference: reference.to_owned(),
+        commit: None,
+        remote,
+        deleted: false,
+        error: None,
+    };
+    delete(project, &mut evidence).await
+}
+
 /// Run after landing is persisted, and before constructing the settlement event.
 /// Ledger decisions and outcome writes use short blocking critical sections;
 /// no Git operation runs while the shared ledger gate is held.

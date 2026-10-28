@@ -494,7 +494,13 @@ enum CampaignCommands {
 #[derive(Subcommand)]
 enum QueueCommands {
     /// Reconcile work now and print this invocation’s digest (daemon required)
-    Reconcile,
+    Reconcile {
+        /// Delete orphan foundry-task branches, local and on origin, that
+        /// origin's registered branch contains. Without it, orphan branches
+        /// are only listed with their proof: run that first to see the plan.
+        #[arg(long)]
+        prune_branches: bool,
+    },
     /// Continue preserved work, or an open follow-up, through a new linked
     /// task, queued for the pacing scheduler
     Resume {
@@ -899,7 +905,9 @@ async fn handle_queue_command(
             )
             .await
         }
-        Some(QueueCommands::Reconcile) => queue_commands::reconcile(addr, offline).await,
+        Some(QueueCommands::Reconcile { prune_branches }) => {
+            queue_commands::reconcile(addr, offline, prune_branches).await
+        }
         Some(QueueCommands::Close { id, reason, origin }) => {
             queue_commands::cancel_item(addr, offline, &id, Some(&reason), origin.as_deref()).await
         }

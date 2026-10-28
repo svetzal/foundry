@@ -715,14 +715,14 @@ pub async fn hold_or_release_item(
 }
 
 /// Run the canonical reconciler on the daemon and print its invocation-specific report.
-pub async fn reconcile(addr: &str, offline: bool) -> Result<()> {
+pub async fn reconcile(addr: &str, offline: bool, prune_branches: bool) -> Result<()> {
     anyhow::ensure!(
         !offline,
         "foundry queue reconcile requires the daemon; --offline is not supported"
     );
     let mut client = crate::daemon::connect_daemon_online(addr).await?;
     let response = client
-        .reconcile_work(crate::proto::ReconcileWorkRequest {})
+        .reconcile_work(crate::proto::ReconcileWorkRequest { prune_branches })
         .await
         .map_err(status_to_anyhow)?
         .into_inner();

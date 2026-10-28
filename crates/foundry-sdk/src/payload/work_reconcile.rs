@@ -5,11 +5,24 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReconcileFinding {
     pub project: String,
-    /// `orphan_worktree`, `orphan_branch`, `broken_item`, unresolved, informational or `dirty_checkout`.
+    /// `orphan_worktree`, `orphan_branch`, `pruned_branch`, `broken_item`, unresolved,
+    /// informational or `dirty_checkout`.
     pub category: String,
     /// Exact item id, ref name or filesystem path; never inferred from item ids.
     pub identity: String,
     pub detail: String,
+}
+
+/// What a reconciliation was asked to do beyond inventory and settlement.
+///
+/// A scheduled reconciliation carries an empty payload, so every field
+/// defaults to the report-only behaviour.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkReconcileStartedPayload {
+    /// Delete each orphan `foundry-task/*` branch that origin's registered
+    /// branch is proved to contain. Only an operator asks for this.
+    #[serde(default)]
+    pub prune_branches: bool,
 }
 
 /// Completion shared by the CLI RPC and the ops observation boundary.

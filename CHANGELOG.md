@@ -7,6 +7,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `foundry queue reconcile --prune-branches` deletes orphan `foundry-task/*`
+  branches, local and on origin, that origin's registered branch is proved to
+  contain. Each becomes a `pruned_branch` finding. Run `foundry queue
+  reconcile` without the flag first: it lists the same orphans with their
+  proof. Use it once after promotion to clear branches left by earlier
+  versions. The scheduled reconciliation never prunes.
+
 ### Fixed
 
 - Deleting a landed item's branch on origin no longer runs the project's
