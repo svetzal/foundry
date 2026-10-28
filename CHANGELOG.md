@@ -7,6 +7,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Deleting a landed item's branch on origin no longer runs the project's
+  pre-push hook. The deletion pushes with `--no-verify`, because it carries no
+  code. A project whose pre-push hook runs its whole gate suite (frontend-ort)
+  had deletions fail on the hook or time out after five minutes, which left
+  landed `foundry-task/*` branches on origin.
+
 ## [0.58.2] - 2026-10-26
 
 ### Changed
