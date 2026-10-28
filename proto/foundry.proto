@@ -1221,7 +1221,11 @@ message ResumePacingResponse { PacingStatus pacing = 1; }
 
 // Online-only reconciliation. Runs the canonical work_reconcile_started workflow
 // against daemon-owned state and returns this invocation's digest, never a client file.
-message ReconcileWorkRequest {}
+message ReconcileWorkRequest {
+    // Delete orphan foundry-task branches that origin's registered branch
+    // is proved to contain. Without it, reconciliation only reports them.
+    bool prune_branches = 1;
+}
 message ReconcileWorkResponse {
     string digest_path = 1;
     string markdown = 2;

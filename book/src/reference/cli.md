@@ -938,4 +938,9 @@ Unreachable transport is an error. Inspection, fetch, ledger-save and digest-wri
 failures surface as `INTERNAL` with diagnostics. Verified settlements can already
 be durable when a later digest write fails. Reports default to
 `~/.foundry/reconcile/YYYY-MM-DD.md` (`FOUNDRY_RECONCILE_DIR` overrides the directory).
+
+| Flag | Description |
+|------|-------------|
+| `--prune-branches` | Delete orphan `foundry-task/*` branches, local and on origin, that origin's registered branch contains. Without it, the report lists them with their proof, so run it without the flag first to see the plan |
+
 See [Work reconciler](../guide/work-reconciler.md).

@@ -12,6 +12,24 @@ Run it now with:
 foundry queue reconcile
 ```
 
+To delete the orphan `foundry-task/*` branches that already landed, run:
+
+```bash
+foundry queue reconcile                   # plan: lists each orphan branch with its proof
+foundry queue reconcile --prune-branches  # apply
+```
+
+An orphan branch is one no open or running item owns. With `--prune-branches`,
+the reconciler deletes each orphan branch, local or on origin, that origin's
+registered branch is proved to contain (ancestry, patch equivalence or content
+containment), with the same guarded deletion as landed-item cleanup: fresh
+proof, no worktree holding it, a lease on the observed commit and no local
+pre-push hook. Proof against a local trunk that is ahead of origin is not
+enough. Each deleted branch becomes a `pruned_branch` finding and the report
+totals gain `pruned branches: N`. A branch whose work origin's trunk does not
+contain stays an `orphan_branch` finding. A failed deletion stays one too, with
+the reason. The scheduled run never prunes.
+
 The daemon runs the same `work_reconcile_started` workflow that the canonical
 `work-reconciler` sentinel starts at `30 */3 * * *` (local time). The paired
 `work_reconcile_completed` records exact findings, settlement identities and

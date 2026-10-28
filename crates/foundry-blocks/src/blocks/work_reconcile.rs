@@ -5,7 +5,9 @@ use std::sync::{Arc, RwLock};
 
 use anyhow::{Context, Result, ensure};
 use foundry_sdk::event::{Event, EventType};
-use foundry_sdk::payload::{ReconcileFinding, WorkReconcileCompletedPayload};
+use foundry_sdk::payload::{
+    ReconcileFinding, WorkReconcileCompletedPayload, WorkReconcileStartedPayload,
+};
 use foundry_sdk::registry::{ProjectEntry, Registry};
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::work_item::{WorkItem, WorkItemState, WorkItemStore, ledger_write_gate};
@@ -46,7 +48,11 @@ impl ReconcileWork {
     async fn reconcile(&self, trigger: &Event) -> Result<TaskBlockResult> {
         let mut report = WorkReconcileCompletedPayload::default();
         let mut events = Vec::new();
-        match self.inspect(&mut report).await {
+        // A scheduled run carries no request; an unreadable one never prunes.
+        let prune = trigger
+            .parse_payload::<WorkReconcileStartedPayload>()
+            .is_ok_and(|request| request.prune_branches);
+        match self.inspect(&mut report, prune).await {
             Ok(verified) => match apply_verified_async(self.ledger.clone(), verified.clone()).await
             {
                 Ok(settled) => {
@@ -82,15 +88,16 @@ impl ReconcileWork {
         }
         report.orphan_worktrees = count(&report, "orphan_worktree");
         report.orphan_branches = count(&report, "orphan_branch");
+        let pruned = count(&report, "pruned_branch");
         report.broken_items = count(&report, "broken_item");
         report.unresolved = count(&report, "unresolved");
         report.success = report.errors.is_empty();
-        render(&mut report);
+        render(&mut report, pruned);
         let destination = self.output.join(format!("{}.md", chrono::Utc::now().format("%Y-%m-%d")));
         if let Err(error) = write_report(&destination, &report.markdown).await {
             report.success = false;
             report.errors.push(format!("digest write {}: {error:#}", destination.display()));
-            render(&mut report);
+            render(&mut report, pruned);
         } else {
             report.digest_path = Some(destination.display().to_string());
         }
@@ -103,6 +110,7 @@ impl ReconcileWork {
     async fn inspect(
         &self,
         report: &mut WorkReconcileCompletedPayload,
+        prune: bool,
     ) -> Result<Vec<(WorkItem, String)>> {
         let projects = super::read_registry(&self.registry)?.projects.clone();
         let ledger = self.ledger.clone();
@@ -117,7 +125,8 @@ impl ReconcileWork {
                 })
                 .cloned()
                 .collect();
-            if let Err(error) = self.inspect_project(&project, &items, report, &mut verified).await
+            if let Err(error) =
+                self.inspect_project(&project, &items, report, &mut verified, prune).await
             {
                 report.errors.push(format!("{} ({}): {error:#}", project.name, project.path));
                 for item in items {
@@ -149,6 +158,7 @@ impl ReconcileWork {
         items: &[WorkItem],
         report: &mut WorkReconcileCompletedPayload,
         verified: &mut Vec<(WorkItem, String)>,
+        prune: bool,
     ) -> Result<()> {
         let checkout = Path::new(&project.path);
         // Startup and continuation resolve FETCH_HEAD after their own fetch.
@@ -179,6 +189,7 @@ impl ReconcileWork {
                 .push(format!("{} registered trunk {}: {error:#}", project.name, project.branch));
         }
         let mut trunks = Vec::new();
+        let origin_trunk_name = format!("origin trunk refs/remotes/origin/{}", project.branch);
         if let Ok(output) = &fetched {
             if let Ok(commit) = &trunk {
                 trunks.push((
@@ -213,7 +224,7 @@ impl ReconcileWork {
                             ),
                         );
                     }
-                    trunks.push((format!("origin trunk {reference}"), commit));
+                    trunks.push((origin_trunk_name.clone(), commit));
                 }
                 Err(error) => report
                     .errors
@@ -302,17 +313,20 @@ impl ReconcileWork {
             }
             let mut trunk_status = "unresolved: trunk or origin observation failed".to_string();
             let mut failures = Vec::new();
+            let mut proved_by = None;
             for (name, commit) in &trunks {
                 let result =
                     git_command(checkout, &["merge-base", "--is-ancestor", hash, commit]).await?;
                 match result.exit_code {
                     0 => {
                         trunk_status = format!("ancestor of {name}");
+                        proved_by = Some(name);
                         break;
                     }
                     1 => match prove_commit_supersession(checkout, commit, hash).await {
                         Ok(proof) => {
                             trunk_status = format!("{} {name}", proof.relation());
+                            proved_by = Some(name);
                             break;
                         }
                         Err(error) => failures.push(format!("not superseded by {name}: {error:#}")),
@@ -321,6 +335,24 @@ impl ReconcileWork {
                         .push(format!("unresolved against {name}: {}", result.stderr.trim())),
                 }
                 trunk_status = failures.join("; ");
+            }
+            let detail = format!("commit={hash}; trunk={}; {trunk_status}", project.branch);
+            // Pruning acts only on what origin's registered branch holds: a
+            // local trunk ahead of origin is not where the work is durable.
+            if prune && !unknown_running && proved_by == Some(&origin_trunk_name) {
+                let remote = reference.starts_with("refs/remotes/origin/");
+                let name = format!("refs/heads/{branch}");
+                match super::work_branch_cleanup::prune(project, &name, remote).await {
+                    Ok(()) => {
+                        finding(report, &project.name, "pruned_branch", reference, &detail);
+                        continue;
+                    }
+                    Err(error) => {
+                        // Best-effort: a failed prune leaves the branch reported.
+                        tracing::warn!(project = %project.name, %reference, %error, "prune retained branch");
+                        trunk_status = format!("{trunk_status}; prune failed: {error:#}");
+                    }
+                }
             }
             finding(
                 report,
@@ -602,18 +634,19 @@ fn finding(
 fn count(report: &WorkReconcileCompletedPayload, category: &str) -> usize {
     report.findings.iter().filter(|finding| finding.category == category).count()
 }
-fn render(report: &mut WorkReconcileCompletedPayload) {
-    let mut lines = vec![
-        "# Work reconciliation".to_string(),
-        format!(
-            "Settled: {}; orphan worktrees: {}; orphan branches: {}; broken items: {}; unresolved: {}",
-            report.settled_ids.len(),
-            report.orphan_worktrees,
-            report.orphan_branches,
-            report.broken_items,
-            report.unresolved
-        ),
-    ];
+fn render(report: &mut WorkReconcileCompletedPayload, pruned: usize) {
+    let mut totals = format!(
+        "Settled: {}; orphan worktrees: {}; orphan branches: {}; broken items: {}; unresolved: {}",
+        report.settled_ids.len(),
+        report.orphan_worktrees,
+        report.orphan_branches,
+        report.broken_items,
+        report.unresolved
+    );
+    if pruned > 0 {
+        totals = format!("{totals}; pruned branches: {pruned}");
+    }
+    let mut lines = vec!["# Work reconciliation".to_string(), totals];
     lines.extend(report.settled_ids.iter().map(|id| format!("- landed: `{id}`")));
     lines.extend(
         report
