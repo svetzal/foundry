@@ -963,6 +963,20 @@ directories, including separate clones and linked worktrees. The disposition
 and settlement event retain ref names, observed commits and per-ref deletion
 results; deletion failure leaves
 the item landed. Preservation evidence for unlanded work is never deleted.
+
+A campaign forms each cycle from the previous cycle's preserved ref, and the
+earlier cycle settles `cancelled` as carried forward. When a later cycle of the
+same campaign lands, Foundry also examines the refs of every carried cycle it
+has not examined before, with the same guarded deletion. A carried cycle whose
+work the registered trunk contains loses its branch; one whose work trunk does
+not contain keeps it, and the reconciler reports it as an orphan branch. A
+cycle an owner closed or cancelled is never examined this way: its branch stays
+until a person removes it. The cycle stays `cancelled`; only its cleanup
+evidence changes.
+
+The Settle Work Item summary in the run's trace names the outcome: how many
+refs were deleted, and each retained ref with the first line of its reason. A
+retained ref is a warning there, never a failure of the run.
 Cleanup decides eligibility under the ledger write gate, releases it for all
 Git operations, then reloads under the gate to record outcomes. Concurrent
 ledger updates are retained; a changed state or ref ownership is never

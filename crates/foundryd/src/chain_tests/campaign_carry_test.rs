@@ -60,7 +60,14 @@ fn carry_block(store_path: &Path, campaigns: &Path) -> Box<dyn foundry_sdk::task
 fn assert_cancelled_with(after: &WorkItem, before: &WorkItem, reason: &str) {
     assert_eq!(after.state, WorkItemState::Cancelled, "{}", before.id);
     assert_eq!(after.reason, reason, "{}", before.id);
-    assert_eq!(after.disposition, before.disposition, "preservation evidence kept");
+    // Branch cleanup may add its evidence; every preservation field stays.
+    let without_cleanup = |item: &WorkItem| {
+        item.disposition.clone().map(|d| WorkDisposition {
+            branch_cleanup: Vec::new(),
+            ..d
+        })
+    };
+    assert_eq!(without_cleanup(after), without_cleanup(before), "preservation evidence kept");
     assert_eq!(after.operator_action, None, "no person settled it");
     assert_eq!(after.source, before.source);
 }
@@ -167,6 +174,11 @@ async fn a_dispatched_campaign_cycle_carries_the_campaigns_earlier_open_cycles()
     for before in &carried {
         let after = store.find(&before.id).unwrap();
         assert_cancelled_with(after, before, &reason);
+        // Cycle 12 landed, so cleanup examined each cycle it carried. These
+        // refs were never pushed, so nothing proves them on trunk: each stays.
+        let cleanup = &after.disposition.as_ref().unwrap().branch_cleanup;
+        assert_eq!(cleanup.len(), 2, "{} local and origin ref examined", before.id);
+        assert!(cleanup.iter().all(|e| !e.deleted && e.error.is_some()), "{}", before.id);
         // Durable admission does not route `work_item_submitted` to blocks;
         // the scheduler's `work_item_started` for cycle 12 is what carries.
         let logged = logged_events(&dir.path().join("events"));

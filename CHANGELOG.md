@@ -14,6 +14,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
   code. A project whose pre-push hook runs its whole gate suite (frontend-ort)
   had deletions fail on the hook or time out after five minutes, which left
   landed `foundry-task/*` branches on origin.
+- Campaign cycles that a later cycle carried forward no longer keep their
+  `foundry-task/*` branches after the campaign's work lands. When a cycle lands,
+  Foundry examines each earlier carried cycle of its campaign once and deletes
+  its local and origin branch when the registered branch contains the work
+  (ancestry, patch equivalence or content containment). A carried cycle whose
+  work did not land keeps its branch, and so does a cycle an owner closed or
+  cancelled. On frontend-ort these cycles were most of
+  the branches left on GitHub.
+- The Settle Work Item summary in the trace now says how many branches cleanup
+  deleted and names each retained branch with its reason.
 
 ## [0.58.2] - 2026-10-26
 
