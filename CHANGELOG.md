@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.59.0] - 2026-10-28
+
 ### Added
 
 - `foundry queue reconcile --prune-branches` deletes orphan `foundry-task/*`
@@ -33,6 +35,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   the branches left on GitHub.
 - The Settle Work Item summary in the trace now says how many branches cleanup
   deleted and names each retained branch with its reason.
+
+### Changed
+
+- Updated tonic, tonic-build, tonic-prost and tonic-prost-build to 0.14.8.
 
 ## [0.58.2] - 2026-10-26
 
