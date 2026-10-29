@@ -726,20 +726,18 @@ mod tests {
         let remote = &item.disposition.as_ref().unwrap().branch_cleanup[1];
         assert!(remote.remote);
         assert!(remote.deleted, "hook ran or deletion failed: {:?}", remote.error);
-        assert!(
-            git(
-                path,
-                &[
-                    "ls-remote",
-                    "--heads",
-                    "origin",
-                    "refs/heads/foundry-task/owned"
-                ]
-            )
-            .await
-            .unwrap()
-            .is_empty()
-        );
+        let remote_heads = git(
+            path,
+            &[
+                "ls-remote",
+                "--heads",
+                "origin",
+                "refs/heads/foundry-task/owned",
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(remote_heads, "");
     }
 
     /// A cycle of `campaign` in project `test`, owning `branch` locally and
@@ -831,7 +829,7 @@ mod tests {
         // A standalone task belongs to no campaign and carries nothing.
         let mut standalone = carrier.clone();
         standalone.source = None;
-        assert!(carried_cycles(&store, &standalone).is_empty());
+        assert_eq!(carried_cycles(&store, &standalone), Vec::<WorkItem>::new());
     }
 
     #[test]
@@ -938,6 +936,9 @@ mod tests {
             assert_eq!(WorkItemStore::load(&ledger).unwrap().find(&item.id), Some(item));
         }
         // Each cycle is examined once; a later landing does not retry it.
-        assert!(cleanup_carried(&ledger, Some(&registry), &carrier).await.is_empty());
+        assert_eq!(
+            cleanup_carried(&ledger, Some(&registry), &carrier).await,
+            Vec::<WorkItem>::new()
+        );
     }
 }
