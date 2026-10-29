@@ -24,10 +24,26 @@ use fs2::FileExt;
 /// The held single-instance lock. Dropping it releases the lock.
 #[derive(Debug)]
 pub struct InstanceLock {
-    // Held only for its lock; the kernel releases the `flock` when this
-    // descriptor closes.
-    _file: File,
+    // Held only for its lock; released explicitly on drop (see `Drop`).
+    file: File,
     path: PathBuf,
+}
+
+impl Drop for InstanceLock {
+    /// Release the lock explicitly rather than relying on the descriptor
+    /// closing. A `flock` belongs to the open file description, and a child
+    /// process spawned on another thread holds a duplicate of every
+    /// descriptor between its fork and its exec (close-on-exec only takes
+    /// effect at the exec). Closing ours then leaves the lock held until that
+    /// child execs; `LOCK_UN` frees it at once, whoever shares the description.
+    fn drop(&mut self) {
+        // Best-effort: the kernel still releases the lock once the last
+        // duplicate of the descriptor closes; a failed explicit unlock only
+        // delays that.
+        if let Err(error) = FileExt::unlock(&self.file) {
+            tracing::warn!(error = %error, path = %self.path.display(), "releasing the instance lock failed");
+        }
+    }
 }
 
 impl InstanceLock {
@@ -81,7 +97,7 @@ pub fn acquire(path: &Path) -> Result<InstanceLock, LockError> {
     writeln!(file, "{}", std::process::id())?;
     file.sync_all()?;
     Ok(InstanceLock {
-        _file: file,
+        file,
         path: path.to_path_buf(),
     })
 }
