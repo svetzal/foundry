@@ -90,10 +90,17 @@ fn active_campaign(name: &str) -> Campaign {
     }
 }
 
+/// How long the driver waits before declaring the only worker stalled.
+const HANG_GUARD: Duration = Duration::from_secs(120);
+
 #[test]
 fn campaign_controls_wait_without_stalling_formation_or_reads() {
-    // The test driver runs outside the only worker, so its timeout can report
+    // The test driver runs outside the only worker, so its deadline can report
     // a regression even when a synchronous flock parks that worker forever.
+    // The deadline is only a hang guard, never a speed assertion: a correct
+    // run's outcome is fixed by ordering alone (the read completes while the
+    // flock is still held), so the bound sits far above any instrumented
+    // (coverage) run and fires only when the worker never progresses.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
@@ -104,7 +111,7 @@ fn campaign_controls_wait_without_stalling_formation_or_reads() {
         prove_progress().await;
         finished_tx.send(()).unwrap();
     });
-    let result = finished_rx.recv_timeout(Duration::from_secs(5));
+    let result = finished_rx.recv_timeout(HANG_GUARD);
     // A regressed worker cannot unwind; do not let runtime shutdown hide the
     // bounded failure by waiting forever for that worker.
     runtime.shutdown_background();
@@ -221,11 +228,10 @@ async fn prove_progress() {
                 .await
         })
     };
-    let response = tokio::time::timeout(Duration::from_millis(500), read)
-        .await
-        .expect("unrelated read stalled behind campaign flock")
-        .unwrap()
-        .unwrap();
+    // The flock is still held: the read can only complete here if waiting on
+    // it parks no worker. A stalled worker never gets here; the hang guard
+    // reports it.
+    let response = read.await.unwrap().unwrap();
     assert_eq!(response.into_inner().campaigns.len(), 2);
     release_flock.send(()).unwrap();
     holder.join().unwrap();
