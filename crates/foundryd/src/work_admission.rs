@@ -1930,7 +1930,9 @@ mod tests {
                 .iter()
                 .any(|event| event.event_type == kind && matches(event))
         };
-        tokio::time::timeout(Duration::from_secs(5), async {
+        // A hang guard only, never a speed assertion: this takes over 3 s under
+        // tarpaulin's ptrace instrumentation alone, and longer on a loaded host.
+        tokio::time::timeout(Duration::from_secs(120), async {
             loop {
                 h.scheduler.tick().await;
                 let steered = h.effects.lock().unwrap().iter().find_map(|event| {
