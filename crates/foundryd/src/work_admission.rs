@@ -2930,7 +2930,9 @@ mod tests {
                 .iter()
                 .any(|event| event.event_type == kind && matches(event))
         };
-        tokio::time::timeout(Duration::from_secs(5), async {
+        // A hang guard only, never a speed assertion: under tarpaulin's ptrace
+        // instrumentation in a full run this outlasts 5 s on a correct run.
+        tokio::time::timeout(Duration::from_secs(120), async {
             loop {
                 h.scheduler.tick().await;
                 if started(EventType::InitiativeAdvanceRequested, &|event| {
@@ -3061,7 +3063,9 @@ mod tests {
                     && event.payload_str("campaign") == Some(member)
             })
         };
-        tokio::time::timeout(Duration::from_secs(5), async {
+        // A hang guard only, never a speed assertion: under tarpaulin's ptrace
+        // instrumentation in a full run this outlasts 5 s on a correct run.
+        tokio::time::timeout(Duration::from_secs(120), async {
             while !advanced("beta-port") {
                 h.scheduler.tick().await;
                 tokio::time::sleep(Duration::from_millis(10)).await;
