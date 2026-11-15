@@ -8,7 +8,7 @@
 //! | --- | --- |
 //! | Cargo | bare and `^` (caret), `~`, `=`, `<`, `<=`, `>`, `>=`, `*` wildcards, comma-joined |
 //! | Hex | `~>`, `==`, `!=`, `<`, `<=`, `>`, `>=`, joined by `and` / `or` |
-//! | npm | `^`, `~`, x-ranges, hyphen ranges, comparators, `||` |
+//! | npm | `^`, `~`, x-ranges, hyphen ranges, comparators, `\|\|` |
 //! | PyPI | PEP 440: `~=`, `==` (with `.*`), `!=`, `<`, `<=`, `>`, `>=`, `===` |
 //! | Gradle catalog | exact versions, `1.+` prefixes, Maven ranges `[1.0,2.0)` |
 //! | SwiftPM | `from:` / `upToNextMajor`, `upToNextMinor`, `exact:`, `a..<b`, `a...b` |
