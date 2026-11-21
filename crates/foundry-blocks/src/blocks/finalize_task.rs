@@ -79,8 +79,7 @@ fn archive_proof(worktree: &Path, destination: &Path) -> Result<Option<String>> 
 /// A fresh per-attempt evidence directory under the run's trace. Proof and
 /// the unlanded-file mirror of one finalization share it.
 fn attempt_evidence_dir(trace_id: &str) -> PathBuf {
-    foundry_sdk::paths::foundry_home()
-        .join("evidence")
+    foundry_sdk::paths::evidence_dir()
         .join(trace_id)
         .join(uuid::Uuid::new_v4().to_string())
 }
@@ -2067,8 +2066,7 @@ mod tests {
         let evidence = Path::new(payload["proof_evidence"].as_str().unwrap());
         assert!(
             evidence.starts_with(
-                foundry_sdk::paths::foundry_home()
-                    .join("evidence")
+                foundry_sdk::paths::evidence_dir()
                     .join(trigger.trace_id.as_ref().unwrap_or(&trigger.id))
             )
         );
@@ -2315,8 +2313,7 @@ mod tests {
         let attempt = archive.parent().unwrap();
         assert!(
             attempt.starts_with(
-                foundry_sdk::paths::foundry_home()
-                    .join("evidence")
+                foundry_sdk::paths::evidence_dir()
                     .join(trigger.trace_id.as_ref().unwrap_or(&trigger.id))
             ),
             "{}",

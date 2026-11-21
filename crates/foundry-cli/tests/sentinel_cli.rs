@@ -128,6 +128,7 @@ fn run_foundry(
         .arg(addr)
         .args(args)
         .env("HOME", home)
+        .env_remove("FOUNDRY_HOME")
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("FOUNDRY_SENTINELS_PATH", sentinels_path)
         .output()

@@ -31,7 +31,7 @@ pub const GATE_LOG_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 /// this tree must stay small.
 pub const GATE_LOG_MAX_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
 
-/// Where failed-gate logs go: `~/.foundry/evidence/gate-logs`.
+/// Where failed-gate logs go: `{foundry_home}/evidence/gate-logs`.
 ///
 /// Test builds (`cfg(test)` or the `test-support` feature) use a directory
 /// under the system temporary directory instead, so test suites that drive
@@ -40,7 +40,7 @@ pub fn default_gate_log_root() -> PathBuf {
     if cfg!(any(test, feature = "test-support")) {
         std::env::temp_dir().join("foundry-test-gate-logs")
     } else {
-        foundry_sdk::paths::foundry_home().join("evidence").join("gate-logs")
+        foundry_sdk::paths::evidence_dir().join("gate-logs")
     }
 }
 

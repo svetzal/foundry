@@ -107,6 +107,17 @@ Do not run `foundryd` as root. It needs the same repositories, agent
 credentials, GitHub credentials, and `~/.foundry` state as the user who owns the
 workspaces.
 
+### Where Foundry keeps its state
+
+Foundry keeps all of its state in one directory, the Foundry home:
+`~/.foundry` by default. Set `FOUNDRY_HOME` to put it somewhere else, for
+example on a data disk (`FOUNDRY_HOME=/srv/work/foundry`). Every default path
+moves with it, including task worktrees and the evidence store, which are the
+largest parts. Set it for the daemon and for your shell, so offline commands
+read the same files. A per-path variable such as `FOUNDRY_REGISTRY_PATH` still
+wins. To move an existing home, follow "Put Foundry state on a data disk" in
+[`systemd/README.md`](../../../systemd/README.md).
+
 ## Register a Project
 
 Open another terminal and add a Git checkout:

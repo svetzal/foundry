@@ -1,9 +1,11 @@
 //! Foundry well-known path helpers.
 //!
-//! Centralises all `~/.foundry/*` path resolution so that every binary uses
-//! identical env-var override logic.
+//! Centralises all Foundry home path resolution so that every binary uses
+//! identical env-var override logic. The home is `~/.foundry` unless
+//! `FOUNDRY_HOME` relocates it (see [`foundry_home`]).
 
 use std::env;
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 /// Default foundryd listen address used when no startup override is configured.
@@ -12,17 +14,47 @@ pub const DEFAULT_DAEMON_LISTEN_ADDR: &str = "127.0.0.1:50051";
 /// Default foundry CLI daemon URL used when no client override is configured.
 pub const DEFAULT_DAEMON_URL: &str = "http://127.0.0.1:50051";
 
-/// Returns the Foundry home directory (`~/.foundry` by default).
+/// Environment variable that relocates the whole Foundry home.
+pub const FOUNDRY_HOME_ENV: &str = "FOUNDRY_HOME";
+
+/// Returns the Foundry home directory.
+///
+/// `FOUNDRY_HOME` when it is set and not empty, otherwise `$HOME/.foundry`.
+/// Every default path in this module is under it, so one variable moves all
+/// of Foundry's state, for example onto a host's data disk. The per-path
+/// overrides such as `FOUNDRY_REGISTRY_PATH` still win over it.
 pub fn foundry_home() -> PathBuf {
-    let home = env::var("HOME").unwrap_or_else(|e| {
-        // Best-effort: HOME is expected to be set in every real environment; falling
-        // back to "." keeps foundry_home() infallible, but the resulting path would be
-        // process-cwd-relative rather than the intended ~/.foundry, so this is worth
-        // surfacing rather than swallowing.
-        tracing::warn!(error = %e, "HOME env var unavailable; foundry_home() falling back to \".\"");
-        ".".to_string()
-    });
-    PathBuf::from(format!("{home}/.foundry"))
+    resolve_foundry_home(env::var_os(FOUNDRY_HOME_ENV), || {
+        env::var("HOME").unwrap_or_else(|e| {
+            // Best-effort: HOME is expected to be set in every real environment; falling
+            // back to "." keeps foundry_home() infallible, but the resulting path would be
+            // process-cwd-relative rather than the intended ~/.foundry, so this is worth
+            // surfacing rather than swallowing.
+            tracing::warn!(error = %e, "HOME env var unavailable; foundry_home() falling back to \".\"");
+            ".".to_string()
+        })
+    })
+}
+
+/// The Foundry home for an explicit `FOUNDRY_HOME` value, falling back to
+/// `<home>/.foundry`. An empty value counts as unset, so a bare
+/// `FOUNDRY_HOME=` line in an environment file cannot put state in the
+/// process's working directory.
+fn resolve_foundry_home(explicit: Option<OsString>, home: impl FnOnce() -> String) -> PathBuf {
+    match explicit {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => PathBuf::from(home()).join(".foundry"),
+    }
+}
+
+/// Returns the evidence store root: `{foundry_home}/evidence`.
+///
+/// Finalize Task archives each attempt's proof and unlanded `.foundry` files
+/// under `{evidence_dir}/{trace_id}/{attempt}/`, and failed-gate logs go to
+/// `{evidence_dir}/gate-logs/`. The daemon prunes old trace directories
+/// (`FOUNDRY_EVIDENCE_RETENTION_DAYS`); gate logs keep their own retention.
+pub fn evidence_dir() -> PathBuf {
+    foundry_home().join("evidence")
 }
 
 /// Returns the configured foundryd listen address, if any.
@@ -293,7 +325,7 @@ pub fn triage_dir() -> PathBuf {
 
 /// Returns the directory holding per-session agent transcript JSONL files.
 ///
-/// Defaults to `$HOME/.foundry/agent-sessions`.
+/// Defaults to `{foundry_home}/agent-sessions`.
 pub fn agent_sessions_dir() -> PathBuf {
     foundry_home().join("agent-sessions")
 }
@@ -321,14 +353,55 @@ pub fn reconcile_dir() -> PathBuf {
 mod tests {
     use super::*;
 
+    // We do not mutate env in tests (Rust 2024 makes env::set_var unsafe and
+    // racy across the test binary's parallel runners). The defaults are
+    // asserted against `foundry_home()`, so they hold whether or not the shell
+    // exports FOUNDRY_HOME; a test whose own per-path override is exported
+    // skips rather than fight the harness.
+
+    #[test]
+    fn foundry_home_defaults_to_dot_foundry_under_home() {
+        assert_eq!(
+            resolve_foundry_home(None, || "/home/u".to_string()),
+            PathBuf::from("/home/u/.foundry")
+        );
+    }
+
+    #[test]
+    fn foundry_home_env_relocates_the_whole_home() {
+        assert_eq!(
+            resolve_foundry_home(Some("/srv/work/foundry".into()), || unreachable!()),
+            PathBuf::from("/srv/work/foundry")
+        );
+    }
+
+    #[test]
+    fn an_empty_foundry_home_counts_as_unset() {
+        assert_eq!(
+            resolve_foundry_home(Some(OsString::new()), || "/home/u".to_string()),
+            PathBuf::from("/home/u/.foundry")
+        );
+    }
+
+    #[test]
+    fn foundry_home_follows_the_environment() {
+        match env::var_os(FOUNDRY_HOME_ENV).filter(|dir| !dir.is_empty()) {
+            Some(dir) => assert_eq!(foundry_home(), PathBuf::from(dir)),
+            None => assert!(foundry_home().ends_with(".foundry")),
+        }
+    }
+
+    #[test]
+    fn evidence_dir_is_under_foundry_home() {
+        assert_eq!(evidence_dir(), foundry_home().join("evidence"));
+    }
+
     #[test]
     fn daemon_lock_path_defaults_under_foundry_home_when_env_unset() {
         if env::var("FOUNDRYD_LOCK_PATH").is_ok() {
             return;
         }
-        let path = daemon_lock_path();
-        let s = path.to_string_lossy();
-        assert!(s.ends_with(".foundry/foundryd.lock"), "got: {s}");
+        assert_eq!(daemon_lock_path(), foundry_home().join("foundryd.lock"));
     }
 
     #[test]
@@ -336,9 +409,7 @@ mod tests {
         if env::var("FOUNDRY_TRIAGE_DIR").is_ok() {
             return;
         }
-        let dir = triage_dir();
-        let s = dir.to_string_lossy();
-        assert!(s.ends_with(".foundry/triage"), "got: {s}");
+        assert_eq!(triage_dir(), foundry_home().join("triage"));
     }
 
     #[test]
@@ -346,16 +417,12 @@ mod tests {
         if env::var("FOUNDRY_WORK_ITEMS_PATH").is_ok() {
             return;
         }
-        let path = work_items_path();
-        let s = path.to_string_lossy();
-        assert!(s.ends_with(".foundry/work-items.json"), "got: {s}");
+        assert_eq!(work_items_path(), foundry_home().join("work-items.json"));
     }
 
     #[test]
     fn agent_sessions_dir_is_under_foundry_home() {
-        let dir = agent_sessions_dir();
-        let s = dir.to_string_lossy();
-        assert!(s.ends_with(".foundry/agent-sessions"), "got: {s}");
+        assert_eq!(agent_sessions_dir(), foundry_home().join("agent-sessions"));
     }
 
     #[test]
@@ -363,9 +430,7 @@ mod tests {
         if env::var("FOUNDRY_OPS_DIGESTS_DIR").is_ok() {
             return;
         }
-        let dir = ops_digests_dir();
-        let s = dir.to_string_lossy();
-        assert!(s.ends_with(".foundry/ops-digests"), "got: {s}");
+        assert_eq!(ops_digests_dir(), foundry_home().join("ops-digests"));
     }
 
     #[test]
@@ -383,30 +448,20 @@ mod tests {
         if env::var("FOUNDRY_SUPPLY_CHAIN_DIR").is_ok() {
             return;
         }
-        let dir = supply_chain_dir();
-        let s = dir.to_string_lossy();
-        assert!(s.ends_with(".foundry/supply-chain"), "got: {s}");
+        assert_eq!(supply_chain_dir(), foundry_home().join("supply-chain"));
     }
 
     #[test]
     fn ops_watermark_path_is_under_foundry_home() {
-        let path = ops_watermark_path();
-        let s = path.to_string_lossy();
-        assert!(s.ends_with(".foundry/ops-digest.watermark"), "got: {s}");
+        assert_eq!(ops_watermark_path(), foundry_home().join("ops-digest.watermark"));
     }
 
     #[test]
     fn digests_dir_defaults_under_foundry_home_when_env_unset() {
-        // We do not mutate env in tests (Rust 2024 makes env::set_var unsafe
-        // and racy across the test binary's parallel runners). If a CI shell
-        // exports FOUNDRY_DIGESTS_DIR for some reason, skip the assertion
-        // rather than fight the harness.
         if env::var("FOUNDRY_DIGESTS_DIR").is_ok() {
             return;
         }
-        let dir = digests_dir();
-        let s = dir.to_string_lossy();
-        assert!(s.ends_with(".foundry/digests"), "got: {s}");
+        assert_eq!(digests_dir(), foundry_home().join("digests"));
     }
 
     #[test]

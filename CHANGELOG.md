@@ -16,6 +16,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
   result line leads with the warning. `Generate Summary` records the new
   `maintenance_summary_written` event, whose `fleet_failure` forces an ops
   digest with a P0 `maintenance_fleet_failure` anomaly.
+- `FOUNDRY_HOME` relocates the whole Foundry home (default `~/.foundry`), so a
+  host can keep worktrees, evidence, traces and the ledger on a data disk
+  instead of the root filesystem. Every default path moves with it; per-path
+  variables such as `FOUNDRY_REGISTRY_PATH` still win, and an empty value
+  counts as unset. `scripts/dev-home.sh` and `scripts/migrate-event-names.sh`
+  honour it, and `scripts/build-linux-release.sh` points it at its temporary
+  gate state so release gates never write into the production home.
+  `systemd/README.md` describes how to move an existing home.
 
 ### Fixed
 

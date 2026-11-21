@@ -163,6 +163,7 @@ fn foundry_command(home: &Path, daemon: &Daemon, addr: &str, args: &[&str]) -> C
         .arg(addr)
         .args(args)
         .env("HOME", home)
+        .env_remove("FOUNDRY_HOME")
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("FOUNDRY_WORK_ITEMS_PATH", &daemon.ledger)
         .env("FOUNDRY_PACING_PATH", &daemon.pacing.limits)

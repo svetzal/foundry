@@ -29,9 +29,13 @@ git -C "$REPO" fetch -q --tags origin
 git -C "$REPO" worktree add -q --detach "$WT" "$TAG"
 cd "$WT"
 
-# Gate fixtures must not wait for or read the production campaign/ledger stores.
+# Gate fixtures must not wait for or read the production campaign/ledger stores,
+# nor write evidence into the production home. FOUNDRY_HOME moves every default
+# path; the explicit overrides below also beat a per-path override inherited
+# from the operator's shell.
 GATE_STATE="$WORK/gate-state"
 mkdir -p "$GATE_STATE"
+export FOUNDRY_HOME="$GATE_STATE/home"
 export FOUNDRY_CAMPAIGNS_PATH="$GATE_STATE/campaigns.json"
 export FOUNDRY_WORK_ITEMS_PATH="$GATE_STATE/work-items.json"
 export FOUNDRY_WORKTREES_DIR="$GATE_STATE/worktrees"

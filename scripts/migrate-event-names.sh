@@ -2,9 +2,9 @@
 # Migrate historical event and trace files to the v0.17.0 event-type taxonomy.
 #
 # Rewrites pre-0.17.0 event names in:
-#   * $FOUNDRY_EVENTS_DIR/*.jsonl      (default ~/.foundry/events)
+#   * $FOUNDRY_EVENTS_DIR/*.jsonl      (default $FOUNDRY_HOME/events, ~/.foundry/events)
 #   * $FOUNDRY_TRACES_DIR/YYYY-MM-DD/*.json
-#                                      (default ~/.foundry/traces)
+#                                      (default $FOUNDRY_HOME/traces, ~/.foundry/traces)
 #
 # For every renamed event, Event::id is recomputed (SHA-256 over
 # event_type || project || occurred_at_rfc3339 || compact_json_payload —
@@ -37,8 +37,8 @@ if [ "${1-}" = "--dry-run" ]; then
   DRY_RUN="true"
 fi
 
-EVENTS_DIR="${FOUNDRY_EVENTS_DIR:-$HOME/.foundry/events}"
-TRACES_DIR="${FOUNDRY_TRACES_DIR:-$HOME/.foundry/traces}"
+EVENTS_DIR="${FOUNDRY_EVENTS_DIR:-${FOUNDRY_HOME:-$HOME/.foundry}/events}"
+TRACES_DIR="${FOUNDRY_TRACES_DIR:-${FOUNDRY_HOME:-$HOME/.foundry}/traces}"
 
 if [ "$DRY_RUN" = "true" ]; then
   echo "[dry-run] no files will be modified" >&2

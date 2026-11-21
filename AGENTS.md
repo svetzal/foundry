@@ -138,6 +138,13 @@ For Linux infrastructure, install the release tarball binaries to
 agent CLI, repo checkout, and `~/.foundry` state as the user who owns the
 workspaces.
 
+To keep Foundry's state on a data disk rather than the root filesystem, set
+`FOUNDRY_HOME` (for example `FOUNDRY_HOME=/srv/work/foundry`) in
+`~/.config/foundry/foundryd.env` and in the operating user's shell profile.
+Worktrees, evidence, traces, events and the ledger then all live there. Move an
+existing home only while the daemon is drained and stopped; the procedure is in
+`systemd/README.md` under "Put Foundry state on a data disk".
+
 See `systemd/README.md` and `systemd/foundryd.service`.
 
 ## Quality Gates
@@ -999,8 +1006,11 @@ Foundry already captures rich event data about agent activity — iterations, ma
 
 ## Environment Variables
 
+Every `~/.foundry` default below is under `FOUNDRY_HOME` when that is set.
+
 | Variable | Default | Purpose |
 |----------|---------|---------|
+| `FOUNDRY_HOME` | `~/.foundry` | The whole Foundry home. Every default path below, and those with no variable of their own (evidence, agent sessions, tool logs, sandboxes, the ops-digest watermark), moves with it. A per-path variable still wins. An empty value counts as unset. Set it for the daemon **and** for the operator's shell, so offline CLI commands read the same files. |
 | `FOUNDRYD_LOCK_PATH` | `~/.foundry/foundryd.lock` | `foundryd` single-instance lock file (holds the running daemon's pid) |
 | `FOUNDRY_REGISTRY_PATH` | `~/.foundry/registry.json` | Project registry file |
 | `FOUNDRY_CAMPAIGNS_PATH` | `~/.foundry/campaigns.json` | Durable campaign store |

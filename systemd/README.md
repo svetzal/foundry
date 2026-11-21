@@ -80,6 +80,43 @@ FOUNDRY_OPS_EVENTS_DIR=/home/svetzal/Work/Operations/Events/intake
 
 Leave the file absent if the default `~/.foundry/*` paths are acceptable.
 
+### Put Foundry state on a data disk
+
+`FOUNDRY_HOME` moves the whole Foundry home: the registry, ledger, events,
+traces, worktrees, preserved bundles and evidence. Task worktrees and build
+evidence are large, so on a host with a small root filesystem put the home on
+the data disk:
+
+```text
+FOUNDRY_HOME=/srv/work/foundry
+```
+
+Set the same value in the operating user's shell profile (for example
+`~/.profile`), so `foundry --offline …` and the scripts read the same files as
+the daemon. A per-path variable such as `FOUNDRY_REGISTRY_PATH` still wins over
+`FOUNDRY_HOME`.
+
+To move an existing home:
+
+1. Drain the daemon: `foundry pacing drain --timeout 30m`. Do this outside the
+   02:00 nightly window.
+2. Stop the daemon: `systemctl --user stop foundryd`.
+3. Copy the home, then check the copy:
+   `rsync -aH ~/.foundry/ /srv/work/foundry/`.
+4. Move the old home aside and leave a symbolic link in its place:
+   `mv ~/.foundry ~/.foundry.pre-move && ln -s /srv/work/foundry ~/.foundry`.
+   The ledger, events and traces record absolute paths (worktrees, preserved
+   bundles, evidence) under `~/.foundry`. The link keeps those paths valid.
+5. Add `FOUNDRY_HOME=/srv/work/foundry` to `~/.config/foundry/foundryd.env`
+   and to the shell profile.
+6. Start the daemon and resume: `systemctl --user start foundryd`, then
+   `foundry pacing resume --lane all`.
+7. Check the daemon: `foundry status`, `foundry queue`. When a nightly has
+   run, remove `~/.foundry.pre-move`.
+
+To roll back, stop the daemon, remove `FOUNDRY_HOME` from both files, replace
+the link with the directory, and start the daemon.
+
 Only use a non-loopback `FOUNDRYD_LISTEN_ADDR` on a trusted LAN or VPN. The
 daemon's gRPC control plane is plaintext in this slice.
 
@@ -128,5 +165,5 @@ Use `journalctl` for service logs:
 journalctl --user -u foundryd -f
 ```
 
-Foundry workflow state is stored under `~/.foundry` unless overridden with
+Foundry workflow state is stored under `~/.foundry` (or `$FOUNDRY_HOME`) unless overridden with
 environment variables.

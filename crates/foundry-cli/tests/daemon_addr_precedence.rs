@@ -92,6 +92,7 @@ fn run_foundry(
     command
         .args(args)
         .env("HOME", home)
+        .env_remove("FOUNDRY_HOME")
         .env("XDG_CONFIG_HOME", home.join(".config"));
     if let Some(addr) = env_addr {
         command.env("FOUNDRY_DAEMON_ADDR", addr);

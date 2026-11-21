@@ -192,6 +192,7 @@ fn run(daemon: &Daemon, project: bool) -> tokio::process::Child {
     }
     command
         .env("HOME", daemon.state.path())
+        .env_remove("FOUNDRY_HOME")
         .env("XDG_CONFIG_HOME", daemon.state.path().join("config"));
     command
         .kill_on_drop(true)

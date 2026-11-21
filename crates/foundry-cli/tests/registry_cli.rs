@@ -242,6 +242,7 @@ fn run_foundry(
         .arg(addr)
         .args(args)
         .env("HOME", home)
+        .env_remove("FOUNDRY_HOME")
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("FOUNDRY_REGISTRY_PATH", registry_path)
         .output()
@@ -948,6 +949,32 @@ fn offline_json_list_returns_empty_array_for_empty_registry() {
         serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
         serde_json::json!([])
     );
+}
+
+/// `FOUNDRY_HOME` moves the whole Foundry home: with no per-path override, the
+/// offline registry is read from under it, and the `$HOME/.foundry` copy (here
+/// unreadable bytes) is never consulted.
+#[test]
+fn foundry_home_relocates_the_default_registry() {
+    let home = tempfile::tempdir().unwrap();
+    let (_trap, trap_bytes) = seed_client_registry_trap(home.path());
+    let data_disk = tempfile::tempdir().unwrap();
+    let relocated = seed_offline_registry(data_disk.path());
+    let foundry_home = relocated.parent().unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_foundry"))
+        .args(["--offline", "registry", "list", "--json"])
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .env("FOUNDRY_HOME", foundry_home)
+        .env_remove("FOUNDRY_REGISTRY_PATH")
+        .output()
+        .expect("run foundry binary");
+
+    assert_command_succeeded(&output);
+    let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(listed[0]["name"], "offline-seeded", "{listed}");
+    assert_eq!(std::fs::read(home.path().join(".foundry/registry.json")).unwrap(), trap_bytes);
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # dev-home.sh — seed the development Foundry home with a synthetic project.
 #
-# Creates ~/.foundry/sandbox/ with a bare origin and a checkout of `sample-rs`
-# (a zero-dependency Rust crate with a charter, gates and one test), then
+# Creates $FOUNDRY_HOME/sandbox/ (default ~/.foundry/sandbox/) with a bare
+# origin and a checkout of `sample-rs` (a zero-dependency Rust crate with a
+# charter, gates and one test), then
 # registers it with the development daemon. Idempotent: re-running changes
 # nothing that already exists. Never touches a daemon other than FOUNDRY_ADDR.
 set -euo pipefail
 
 ADDR="${FOUNDRY_ADDR:-http://127.0.0.1:50051}"
-HOME_DIR="${HOME}/.foundry"
+HOME_DIR="${FOUNDRY_HOME:-${HOME}/.foundry}"
 SANDBOX="${HOME_DIR}/sandbox"
 ORIGIN="${SANDBOX}/origin/sample-rs.git"
 CHECKOUT="${SANDBOX}/sample-rs"

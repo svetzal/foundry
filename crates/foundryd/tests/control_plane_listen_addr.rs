@@ -36,6 +36,7 @@ fn reserve_non_default_port() -> u16 {
 fn spawn_foundryd(home: &TempDir, listen_addr: &str) -> Result<ChildGuard, io::Error> {
     let child = Command::new(env!("CARGO_BIN_EXE_foundryd"))
         .env("HOME", home.path())
+        .env_remove("FOUNDRY_HOME")
         .env("XDG_CONFIG_HOME", home.path().join(".config"))
         .env("FOUNDRYD_LISTEN_ADDR", listen_addr)
         .stdout(Stdio::null())
