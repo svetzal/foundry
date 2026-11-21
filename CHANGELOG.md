@@ -27,6 +27,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Finalize Task no longer copies build output and dependency trees into the
+  evidence store. Unlanded `.foundry` files inside a `target`,
+  `coverage-target`, `_build`, `deps`, `node_modules` (or similar regenerable)
+  directory, and any file over 64 MiB, are left out of the `worktree` mirror.
+  `worktree-skipped.json` beside the mirror records each such directory with
+  its file count and bytes, and each oversized file with its size. On
+  mojility-ops-01 coverage targets and an integration checkout under
+  `.foundry` had grown `~/.foundry/evidence` to 37G; single traces held 10G.
+  When only build output was left unlanded, `uncommitted_artifacts` now names
+  an empty mirror instead of being absent.
 - A failed agent session now records what the agent CLI said. `session_failure`
   on `execution_completed` and `gate_verification_completed` gains `detail`, a
   bounded, redacted tail of the CLI's stderr, or of the provider's error

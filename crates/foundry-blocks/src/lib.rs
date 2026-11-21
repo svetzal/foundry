@@ -18,6 +18,7 @@ pub mod blocks;
 pub mod campaign_gates;
 pub mod charter;
 pub mod dependency_updates;
+pub(crate) mod evidence_archive;
 pub mod gate_file;
 pub mod gate_runner;
 pub mod gateway;

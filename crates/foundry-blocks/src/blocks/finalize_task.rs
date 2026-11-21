@@ -11,6 +11,9 @@ use foundry_sdk::payload::{
 use foundry_sdk::registry::{ProjectEntry, Registry};
 use foundry_sdk::task_block::{BlockKind, TaskBlock};
 
+use crate::evidence_archive::{
+    ARCHIVE_FILE_CAP_BYTES, SKIPPED_RECORD_FILE, UnlandedFile, plan_archive,
+};
 use crate::gateway::{ProcessShellGateway, ShellGateway};
 use crate::git_hook_timeout::{GitCommandTimedOut, GitHookTimeout};
 use crate::workspace::{
@@ -88,28 +91,56 @@ fn attempt_evidence_dir(trace_id: &str) -> PathBuf {
 /// under `.foundry` that did not land, at their repository-relative paths.
 const UNCOMMITTED_ARCHIVE_DIR: &str = "worktree";
 
-/// Copy `files` (repository-relative) from `worktree` into `destination`,
-/// keeping their relative paths. Returns `destination` when anything was
-/// copied.
+/// Copy `files` (repository-relative) from `worktree` into the `worktree`
+/// mirror under the attempt's `evidence` directory, keeping their relative
+/// paths. Returns the mirror when any file was unlanded.
 ///
 /// This is the raw record of what cleanup removes or restores, proof included,
-/// so nothing under `.foundry` disappears unrecorded. `archive_proof`
-/// separately keeps the interpreted, portable copy of the proof.
+/// so nothing under `.foundry` disappears unrecorded. Build output, dependency
+/// trees and oversized files are not copied ([`plan_archive`]); they are
+/// recorded instead, path and bytes, in `worktree-skipped.json` beside the
+/// mirror. `archive_proof` separately keeps the interpreted, portable copy of
+/// the proof.
 fn archive_uncommitted(
     worktree: &Path,
     files: &[String],
-    destination: &Path,
+    evidence: &Path,
 ) -> Result<Option<String>> {
     if files.is_empty() {
         return Ok(None);
     }
-    for relative in files {
+    let measured = files
+        .iter()
+        .map(|path| {
+            let bytes = std::fs::symlink_metadata(worktree.join(path))?.len();
+            Ok(UnlandedFile {
+                path: path.clone(),
+                bytes,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let plan = plan_archive(&measured, ARCHIVE_FILE_CAP_BYTES);
+    let destination = evidence.join(UNCOMMITTED_ARCHIVE_DIR);
+    std::fs::create_dir_all(&destination)?;
+    for relative in &plan.copy {
         let source = worktree.join(relative);
         let target = destination.join(relative);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
         copy_preserving_symlink(&source, &target)?;
+    }
+    if !plan.skipped.is_empty() {
+        std::fs::write(
+            evidence.join(SKIPPED_RECORD_FILE),
+            serde_json::to_vec_pretty(&plan.skipped)?,
+        )?;
+        tracing::info!(
+            files = plan.skipped.files,
+            bytes = plan.skipped.bytes,
+            evidence = %evidence.display(),
+            "left build output and oversized files out of the evidence archive"
+        );
     }
     Ok(Some(destination.to_string_lossy().into_owned()))
 }
@@ -791,9 +822,9 @@ async fn commit_and_preserve_if_needed(
     let files = unlanded.all();
     let count = files.len();
     let source = worktree.to_path_buf();
-    let destination = evidence.join(UNCOMMITTED_ARCHIVE_DIR);
+    let evidence = evidence.to_path_buf();
     let uncommitted_artifacts =
-        tokio::task::spawn_blocking(move || archive_uncommitted(&source, &files, &destination))
+        tokio::task::spawn_blocking(move || archive_uncommitted(&source, &files, &evidence))
             .await??;
     if let Some(archive) = &uncommitted_artifacts {
         tracing::debug!(%project, count, %archive, "archived unlanded .foundry files before cleanup");
@@ -2152,6 +2183,88 @@ mod tests {
         assert_agent_evidence_archived(mirror);
         // Test fixture owns this evidence archive; this is not a worktree removal.
         std::fs::remove_dir_all(mirror.parent().unwrap()).unwrap();
+    }
+
+    /// The 2026-11 ops-01 incident: gates that build under `.foundry` (a
+    /// coverage target directory, an integration checkout's `deps` and
+    /// `_build`) put 37G into the evidence store. Their output is still
+    /// cleaned from the worktree, but it is recorded, not copied, while the
+    /// evidence beside it is copied as before.
+    #[tokio::test]
+    async fn build_output_under_dot_foundry_is_recorded_not_archived() {
+        let dir = tempfile::tempdir().unwrap();
+        let branch = "foundry-task/build-output-skipped";
+        let (checkout, worktree, _) = repo_with_task_branch(dir.path(), branch);
+        write_agent_evidence(&worktree);
+        let coverage = worktree.join(".foundry/coverage-target/debug/deps");
+        std::fs::create_dir_all(&coverage).unwrap();
+        std::fs::write(coverage.join("foundryd-1a2b"), vec![0_u8; 4096]).unwrap();
+        let build = worktree.join(".foundry/integration/app/deps/jason/_build");
+        std::fs::create_dir_all(&build).unwrap();
+        std::fs::write(build.join("a.beam"), "beam").unwrap();
+        std::fs::write(worktree.join(".foundry/integration/report.md"), "report").unwrap();
+        write_project_change(&worktree);
+
+        let result = finalize_block(&checkout)
+            .execute(&complete_trigger(&worktree, branch))
+            .await
+            .unwrap();
+        let payload = &result.events[0].payload;
+
+        assert_eq!(payload["landed"], true, "{payload}");
+        assert!(!worktree.exists(), "skipped build output must still be cleaned");
+        let mirror = unlanded_mirror(payload);
+        assert_agent_evidence_archived(mirror);
+        assert_eq!(
+            std::fs::read_to_string(mirror.join(".foundry/integration/report.md")).unwrap(),
+            "report"
+        );
+        assert!(!mirror.join(".foundry/coverage-target").exists());
+        assert!(!mirror.join(".foundry/integration/app/deps").exists());
+        let attempt = mirror.parent().unwrap();
+        let skipped: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(attempt.join("worktree-skipped.json")).unwrap())
+                .unwrap();
+        assert_eq!(skipped["files"], 2, "{skipped}");
+        assert_eq!(skipped["bytes"], 4100, "{skipped}");
+        assert_eq!(
+            skipped["directories"],
+            serde_json::json!([
+                {"path": ".foundry/coverage-target", "files": 1, "bytes": 4096},
+                {"path": ".foundry/integration/app/deps", "files": 1, "bytes": 4},
+            ])
+        );
+        // Test fixture owns this evidence archive; this is not a worktree removal.
+        std::fs::remove_dir_all(attempt).unwrap();
+    }
+
+    /// When every unlanded file is build output, the result still names the
+    /// (empty) mirror, and the record beside it says what was left out.
+    #[tokio::test]
+    async fn only_build_output_under_dot_foundry_still_records_the_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let branch = "foundry-task/only-build-output";
+        let (checkout, worktree, _) = repo_with_task_branch(dir.path(), branch);
+        std::fs::create_dir_all(worktree.join(".foundry/node_modules/x")).unwrap();
+        std::fs::write(worktree.join(".foundry/node_modules/x/index.js"), "js").unwrap();
+        write_project_change(&worktree);
+
+        let result = finalize_block(&checkout)
+            .execute(&complete_trigger(&worktree, branch))
+            .await
+            .unwrap();
+        let payload = &result.events[0].payload;
+
+        let mirror = unlanded_mirror(payload);
+        assert!(mirror.is_dir());
+        assert_eq!(std::fs::read_dir(mirror).unwrap().count(), 0);
+        let attempt = mirror.parent().unwrap();
+        let skipped: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(attempt.join("worktree-skipped.json")).unwrap())
+                .unwrap();
+        assert_eq!(skipped["directories"][0]["path"], ".foundry/node_modules");
+        // Test fixture owns this evidence archive; this is not a worktree removal.
+        std::fs::remove_dir_all(attempt).unwrap();
     }
 
     #[tokio::test]

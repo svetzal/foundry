@@ -198,10 +198,24 @@ did not land to
 `~/.foundry/evidence/<trace-id>/<unique-attempt>/worktree/<repository path>`.
 This includes new files, gitignored files, and the executor's version of
 edited tracked files. The task result's `uncommitted_artifacts` field names that
-`worktree` directory. The field is absent when there was nothing to copy. Then
-Finalize Task restores the edited tracked files to HEAD and removes the other
-files. If a copy fails, finalization stops before it removes or restores a
-file.
+`worktree` directory. The field is absent when nothing under `.foundry/` was
+left unlanded. Then Finalize Task restores the edited tracked files to HEAD and
+removes the other files. If a copy fails, finalization stops before it removes
+or restores a file.
+
+Build output and dependency trees are not copied, because the next build makes
+them again. A file is left out when a directory on its path below `.foundry/`
+is named `target`, `coverage-target`, `_build`, `deps`, `node_modules`,
+`.next`, `.turbo`, `.venv`, `__pycache__`, `.pytest_cache`, `.mypy_cache`,
+`.ruff_cache`, `.gradle`, `.build` or `.dart_tool`. A file larger than 64 MiB
+is also left out: evidence files are much smaller (the gate runner keeps at
+most 8 MiB of each stream). What is left out is still recorded. When anything
+was left out, `worktree-skipped.json` beside the `worktree` directory lists
+each such directory with its file count and bytes, and each oversized file
+with its size, and gives the totals. Cleanup removes these files as before.
+Before this rule, gates that build under `.foundry/` (a coverage
+`CARGO_TARGET_DIR`, an integration checkout) put tens of gigabytes into the
+evidence store.
 
 So a task puts anything the project must keep in a normal project path, for
 example `docs/` or the test tree. Evidence under `.foundry/` lives in the

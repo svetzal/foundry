@@ -594,11 +594,13 @@ failure stops finalization before committing or cleanup.
 The proof and its logs are not project content. The rules for them are the
 rules for every file under `.foundry/` in a task worktree, described in
 [What lands from a task](workflow-formations.md#what-lands-from-a-task): nothing there is
-committed, and finalization copies all of it to
+committed, and finalization copies it to
 `~/.foundry/evidence/<trace-id>/<unique-attempt>/worktree/` before cleanup. The
 task result's `uncommitted_artifacts` field names that directory. It holds the
 raw proof and logs at their worktree paths, beside the portable proof archive
-in the parent directory. Evidence a campaign must keep in the repository goes
+in the parent directory. Build output and files over 64 MiB are recorded in
+`worktree-skipped.json` instead of copied. Evidence a campaign must keep in
+the repository goes
 in a normal project path, such as `docs/` or the test tree.
 
 New campaign tasks fail with a typed defect if the record is
