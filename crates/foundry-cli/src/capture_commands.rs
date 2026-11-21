@@ -14,9 +14,20 @@ fn tail(path: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// Where logs go without `--log-dir`: the agent session's scratch directory
+/// (`$FOUNDRY_SCRATCH_DIR/logs`) when Foundry set one, else
+/// `{foundry_home}/tool-logs`. An empty value counts as unset.
+fn default_log_dir(scratch: Option<std::ffi::OsString>) -> PathBuf {
+    match scratch {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir).join("logs"),
+        _ => foundry_sdk::paths::foundry_home().join("tool-logs"),
+    }
+}
+
 /// Preserve both streams and return the child's exit code, including failures.
 pub async fn capture(log_dir: Option<PathBuf>, command: Vec<String>) -> Result<i32> {
-    let directory = log_dir.unwrap_or_else(|| foundry_sdk::paths::foundry_home().join("tool-logs"));
+    let directory = log_dir
+        .unwrap_or_else(|| default_log_dir(std::env::var_os(foundry_sdk::paths::SCRATCH_DIR_ENV)));
     std::fs::create_dir_all(&directory)?;
     let id = format!(
         "{}-{}",
@@ -54,4 +65,16 @@ pub async fn run(log_dir: Option<PathBuf>, command: Vec<String>) -> Result<()> {
         std::process::exit(code);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_log_dir;
+
+    #[test]
+    fn logs_default_to_tool_logs_without_a_scratch_directory() {
+        let tool_logs = foundry_sdk::paths::foundry_home().join("tool-logs");
+        assert_eq!(default_log_dir(None), tool_logs);
+        assert_eq!(default_log_dir(Some("".into())), tool_logs);
+    }
 }

@@ -513,15 +513,26 @@ fn classify_commit_outcome(success: bool, stdout: &str, stderr: &str) -> CommitO
     }
 }
 
-/// Stage all changes and commit; returns the commit message on success, `None` when
-/// git reports nothing to commit (a successful no-op), and `Err` on real failures.
+/// Stage every change except those under `.foundry/` and commit; returns the
+/// commit message on success, `None` when nothing is left to commit (a
+/// successful no-op), and `Err` on real failures.
+///
+/// Staging goes through [`crate::workspace::stage_all_but_foundry_dir`], so a
+/// maintenance commit never picks up `.foundry/` content, whatever the
+/// project's `.gitignore` says. From 2026-10-13 a plain `git add -A` here
+/// committed thousands of agent logs under `.foundry/logs` into projects
+/// that did not ignore it.
 async fn commit_changes(
     shell: &dyn ShellGateway,
     path: &std::path::Path,
     project: &str,
     event_type: &EventType,
 ) -> anyhow::Result<Option<String>> {
-    shell.run(path, "git", &["add", "-A"], None, None).await?;
+    crate::workspace::stage_all_but_foundry_dir(shell, path).await?;
+    if !crate::workspace::has_staged_changes(shell, path).await? {
+        tracing::info!(%project, "only .foundry/ changes left; nothing to commit");
+        return Ok(None);
+    }
 
     let commit_msg = commit_message(event_type, project);
     let commit = shell.run(path, "git", &["commit", "-m", &commit_msg], None, None).await?;
@@ -631,9 +642,24 @@ mod tests {
         })
     }
 
+    /// A fake sequence whose first two results answer `status` and `add`,
+    /// with the staging step's `reset`, its listing of deleted `.foundry`
+    /// files (none) and its staged-diff check (changes staged) inserted
+    /// after them.
+    fn staged_sequence(mut results: Vec<CommandResult>) -> Arc<FakeShellGateway> {
+        let staged = CommandResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 1,
+            success: false,
+        };
+        results.splice(2..2, [ok(""), ok(""), staged]);
+        FakeShellGateway::sequence(results)
+    }
+
     /// Fake sequence that simulates: status=dirty, add=ok, commit=ok, push=ok.
     fn dirty_sequence() -> Arc<FakeShellGateway> {
-        FakeShellGateway::sequence(vec![
+        staged_sequence(vec![
             // git status --porcelain: non-empty output = dirty
             CommandResult {
                 stdout: " M file.txt\n".to_string(),
@@ -867,7 +893,7 @@ mod tests {
     async fn remote_moved_and_clean_rebase_pushes() {
         let dir = dir_with_gate();
         let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
-        let shell = FakeShellGateway::sequence(vec![
+        let shell = staged_sequence(vec![
             ok(" M file.txt\n"),                                     // status
             ok(""),                                                  // add -A
             ok("[main abc1234] committed\n"),                        // commit
@@ -888,7 +914,7 @@ mod tests {
         assert_eq!(types, ["project_changes_committed", "project_changes_pushed"]);
         assert!(result.events[0].payload.get("push_failure").is_none());
         assert_eq!(
-            git_calls(&shell)[3..],
+            git_calls(&shell)[6..],
             [
                 "fetch origin main",
                 "merge --ff-only origin/main",
@@ -905,7 +931,7 @@ mod tests {
     async fn remote_moved_and_rebase_conflicts_records_push_rejected_diverged() {
         let dir = TempDir::new().unwrap();
         let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
-        let shell = FakeShellGateway::sequence(vec![
+        let shell = staged_sequence(vec![
             ok(" M file.txt\n"),
             ok(""),
             ok("[main abc1234] committed\n"),
@@ -933,7 +959,7 @@ mod tests {
     async fn failed_pre_push_fetch_records_remote_unavailable() {
         let dir = TempDir::new().unwrap();
         let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
-        let shell = FakeShellGateway::sequence(vec![
+        let shell = staged_sequence(vec![
             ok(" M file.txt\n"),
             ok(""),
             ok("[main abc1234] committed\n"),
@@ -954,7 +980,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let registry = registry_for("my-project", dir.path().to_str().unwrap(), false);
         // Only three calls needed: status, add, commit (no push).
-        let shell = FakeShellGateway::sequence(vec![
+        let shell = staged_sequence(vec![
             CommandResult {
                 stdout: " M file.txt\n".to_string(),
                 stderr: String::new(),
@@ -1062,7 +1088,7 @@ mod tests {
     async fn rebased_commits_without_gates_are_not_pushed() {
         let dir = TempDir::new().unwrap(); // no .hone-gates.json
         let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
-        let shell = FakeShellGateway::sequence(vec![
+        let shell = staged_sequence(vec![
             ok(" M file.txt\n"),
             ok(""),
             ok("[main abc1234] committed\n"),
@@ -1086,7 +1112,7 @@ mod tests {
     async fn rejected_push_is_recorded_and_never_forced() {
         let dir = TempDir::new().unwrap();
         let registry = registry_for("my-project", dir.path().to_str().unwrap(), true);
-        let shell = FakeShellGateway::sequence(vec![
+        let shell = staged_sequence(vec![
             ok(" M file.txt\n"),
             ok(""),
             ok("[main abc1234] committed\n"),
@@ -1180,6 +1206,92 @@ mod tests {
         );
     }
 
+    /// The 2026-10-13 regression, against real git: a maintenance run left
+    /// agent logs under `.foundry/logs` in a project that does not ignore
+    /// `.foundry/`. The maintenance commit carries the project change and
+    /// nothing under `.foundry/`, except the deletion of a file HEAD tracked
+    /// there, so a project can clean up what an earlier run committed.
+    #[tokio::test]
+    async fn real_git_maintenance_commit_never_stages_dot_foundry() {
+        let tmp = TempDir::new().unwrap();
+        let remote = tmp.path().join("remote.git");
+        let work = tmp.path().join("work");
+        let run = crate::blocks::test_helpers::git_repo::git;
+        run(tmp.path(), &["init", "--bare", "-b", "main", remote.to_str().unwrap()]);
+        run(tmp.path(), &["clone", remote.to_str().unwrap(), work.to_str().unwrap()]);
+        run(&work, &["config", "user.email", "test@example.com"]);
+        run(&work, &["config", "user.name", "Test"]);
+        run(&work, &["checkout", "-b", "main"]);
+        std::fs::write(work.join("Cargo.lock"), "old").unwrap();
+        std::fs::create_dir_all(work.join(".foundry/logs")).unwrap();
+        std::fs::write(work.join(".foundry/logs/committed-earlier.stdout.log"), "old log").unwrap();
+        std::fs::write(work.join(".foundry/proof.json"), "{}").unwrap();
+        run(&work, &["add", "-A"]);
+        run(&work, &["commit", "-m", "init with legacy .foundry content"]);
+        run(&work, &["push", "-u", "origin", "main"]);
+
+        // The maintenance agent's leftovers.
+        std::fs::write(work.join("Cargo.lock"), "bumped").unwrap();
+        std::fs::write(work.join(".foundry/logs/4242-1.stdout.log"), "cargo update").unwrap();
+        std::fs::write(work.join(".foundry/logs/4242-1.stderr.log"), "").unwrap();
+        std::fs::write(work.join(".foundry/proof.json"), "{\"edited\":true}").unwrap();
+        std::fs::remove_file(work.join(".foundry/logs/committed-earlier.stdout.log")).unwrap();
+
+        let registry = registry_for("my-project", work.to_str().unwrap(), true);
+        let block = CommitAndPush::with_gateways(
+            registry,
+            Arc::new(crate::blocks::test_helpers::git_repo::CleanProcessShellGateway),
+        );
+        let trigger = make_trigger_for(EventType::ProjectMaintenanceCompleted, "my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.summary.contains("pushed 1 commit(s)"), "{}", result.summary);
+        let changed = run(&remote, &["show", "--name-status", "--format=%s", "main"]);
+        assert_eq!(
+            changed.lines().filter(|l| !l.is_empty()).collect::<Vec<_>>(),
+            [
+                "chore(my-project): automated maintenance",
+                "D\t.foundry/logs/committed-earlier.stdout.log",
+                "M\tCargo.lock",
+            ],
+            "only the project change and the tracked deletion land"
+        );
+        assert_eq!(run(&remote, &["show", "main:.foundry/proof.json"]), "{}");
+    }
+
+    /// Only `.foundry/` content left after the agent: nothing to commit, and
+    /// the run is a successful no-op.
+    #[tokio::test]
+    async fn real_git_only_dot_foundry_changes_make_no_commit() {
+        let tmp = TempDir::new().unwrap();
+        let work = tmp.path().join("work");
+        let run = crate::blocks::test_helpers::git_repo::git;
+        run(tmp.path(), &["init", "-b", "main", work.to_str().unwrap()]);
+        run(&work, &["config", "user.email", "test@example.com"]);
+        run(&work, &["config", "user.name", "Test"]);
+        std::fs::write(work.join("README.md"), "init").unwrap();
+        run(&work, &["add", "-A"]);
+        run(&work, &["commit", "-m", "init"]);
+        let head = run(&work, &["rev-parse", "HEAD"]);
+        std::fs::create_dir_all(work.join(".foundry/logs")).unwrap();
+        std::fs::write(work.join(".foundry/logs/1.stdout.log"), "output").unwrap();
+
+        let registry = registry_for("my-project", work.to_str().unwrap(), false);
+        let block = CommitAndPush::with_gateways(
+            registry,
+            Arc::new(crate::blocks::test_helpers::git_repo::CleanProcessShellGateway),
+        );
+        let trigger = make_trigger_for(EventType::ProjectMaintenanceCompleted, "my-project");
+
+        let result = block.execute(&trigger).await.unwrap();
+
+        assert!(result.success, "{}", result.summary);
+        assert!(result.events.is_empty(), "no commit event: {:?}", result.events);
+        assert_eq!(run(&work, &["rev-parse", "HEAD"]), head);
+        assert_eq!(run(&work, &["diff", "--cached", "--name-only"]), "", "nothing left staged");
+    }
+
     #[test]
     fn sinks_on_includes_all_event_types() {
         let block = CommitAndPush::new(test_helpers::empty_registry());
@@ -1225,7 +1337,7 @@ mod tests {
     async fn inner_iteration_completed_commits_with_strategic_message() {
         let dir = TempDir::new().unwrap();
         let registry = registry_for("my-project", dir.path().to_str().unwrap(), false);
-        let shell = FakeShellGateway::sequence(vec![
+        let shell = staged_sequence(vec![
             CommandResult {
                 stdout: " M f\n".to_string(),
                 stderr: String::new(),
@@ -1285,7 +1397,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let registry = registry_for("my-project", dir.path().to_str().unwrap(), false);
         // status=dirty, add, commit (no push)
-        let shell = FakeShellGateway::sequence(vec![
+        let shell = staged_sequence(vec![
             CommandResult {
                 stdout: " M f\n".to_string(),
                 stderr: String::new(),
@@ -1320,7 +1432,7 @@ mod tests {
     async fn iterate_trigger_uses_iterate_commit_message() {
         let dir = TempDir::new().unwrap();
         let registry = registry_for("my-project", dir.path().to_str().unwrap(), false);
-        let shell = FakeShellGateway::sequence(vec![
+        let shell = staged_sequence(vec![
             CommandResult {
                 stdout: " M f\n".to_string(),
                 stderr: String::new(),
@@ -1354,7 +1466,7 @@ mod tests {
     async fn maintain_trigger_uses_maintenance_commit_message() {
         let dir = TempDir::new().unwrap();
         let registry = registry_for("my-project", dir.path().to_str().unwrap(), false);
-        let shell = FakeShellGateway::sequence(vec![
+        let shell = staged_sequence(vec![
             CommandResult {
                 stdout: " M f\n".to_string(),
                 stderr: String::new(),
@@ -1389,7 +1501,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let registry = registry_for("my-project", dir.path().to_str().unwrap(), false);
         // status=dirty (something shows up), add=ok, commit fails with "nothing to commit"
-        let shell = FakeShellGateway::sequence(vec![
+        let shell = staged_sequence(vec![
             CommandResult {
                 stdout: " m .claude/worktrees/agent-abc123\n".to_string(),
                 stderr: String::new(),

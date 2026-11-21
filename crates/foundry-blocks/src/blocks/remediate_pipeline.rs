@@ -197,6 +197,7 @@ async fn run_remediation(
             env: super::push_guard::push_disabled_environment(),
             timeout: RemediatePipeline::CLAUDE_TIMEOUT,
             trace_id: trace_id.clone(),
+            scratch_dir: crate::scratch::allocate_in_evidence_store(trace_id.as_deref())?,
         },
         "remediate pipeline",
     );

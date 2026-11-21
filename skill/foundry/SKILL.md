@@ -217,7 +217,7 @@ spending budget; only after that does it record a `runner_unavailable`
 recovery, whose recheck dispatches the objective directly.
 Capacity wording the gateway left unclassified counts the same. Any other
 execution session that fails before changing a project file or writing
-`.foundry/proof.json` or `.foundry/blocker.json` also ends `runner_error` with
+`proof.json` or `blocker.json` in its scratch directory also ends `runner_error` with
 the session's message, without a review or proof check; its campaign records
 a `runner_unavailable` recovery instead of forming. A failed session that did
 change files is reviewed as usual.
@@ -353,10 +353,14 @@ Partial observations never add to final token totals; missing data is explicit. 
 or unpriced spend, landed cycles, and external repairs.
 
 Coding sessions should run verbose checks through `foundry capture -- <command>`.
-It needs no daemon, keeps full stdout/stderr logs, returns the actual exit code,
-and prints a bounded failure tail. New campaign tasks must record early
-acceptance proof, through the project's public API, in `.foundry/proof.json`
-before broad expansion. See the campaign guide for the behavioral/direct proof
+It needs no daemon, keeps full stdout/stderr logs (in the session's scratch
+directory, `$FOUNDRY_SCRATCH_DIR/logs`, when Foundry started the session),
+returns the actual exit code, and prints a bounded failure tail. Each agent
+session has a scratch directory outside the repository, at
+`~/.foundry/evidence/<trace>/<attempt>/`, named in its prompt and in
+`FOUNDRY_SCRATCH_DIR`. New campaign tasks must record early acceptance proof,
+through the project's public API, in `proof.json` in that directory before
+broad expansion, with absolute `log` paths inside it. See the campaign guide for the behavioral/direct proof
 schema. Formation, execution, review and steering share one test-design rule:
 the boundary a test proves is the public API, not a real network. Unit and
 library tests use in-process doubles at the I/O boundary (a stub transport, a
@@ -376,17 +380,16 @@ escalate or block. Review accepts it and still rejects an unlicensed public
 API change. Only a suite the project's own AGENTS.md or gate file designates as
 integration or end-to-end keeps real infrastructure. A task that cannot
 reach the acceptance boundary (a missing capability, access or owner decision)
-records `.foundry/blocker.json` instead; review turns a valid one into a
-`blocked_on_decision` owner question, not a missing-proof defect. In any task
-worktree, `.foundry/` is Foundry scratch: nothing under it lands, except a
-deletion of a file HEAD tracks there. Finalize copies every `.foundry` file
-that did not land (new, gitignored, or an edited tracked file) to
-`~/.foundry/evidence/<trace>/<attempt>/worktree/` before cleanup and records
-the directory in the result's `uncommitted_artifacts` field. Build output
-(`target`, `coverage-target`, `_build`, `deps`, `node_modules` and similar
-directories) and files over 64 MiB are listed in `worktree-skipped.json`
-beside it instead of copied, and the daemon deletes evidence after
-`FOUNDRY_EVIDENCE_RETENTION_DAYS` (default 30). So a brief that
+records `blocker.json` in its scratch directory instead; review turns a valid one into a
+`blocked_on_decision` owner question, not a missing-proof defect. No Foundry
+commit stages a path under `.foundry/` in a repository, whatever its
+`.gitignore` says, except a deletion of a file HEAD tracks there; finalize
+discards any other `.foundry` content in a task worktree. The result's
+`proof_evidence` field names the scratch directory when it holds the proof.
+Finalize removes build output (`target`, `coverage-target`, `_build`, `deps`,
+`node_modules` and similar directories) and files over 64 MiB from the
+scratch directory and lists them in `trimmed.json`, and the daemon deletes
+evidence after `FOUNDRY_EVIDENCE_RETENTION_DAYS` (default 30). So a brief that
 wants something in the repository names a normal project path such as `docs/`
 or the test tree, and never asks repository files to cite `.foundry/` paths.
 
@@ -1163,7 +1166,7 @@ cycle by itself; the recheck of a `runner_unavailable` recovery left after
 those repeats dispatches the same objective without forming.
 New RPCs refuse older daemons without a decision or resume fallback.
 Standalone operational blockers preserve work; use `queue resume <id>` after
-correcting their prerequisite. `.foundry/blocker.json` can set `recovery_kind`
+correcting their prerequisite. `blocker.json` in the run's scratch directory can set `recovery_kind`
 to `capability_unavailable`, `access_unavailable`, `environment_unavailable`,
 `missing_evidence`, `unmet_precondition` or `runner_unavailable`.
 Without that field, legacy blockers still represent owner decisions.

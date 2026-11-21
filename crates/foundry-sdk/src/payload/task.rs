@@ -206,17 +206,11 @@ pub struct TaskRunCompletedPayload {
     /// summary then say.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trunk_arrivals: Vec<TrunkArrival>,
-    /// Durable directory holding early acceptance proof and its copied logs.
+    /// The run's scratch directory in the evidence store, when it holds early
+    /// acceptance proof (`proof.json`, whose logs it names by absolute paths
+    /// in the same directory).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proof_evidence: Option<String>,
-    /// Durable directory holding a copy of every file under the task's
-    /// `.foundry` directory that did not land: new and gitignored files, and
-    /// the agent's version of tracked files it modified. `.foundry` is Foundry
-    /// scratch, so only deletions of tracked files there are committed. Files
-    /// sit at their repository-relative paths. Absent when there was nothing
-    /// to archive.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub uncommitted_artifacts: Option<String>,
     #[serde(flatten)]
     pub verdict: TaskVerdict,
     /// The provider failure that ended the execution session: `failure_kind`
@@ -272,7 +266,6 @@ mod tests {
             preservation_ref: Some("foundry-task/alpha-1".to_string()),
             land_blocked: Some(LandBlocked::TrunkMovedGatesFailed),
             proof_evidence: None,
-            uncommitted_artifacts: None,
             trunk_arrivals: vec![TrunkArrival {
                 commit: "abc123".to_string(),
                 subject: "docs: note".to_string(),
@@ -318,7 +311,6 @@ mod tests {
             preservation_ref: None,
             land_blocked: None,
             proof_evidence: None,
-            uncommitted_artifacts: None,
             trunk_arrivals: Vec::new(),
             verdict: TaskVerdict::Complete,
             context: super::LoopContext::default(),
@@ -337,26 +329,21 @@ mod tests {
         );
     }
 
-    /// Records written before the field existed still read, and a recorded
-    /// archive location survives a round trip.
+    /// Task results recorded while Foundry still archived in-repository
+    /// `.foundry` files carry `uncommitted_artifacts`. The event log keeps
+    /// them, so they must still read.
     #[test]
-    fn uncommitted_artifacts_is_optional_on_the_wire() {
-        let old: TaskRunCompletedPayload = serde_json::from_value(serde_json::json!({
+    fn results_recorded_with_an_uncommitted_artifacts_archive_still_read() {
+        let recorded: TaskRunCompletedPayload = serde_json::from_value(serde_json::json!({
             "project": "alpha",
             "success": true,
             "landed": true,
             "summary": "done",
             "verdict": "complete",
+            "uncommitted_artifacts": "/home/u/.foundry/evidence/t/a/worktree",
         }))
         .unwrap();
-        assert_eq!(old.uncommitted_artifacts, None);
-
-        let archived = TaskRunCompletedPayload {
-            uncommitted_artifacts: Some("/home/u/.foundry/evidence/t/a/worktree".to_string()),
-            ..old
-        };
-        let json = serde_json::to_value(&archived).unwrap();
-        assert_eq!(json["uncommitted_artifacts"], "/home/u/.foundry/evidence/t/a/worktree");
-        assert_eq!(serde_json::from_value::<TaskRunCompletedPayload>(json).unwrap(), archived);
+        assert_eq!(recorded.project, "alpha");
+        assert!(serde_json::to_value(&recorded).unwrap().get("uncommitted_artifacts").is_none());
     }
 }

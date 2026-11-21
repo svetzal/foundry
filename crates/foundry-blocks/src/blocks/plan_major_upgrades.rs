@@ -907,7 +907,6 @@ mod tests {
             preservation_ref: reference.map(str::to_string),
             land_blocked: None,
             proof_evidence: None,
-            uncommitted_artifacts: None,
             trunk_arrivals: Vec::new(),
             verdict,
             context: LoopContext::default(),

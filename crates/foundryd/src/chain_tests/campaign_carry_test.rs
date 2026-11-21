@@ -301,7 +301,6 @@ async fn a_gracefully_cancelled_campaigns_in_flight_cycle_settles_when_it_finish
                     preservation_ref: Some("foundry-task/wi_cycle_3".into()),
                     land_blocked: None,
                     proof_evidence: None,
-                    uncommitted_artifacts: None,
                     trunk_arrivals: Vec::new(),
                     verdict: TaskVerdict::Remainder {
                         gaps: vec!["one gap".into()],

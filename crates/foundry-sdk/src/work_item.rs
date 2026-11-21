@@ -1497,7 +1497,6 @@ mod tests {
             preservation_ref: Some("ref-or-commit".to_string()),
             land_blocked: None,
             proof_evidence: None,
-            uncommitted_artifacts: None,
             trunk_arrivals: Vec::new(),
             verdict,
             context: LoopContext {

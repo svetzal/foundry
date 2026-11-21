@@ -235,10 +235,10 @@ Set either limit to `0` to turn the check off.
 
 ### Evidence retention
 
-Finalize Task keeps each task attempt's proof and unlanded `.foundry` files in
-the evidence store, `~/.foundry/evidence/<trace-id>/<attempt>/`. Build output
-under `.foundry` is recorded there, not copied (see
-[What lands from a task](workflow-formations.md#what-lands-from-a-task)).
+Each agent run's scratch directory is in the evidence store,
+`~/.foundry/evidence/<trace-id>/<attempt>/`. It holds the run's proof, blocker
+and command logs. Finalize Task removes build output from it (see
+[The scratch directory](workflow-formations.md#the-scratch-directory)).
 
 `foundryd` deletes old evidence. At start-up and then every six hours, it
 deletes each trace directory that has had no new write for
@@ -259,8 +259,8 @@ The prune does not delete:
   and tries again at the next prune.
 - Files, symbolic links, and anything outside the evidence root.
 
-A task result's `proof_evidence` and `uncommitted_artifacts` paths do not
-exist after their evidence is deleted. The work item, its preserved branch or
+A task result's `proof_evidence` path does not exist after its evidence is
+deleted. The work item, its preserved branch or
 bundle, and the trace stay.
 
 To put the whole Foundry home, including the evidence store and the task

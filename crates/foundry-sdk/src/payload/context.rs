@@ -241,6 +241,13 @@ pub struct LoopContext {
     pub campaign_limits: Option<crate::campaign::StageBudget>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_worktree: Option<String>,
+    /// The run's scratch directory, outside the project checkout:
+    /// `{evidence_dir}/{trace}/{attempt}/`. The executor writes its proof,
+    /// blocker and command logs there, and review and finalize read them
+    /// from there. Agents see it as `FOUNDRY_SCRATCH_DIR`. `None` before the
+    /// first agent session of a run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scratch_dir: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_branch: Option<String>,
     /// Exact branch or bundle created by task preservation before landing.
@@ -352,6 +359,10 @@ impl LoopContext {
                 .and_then(|v| serde_json::from_value(v).ok()),
             task_worktree: payload
                 .get("task_worktree")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            scratch_dir: payload
+                .get("scratch_dir")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
             task_preservation_ref: payload

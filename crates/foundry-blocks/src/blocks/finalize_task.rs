@@ -11,14 +11,12 @@ use foundry_sdk::payload::{
 use foundry_sdk::registry::{ProjectEntry, Registry};
 use foundry_sdk::task_block::{BlockKind, TaskBlock};
 
-use crate::evidence_archive::{
-    ARCHIVE_FILE_CAP_BYTES, SKIPPED_RECORD_FILE, UnlandedFile, plan_archive,
-};
 use crate::gateway::{ProcessShellGateway, ShellGateway};
 use crate::git_hook_timeout::{GitCommandTimedOut, GitHookTimeout};
+use crate::scratch::{self, PROOF_FILE};
 use crate::workspace::{
-    PROOF_FILE, checked, checked_with_hook_timeout, clean_foundry_dir, commit_worktree,
-    git_failure_detail, preserve, remove_workspace, run, run_best_effort, unlanded_foundry_files,
+    checked, checked_with_hook_timeout, clean_foundry_dir, commit_worktree, git_failure_detail,
+    preserve, remove_workspace, run, run_best_effort, unlanded_foundry_files,
 };
 
 use super::SimulatedSuccess;
@@ -36,126 +34,31 @@ task_block_new! {
     }
 }
 
-/// Keep the original proof and a portable copy whose log paths resolve inside
-/// the archive. Invalid proof is still evidence of a failed task.
-fn archive_proof(worktree: &Path, destination: &Path) -> Result<Option<String>> {
-    let source = worktree.join(PROOF_FILE);
-    let bytes = match std::fs::read(&source) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    std::fs::create_dir_all(destination)?;
-    std::fs::write(destination.join("original-proof.json"), &bytes)?;
-    let mut proof: serde_json::Value = match serde_json::from_slice(&bytes) {
-        Ok(proof) => proof,
-        Err(error) => {
-            // Best-effort: malformed evidence already yields a review defect;
-            // retain its exact bytes rather than blocking preservation.
-            tracing::warn!(%error, "archiving malformed early proof without interpreting logs");
-            std::fs::write(destination.join("proof.json"), bytes)?;
-            return Ok(Some(destination.to_string_lossy().into_owned()));
-        }
-    };
-    for field in ["rejecting", "corrected"] {
-        if let Some(log) = proof[field]["log"].as_str() {
-            let source = worktree.join(log);
-            match std::fs::read(&source) {
-                Ok(bytes) => {
-                    let name = format!("{field}.log");
-                    std::fs::write(destination.join(&name), bytes)?;
-                    proof[field]["log"] = serde_json::Value::String(name);
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    // Best-effort: absent logs are part of the review defect;
-                    // preserve the proof without inventing their contents.
-                    tracing::warn!(%error, path = %source.display(), "early proof log is absent during archival");
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
-    }
-    std::fs::write(destination.join("proof.json"), serde_json::to_vec_pretty(&proof)?)?;
-    Ok(Some(destination.to_string_lossy().into_owned()))
+/// The run's scratch directory, when it holds early acceptance proof. The
+/// directory is already in the evidence store and its proof names its logs by
+/// absolute paths inside it, so it is the durable proof record as it stands.
+fn proof_evidence(scratch: Option<&Path>) -> Option<String> {
+    let scratch = scratch?;
+    scratch
+        .join(PROOF_FILE)
+        .is_file()
+        .then(|| scratch.to_string_lossy().into_owned())
 }
 
-/// A fresh per-attempt evidence directory under the run's trace. Proof and
-/// the unlanded-file mirror of one finalization share it.
-fn attempt_evidence_dir(trace_id: &str) -> PathBuf {
-    foundry_sdk::paths::evidence_dir()
-        .join(trace_id)
-        .join(uuid::Uuid::new_v4().to_string())
-}
-
-/// Subdirectory of a per-attempt evidence directory that mirrors the files
-/// under `.foundry` that did not land, at their repository-relative paths.
-const UNCOMMITTED_ARCHIVE_DIR: &str = "worktree";
-
-/// Copy `files` (repository-relative) from `worktree` into the `worktree`
-/// mirror under the attempt's `evidence` directory, keeping their relative
-/// paths. Returns the mirror when any file was unlanded.
-///
-/// This is the raw record of what cleanup removes or restores, proof included,
-/// so nothing under `.foundry` disappears unrecorded. Build output, dependency
-/// trees and oversized files are not copied ([`plan_archive`]); they are
-/// recorded instead, path and bytes, in `worktree-skipped.json` beside the
-/// mirror. `archive_proof` separately keeps the interpreted, portable copy of
-/// the proof.
-fn archive_uncommitted(
-    worktree: &Path,
-    files: &[String],
-    evidence: &Path,
-) -> Result<Option<String>> {
-    if files.is_empty() {
-        return Ok(None);
+/// Remove build output and oversized files from the run's scratch directory
+/// before it settles in the evidence store. A trim failure keeps the
+/// directory as it is; it never fails the task.
+async fn trim_scratch(scratch: Option<PathBuf>) {
+    let Some(scratch) = scratch else { return };
+    let trimmed =
+        tokio::task::spawn_blocking(move || scratch::trim(&scratch, scratch::KEPT_FILE_CAP_BYTES))
+            .await;
+    match trimmed {
+        Ok(Ok(_)) => {}
+        // Best-effort: the scratch directory is evidence, not deliverable work.
+        Ok(Err(error)) => tracing::warn!(%error, "could not trim the run's scratch directory"),
+        Err(error) => tracing::warn!(%error, "scratch trim task did not complete"),
     }
-    let measured = files
-        .iter()
-        .map(|path| {
-            let bytes = std::fs::symlink_metadata(worktree.join(path))?.len();
-            Ok(UnlandedFile {
-                path: path.clone(),
-                bytes,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let plan = plan_archive(&measured, ARCHIVE_FILE_CAP_BYTES);
-    let destination = evidence.join(UNCOMMITTED_ARCHIVE_DIR);
-    std::fs::create_dir_all(&destination)?;
-    for relative in &plan.copy {
-        let source = worktree.join(relative);
-        let target = destination.join(relative);
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        copy_preserving_symlink(&source, &target)?;
-    }
-    if !plan.skipped.is_empty() {
-        std::fs::write(
-            evidence.join(SKIPPED_RECORD_FILE),
-            serde_json::to_vec_pretty(&plan.skipped)?,
-        )?;
-        tracing::info!(
-            files = plan.skipped.files,
-            bytes = plan.skipped.bytes,
-            evidence = %evidence.display(),
-            "left build output and oversized files out of the evidence archive"
-        );
-    }
-    Ok(Some(destination.to_string_lossy().into_owned()))
-}
-
-/// Copy a file, recreating a symlink as a symlink rather than following it,
-/// so a link to a directory or to something outside the worktree is recorded
-/// as what it was.
-fn copy_preserving_symlink(source: &Path, target: &Path) -> Result<()> {
-    #[cfg(unix)]
-    if std::fs::symlink_metadata(source)?.file_type().is_symlink() {
-        std::os::unix::fs::symlink(std::fs::read_link(source)?, target)?;
-        return Ok(());
-    }
-    std::fs::copy(source, target)?;
-    Ok(())
 }
 
 async fn branch_has_deliverable(
@@ -748,7 +651,6 @@ fn run_completed(
         preservation_ref,
         land_blocked: None,
         proof_evidence: None,
-        uncommitted_artifacts: None,
         trunk_arrivals: Vec::new(),
         verdict,
         context,
@@ -792,8 +694,6 @@ struct Committed {
     deliverable: bool,
     /// Where non-landed work is durable: a branch, or `bundle:{path}`.
     preservation_ref: Option<String>,
-    /// Where the unlanded `.foundry` files were archived, when there were any.
-    uncommitted_artifacts: Option<String>,
 }
 
 async fn commit_and_preserve_if_needed(
@@ -803,7 +703,6 @@ async fn commit_and_preserve_if_needed(
     project: &str,
     branch: &str,
     verdict: &TaskVerdict,
-    evidence: &Path,
 ) -> Result<Committed> {
     let _committed = commit_worktree(shell, worktree, project).await?;
     let checkout = Path::new(&entry.path);
@@ -814,26 +713,18 @@ async fn commit_and_preserve_if_needed(
         None
     };
     // Nothing under .foundry landed except deletions of tracked files. What
-    // is left there (new and ignored files, tracked files the agent modified)
-    // is about to be removed or restored so the worktree can be removed.
-    // Archive it first; an archival failure stops here, before anything is
-    // discarded.
+    // is left there is neither the task's work nor its evidence (agents keep
+    // scratch outside the repository), so it is removed or restored and the
+    // worktree can be removed.
     let unlanded = unlanded_foundry_files(shell, worktree).await?;
-    let files = unlanded.all();
-    let count = files.len();
-    let source = worktree.to_path_buf();
-    let evidence = evidence.to_path_buf();
-    let uncommitted_artifacts =
-        tokio::task::spawn_blocking(move || archive_uncommitted(&source, &files, &evidence))
-            .await??;
-    if let Some(archive) = &uncommitted_artifacts {
-        tracing::debug!(%project, count, %archive, "archived unlanded .foundry files before cleanup");
+    let count = unlanded.untracked.len() + unlanded.modified.len();
+    if count > 0 {
+        tracing::warn!(%project, count, "discarding files under .foundry in the task worktree; they never land");
     }
     clean_foundry_dir(shell, worktree, &unlanded).await?;
     Ok(Committed {
         deliverable,
         preservation_ref,
-        uncommitted_artifacts,
     })
 }
 
@@ -863,7 +754,6 @@ impl SimulatedSuccess for FinalizeTask {
             preservation_ref: None,
             land_blocked: None,
             proof_evidence: None,
-            uncommitted_artifacts: None,
             trunk_arrivals: Vec::new(),
             verdict,
             context: payload.context,
@@ -894,7 +784,6 @@ impl TaskBlock for FinalizeTask {
         let payload = parse_payload!(trigger, TaskReviewedPayload);
         let project = trigger.project.clone();
         let throttle = trigger.throttle;
-        let trace_id = trigger.trace_id.clone().unwrap_or_else(|| trigger.id.clone());
         let registry = Arc::clone(&self.registry);
         let shell = Arc::clone(&self.shell);
 
@@ -919,19 +808,16 @@ impl TaskBlock for FinalizeTask {
             };
             let checkout = Path::new(&entry.path);
 
-            // Archival must succeed before any commit or worktree cleanup.
-            let evidence = attempt_evidence_dir(&trace_id);
-            let (source, destination) = (worktree.clone(), evidence.clone());
-            let proof_evidence =
-                tokio::task::spawn_blocking(move || archive_proof(&source, &destination)).await??;
+            let scratch = context.scratch_dir.as_deref().map(PathBuf::from);
+            trim_scratch(scratch.clone()).await;
+            let proof_evidence = proof_evidence(scratch.as_deref());
 
             let verdict = enforce_gate_truth(&payload);
             let Committed {
                 deliverable,
                 preservation_ref,
-                uncommitted_artifacts,
             } = match commit_and_preserve_if_needed(
-                &*shell, &entry, &worktree, &project, branch, &verdict, &evidence,
+                &*shell, &entry, &worktree, &project, branch, &verdict,
             )
             .await
             {
@@ -975,7 +861,6 @@ impl TaskBlock for FinalizeTask {
                     result.land_blocked = Some(reason);
                     result.trunk_arrivals = arrivals;
                     result.proof_evidence = proof_evidence;
-                    result.uncommitted_artifacts = uncommitted_artifacts;
                     return finish(result);
                 }
                 true
@@ -998,7 +883,6 @@ impl TaskBlock for FinalizeTask {
                 run_completed(&project, landed, summary, preservation_ref, verdict, context);
             result.trunk_arrivals = arrivals;
             result.proof_evidence = proof_evidence;
-            result.uncommitted_artifacts = uncommitted_artifacts;
             finish(result)
         })
     }
@@ -2044,11 +1928,11 @@ mod tests {
         task_trigger_with_gates(worktree, branch, TaskVerdict::Complete, vec![required_gate(true)])
     }
 
-    /// The archive of unlanded `.foundry` files a finalization recorded.
-    fn unlanded_mirror(payload: &serde_json::Value) -> &Path {
-        Path::new(payload["uncommitted_artifacts"].as_str().unwrap_or_else(|| {
-            panic!("finalize must record where the unlanded files went: {payload}")
-        }))
+    /// `trigger` with the run's scratch directory recorded, as Execute Plan
+    /// records it.
+    fn with_scratch(mut trigger: Event, scratch: &Path) -> Event {
+        trigger.payload["scratch_dir"] = serde_json::json!(scratch.to_string_lossy());
+        trigger
     }
 
     /// Commit `files` on the task branch, so HEAD tracks them before the agent
@@ -2063,110 +1947,119 @@ mod tests {
         git(worktree, &["commit", "-m", "legacy .foundry content"]);
     }
 
-    /// Proof never lands, and neither does an edit to a tracked `.foundry`
-    /// file, even when the agent staged both. Both stay retrievable.
+    /// A task's proof is read from its scratch directory outside the
+    /// repository, and that directory is the proof evidence, as it stands.
+    /// An edit to a tracked `.foundry` file does not land, even when the
+    /// agent staged it.
     #[tokio::test]
-    async fn early_proof_and_tracked_dot_foundry_edits_stay_off_trunk_and_remain_retrievable() {
+    async fn the_scratch_directory_is_the_proof_evidence_and_dot_foundry_edits_stay_off_trunk() {
         let dir = tempfile::tempdir().unwrap();
         let branch = "foundry-task/proof-artifacts";
         let (checkout, worktree, _) = repo_with_task_branch(dir.path(), branch);
+        let scratch = crate::scratch::allocate(&dir.path().join("evidence"), "trace").unwrap();
+        std::fs::write(scratch.join("logs/red.log"), "rejection").unwrap();
+        std::fs::write(scratch.join("logs/green.log"), "correction").unwrap();
+        let proof = serde_json::json!({"kind":"behavioral","source_change":"README.md",
+            "rejecting":{"command":"probe","exit_code":1,"log":scratch.join("logs/red.log")},
+            "corrected":{"command":"probe","exit_code":0,"log":scratch.join("logs/green.log")}});
+        std::fs::write(scratch.join("proof.json"), proof.to_string()).unwrap();
         track_on_task_branch(&worktree, &[(".foundry/project.json", "original")]);
         std::fs::write(worktree.join(".foundry/project.json"), "updated").unwrap();
-        std::fs::create_dir(worktree.join(".foundry/logs")).unwrap();
-        std::fs::write(worktree.join(".foundry/logs/red.log"), "rejection").unwrap();
-        std::fs::write(worktree.join(".foundry/logs/green.log"), "correction").unwrap();
-        let proof = serde_json::json!({"kind":"behavioral","source_change":"README.md",
-            "rejecting":{"command":"probe","exit_code":1,"log":".foundry/logs/red.log"},
-            "corrected":{"command":"probe","exit_code":0,"log":".foundry/logs/green.log"}});
-        std::fs::write(worktree.join(".foundry/proof.json"), proof.to_string()).unwrap();
         write_project_change(&worktree);
         // Even accidentally staged .foundry files must not enter the commit.
         git(&worktree, &["add", ".foundry"]);
-        let trigger = complete_trigger(&worktree, branch);
+
+        let trigger = with_scratch(complete_trigger(&worktree, branch), &scratch);
         let result = finalize_block(&checkout).execute(&trigger).await.unwrap();
         let payload = &result.events[0].payload;
+
         assert_eq!(payload["landed"], true, "{payload}");
         assert_eq!(commit_changes(&checkout, "HEAD"), "A\tdocs/notes.md");
         assert_eq!(tracked_under_foundry(&checkout, "HEAD"), ".foundry/project.json");
         assert_eq!(git(&checkout, &["show", "HEAD:.foundry/project.json"]), "original");
+        assert!(!worktree.exists(), "a restored .foundry file must not prevent cleanup");
+        assert_eq!(payload["proof_evidence"], scratch.to_string_lossy().as_ref());
         assert_eq!(
-            std::fs::read_to_string(checkout.join(".foundry/project.json")).unwrap(),
-            "original"
+            std::fs::read_to_string(scratch.join("proof.json")).unwrap(),
+            proof.to_string(),
+            "the proof is kept exactly as the executor wrote it"
         );
-        assert!(!worktree.exists(), "archived artifacts must not prevent cleanup");
-        let evidence = Path::new(payload["proof_evidence"].as_str().unwrap());
-        assert!(
-            evidence.starts_with(
-                foundry_sdk::paths::evidence_dir()
-                    .join(trigger.trace_id.as_ref().unwrap_or(&trigger.id))
-            )
-        );
-        assert_eq!(
-            std::fs::read_to_string(evidence.join("original-proof.json")).unwrap(),
-            proof.to_string()
-        );
-        let archived: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(evidence.join("proof.json")).unwrap()).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(evidence.join(archived["rejecting"]["log"].as_str().unwrap()))
-                .unwrap(),
-            "rejection"
-        );
-        assert_eq!(
-            std::fs::read_to_string(evidence.join(archived["corrected"]["log"].as_str().unwrap()))
-                .unwrap(),
-            "correction"
-        );
-        // The raw mirror of what did not land sits beside the interpreted
-        // proof archive, in the same attempt directory, and holds every
-        // .foundry file at its worktree path, the agent's edit included.
-        let mirror = unlanded_mirror(payload);
-        assert_eq!(mirror, evidence.join("worktree"));
-        assert_eq!(
-            std::fs::read_to_string(mirror.join(".foundry/proof.json")).unwrap(),
-            proof.to_string()
-        );
-        assert_eq!(
-            std::fs::read_to_string(mirror.join(".foundry/logs/red.log")).unwrap(),
-            "rejection"
-        );
-        assert_eq!(
-            std::fs::read_to_string(mirror.join(".foundry/project.json")).unwrap(),
-            "updated"
-        );
-        assert!(!mirror.join("docs/notes.md").exists(), "landed files are not archived");
-        // Test fixture owns this proof archive; this is not a worktree removal.
-        std::fs::remove_dir_all(evidence).unwrap();
+        assert_eq!(std::fs::read_to_string(scratch.join("logs/red.log")).unwrap(), "rejection");
+        assert!(payload.get("uncommitted_artifacts").is_none(), "{payload}");
     }
 
-    /// Evidence a brief asks for under `.foundry/<topic>/`.
-    fn write_agent_evidence(worktree: &Path) {
-        std::fs::create_dir_all(worktree.join(".foundry/armature/shots")).unwrap();
-        std::fs::write(worktree.join(".foundry/armature/result.json"), "{\"ok\":true}").unwrap();
-        std::fs::write(worktree.join(".foundry/armature/shots/a.png"), "png bytes").unwrap();
-    }
-
-    fn assert_agent_evidence_archived(mirror: &Path) {
-        assert_eq!(
-            std::fs::read_to_string(mirror.join(".foundry/armature/result.json")).unwrap(),
-            "{\"ok\":true}"
-        );
-        assert_eq!(
-            std::fs::read_to_string(mirror.join(".foundry/armature/shots/a.png")).unwrap(),
-            "png bytes"
-        );
-    }
-
-    /// The 2026-10-10 Roost incident: a task wrote its evidence under
-    /// `.foundry/armature/` and none of it survived finalization. It still
-    /// does not land, because `.foundry/` is Foundry scratch, but it is
-    /// archived rather than destroyed.
+    /// A run whose scratch holds no proof names no proof evidence.
     #[tokio::test]
-    async fn new_dot_foundry_files_stay_off_trunk_and_are_archived() {
+    async fn a_run_without_proof_names_no_proof_evidence() {
         let dir = tempfile::tempdir().unwrap();
-        let branch = "foundry-task/agent-evidence-archived";
+        let branch = "foundry-task/no-proof";
         let (checkout, worktree, _) = repo_with_task_branch(dir.path(), branch);
-        write_agent_evidence(&worktree);
+        let scratch = crate::scratch::allocate(&dir.path().join("evidence"), "trace").unwrap();
+        write_project_change(&worktree);
+
+        let trigger = with_scratch(complete_trigger(&worktree, branch), &scratch);
+        let result = finalize_block(&checkout).execute(&trigger).await.unwrap();
+        let payload = &result.events[0].payload;
+
+        assert_eq!(payload["landed"], true, "{payload}");
+        assert!(payload.get("proof_evidence").is_none(), "{payload}");
+    }
+
+    /// The 2026-11 ops-01 incident: build output that agents left in scratch
+    /// (a coverage target directory, an integration checkout's `deps` and
+    /// `_build`) put 37G into the evidence store. Finalize trims it from the
+    /// scratch directory and records what it removed; the evidence beside it
+    /// stays.
+    #[tokio::test]
+    async fn finalize_trims_build_output_from_the_scratch_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let branch = "foundry-task/build-output-trimmed";
+        let (checkout, worktree, _) = repo_with_task_branch(dir.path(), branch);
+        let scratch = crate::scratch::allocate(&dir.path().join("evidence"), "trace").unwrap();
+        std::fs::write(scratch.join("logs/1.stdout.log"), "cargo test").unwrap();
+        let coverage = scratch.join("coverage-target/debug/deps");
+        std::fs::create_dir_all(&coverage).unwrap();
+        std::fs::write(coverage.join("foundryd-1a2b"), vec![0_u8; 4096]).unwrap();
+        let build = scratch.join("integration/app/deps/jason/_build");
+        std::fs::create_dir_all(&build).unwrap();
+        std::fs::write(build.join("a.beam"), "beam").unwrap();
+        std::fs::write(scratch.join("integration/report.md"), "report").unwrap();
+        write_project_change(&worktree);
+
+        let trigger = with_scratch(complete_trigger(&worktree, branch), &scratch);
+        let result = finalize_block(&checkout).execute(&trigger).await.unwrap();
+
+        assert_eq!(result.events[0].payload["landed"], true);
+        assert!(!scratch.join("coverage-target").exists());
+        assert!(!scratch.join("integration/app/deps").exists());
+        assert_eq!(
+            std::fs::read_to_string(scratch.join("integration/report.md")).unwrap(),
+            "report"
+        );
+        assert!(scratch.join("logs/1.stdout.log").is_file());
+        let trimmed: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(scratch.join("trimmed.json")).unwrap()).unwrap();
+        assert_eq!(trimmed["files"], 2, "{trimmed}");
+        assert_eq!(trimmed["bytes"], 4100, "{trimmed}");
+        assert_eq!(
+            trimmed["directories"],
+            serde_json::json!([
+                {"path": "coverage-target", "files": 1, "bytes": 4096},
+                {"path": "integration/app/deps", "files": 1, "bytes": 4},
+            ])
+        );
+    }
+
+    /// Files an agent still writes under `.foundry/` in the worktree are
+    /// neither the task's work nor its evidence: they never land, and they
+    /// do not keep the worktree from being removed.
+    #[tokio::test]
+    async fn new_dot_foundry_files_stay_off_trunk_and_do_not_block_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let branch = "foundry-task/stray-dot-foundry";
+        let (checkout, worktree, _) = repo_with_task_branch(dir.path(), branch);
+        std::fs::create_dir_all(worktree.join(".foundry/logs")).unwrap();
+        std::fs::write(worktree.join(".foundry/logs/1.stdout.log"), "output").unwrap();
         write_project_change(&worktree);
 
         let result = finalize_block(&checkout)
@@ -2177,102 +2070,17 @@ mod tests {
 
         assert_eq!(payload["landed"], true, "{payload}");
         assert_eq!(commit_changes(&checkout, "HEAD"), "A\tdocs/notes.md");
-        assert!(tracked_under_foundry(&checkout, "HEAD").is_empty(), "scratch landed on trunk");
+        assert!(tracked_under_foundry(&checkout, "HEAD").is_empty(), ".foundry landed on trunk");
         assert!(!worktree.exists());
-        let mirror = unlanded_mirror(payload);
-        assert_agent_evidence_archived(mirror);
-        // Test fixture owns this evidence archive; this is not a worktree removal.
-        std::fs::remove_dir_all(mirror.parent().unwrap()).unwrap();
-    }
-
-    /// The 2026-11 ops-01 incident: gates that build under `.foundry` (a
-    /// coverage target directory, an integration checkout's `deps` and
-    /// `_build`) put 37G into the evidence store. Their output is still
-    /// cleaned from the worktree, but it is recorded, not copied, while the
-    /// evidence beside it is copied as before.
-    #[tokio::test]
-    async fn build_output_under_dot_foundry_is_recorded_not_archived() {
-        let dir = tempfile::tempdir().unwrap();
-        let branch = "foundry-task/build-output-skipped";
-        let (checkout, worktree, _) = repo_with_task_branch(dir.path(), branch);
-        write_agent_evidence(&worktree);
-        let coverage = worktree.join(".foundry/coverage-target/debug/deps");
-        std::fs::create_dir_all(&coverage).unwrap();
-        std::fs::write(coverage.join("foundryd-1a2b"), vec![0_u8; 4096]).unwrap();
-        let build = worktree.join(".foundry/integration/app/deps/jason/_build");
-        std::fs::create_dir_all(&build).unwrap();
-        std::fs::write(build.join("a.beam"), "beam").unwrap();
-        std::fs::write(worktree.join(".foundry/integration/report.md"), "report").unwrap();
-        write_project_change(&worktree);
-
-        let result = finalize_block(&checkout)
-            .execute(&complete_trigger(&worktree, branch))
-            .await
-            .unwrap();
-        let payload = &result.events[0].payload;
-
-        assert_eq!(payload["landed"], true, "{payload}");
-        assert!(!worktree.exists(), "skipped build output must still be cleaned");
-        let mirror = unlanded_mirror(payload);
-        assert_agent_evidence_archived(mirror);
-        assert_eq!(
-            std::fs::read_to_string(mirror.join(".foundry/integration/report.md")).unwrap(),
-            "report"
-        );
-        assert!(!mirror.join(".foundry/coverage-target").exists());
-        assert!(!mirror.join(".foundry/integration/app/deps").exists());
-        let attempt = mirror.parent().unwrap();
-        let skipped: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(attempt.join("worktree-skipped.json")).unwrap())
-                .unwrap();
-        assert_eq!(skipped["files"], 2, "{skipped}");
-        assert_eq!(skipped["bytes"], 4100, "{skipped}");
-        assert_eq!(
-            skipped["directories"],
-            serde_json::json!([
-                {"path": ".foundry/coverage-target", "files": 1, "bytes": 4096},
-                {"path": ".foundry/integration/app/deps", "files": 1, "bytes": 4},
-            ])
-        );
-        // Test fixture owns this evidence archive; this is not a worktree removal.
-        std::fs::remove_dir_all(attempt).unwrap();
-    }
-
-    /// When every unlanded file is build output, the result still names the
-    /// (empty) mirror, and the record beside it says what was left out.
-    #[tokio::test]
-    async fn only_build_output_under_dot_foundry_still_records_the_archive() {
-        let dir = tempfile::tempdir().unwrap();
-        let branch = "foundry-task/only-build-output";
-        let (checkout, worktree, _) = repo_with_task_branch(dir.path(), branch);
-        std::fs::create_dir_all(worktree.join(".foundry/node_modules/x")).unwrap();
-        std::fs::write(worktree.join(".foundry/node_modules/x/index.js"), "js").unwrap();
-        write_project_change(&worktree);
-
-        let result = finalize_block(&checkout)
-            .execute(&complete_trigger(&worktree, branch))
-            .await
-            .unwrap();
-        let payload = &result.events[0].payload;
-
-        let mirror = unlanded_mirror(payload);
-        assert!(mirror.is_dir());
-        assert_eq!(std::fs::read_dir(mirror).unwrap().count(), 0);
-        let attempt = mirror.parent().unwrap();
-        let skipped: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(attempt.join("worktree-skipped.json")).unwrap())
-                .unwrap();
-        assert_eq!(skipped["directories"][0]["path"], ".foundry/node_modules");
-        // Test fixture owns this evidence archive; this is not a worktree removal.
-        std::fs::remove_dir_all(attempt).unwrap();
     }
 
     #[tokio::test]
-    async fn new_dot_foundry_files_stay_off_the_preserved_branch_and_are_archived() {
+    async fn new_dot_foundry_files_stay_off_the_preserved_branch() {
         let dir = tempfile::tempdir().unwrap();
-        let branch = "foundry-task/agent-evidence-preserved";
+        let branch = "foundry-task/stray-dot-foundry-preserved";
         let (checkout, worktree, _) = repo_with_task_branch(dir.path(), branch);
-        write_agent_evidence(&worktree);
+        std::fs::create_dir_all(worktree.join(".foundry/armature")).unwrap();
+        std::fs::write(worktree.join(".foundry/armature/result.json"), "{}").unwrap();
         write_project_change(&worktree);
 
         let trigger = task_trigger(
@@ -2290,23 +2098,19 @@ mod tests {
         assert_eq!(commit_changes(&checkout, branch), "A\tdocs/notes.md");
         assert!(
             tracked_under_foundry(&checkout, branch).is_empty(),
-            "scratch landed on the preserved branch"
+            ".foundry landed on the preserved branch"
         );
         assert!(
             tracked_under_foundry(&checkout, "main").is_empty(),
             "defect work leaked to trunk"
         );
-        let mirror = unlanded_mirror(payload);
-        assert_agent_evidence_archived(mirror);
-        // Test fixture owns this evidence archive; this is not a worktree removal.
-        std::fs::remove_dir_all(mirror.parent().unwrap()).unwrap();
+        assert!(!worktree.exists());
     }
 
     /// An agent's edit to a tracked `.foundry` file does not land: trunk keeps
-    /// HEAD's content, the archive keeps the edit, and the restored file does
-    /// not hold the worktree open.
+    /// HEAD's content, and the restored file does not hold the worktree open.
     #[tokio::test]
-    async fn an_edit_to_a_tracked_dot_foundry_file_is_archived_not_landed() {
+    async fn an_edit_to_a_tracked_dot_foundry_file_is_not_landed() {
         let dir = tempfile::tempdir().unwrap();
         let branch = "foundry-task/tracked-edit";
         let (checkout, worktree, _) = repo_with_task_branch(dir.path(), branch);
@@ -2324,10 +2128,6 @@ mod tests {
         assert_eq!(commit_changes(&checkout, "HEAD"), "A\tdocs/notes.md");
         assert_eq!(git(&checkout, &["show", "HEAD:.foundry/x.json"]), "head");
         assert!(!worktree.exists(), "the restored file must not block worktree removal");
-        let mirror = unlanded_mirror(payload);
-        assert_eq!(std::fs::read_to_string(mirror.join(".foundry/x.json")).unwrap(), "agent");
-        // Test fixture owns this evidence archive; this is not a worktree removal.
-        std::fs::remove_dir_all(mirror.parent().unwrap()).unwrap();
     }
 
     /// Deleting tracked `.foundry` content is how a task cleans legacy files
@@ -2358,13 +2158,12 @@ mod tests {
         assert_eq!(payload["landed"], true, "{payload}");
         assert_eq!(commit_changes(&checkout, "HEAD"), "D\t.foundry/old.json\nA\tdocs/notes.md");
         assert_eq!(tracked_under_foundry(&checkout, "HEAD"), ".foundry/kept.json");
-        assert!(payload.get("uncommitted_artifacts").is_none(), "nothing was left: {payload}");
         assert!(!worktree.exists());
     }
 
-    /// A repository that tracks proof scratch (Foundry's own does) gets the
-    /// same treatment as any tracked `.foundry` file: edits and new files are
-    /// archived, deletions land.
+    /// A repository that tracks legacy proof scratch gets the same treatment
+    /// as any tracked `.foundry` file: edits and new files do not land,
+    /// deletions do.
     #[tokio::test]
     async fn tracked_proof_scratch_keeps_head_content_and_only_its_deletions_land() {
         let dir = tempfile::tempdir().unwrap();
@@ -2393,19 +2192,11 @@ mod tests {
         assert_eq!(tracked_under_foundry(&checkout, "HEAD"), ".foundry/proof.json");
         assert_eq!(git(&checkout, &["show", "HEAD:.foundry/proof.json"]), "{}");
         assert!(!worktree.exists());
-        let mirror = unlanded_mirror(payload);
-        assert_eq!(
-            std::fs::read_to_string(mirror.join(".foundry/proof.json")).unwrap(),
-            "{\"kind\":\"direct\"}"
-        );
-        assert_eq!(std::fs::read_to_string(mirror.join(".foundry/logs/new.log")).unwrap(), "new");
-        // Test fixture owns this evidence archive; this is not a worktree removal.
-        std::fs::remove_dir_all(mirror.parent().unwrap()).unwrap();
     }
 
-    /// A gitignored file cannot land, but cleanup must not destroy it silently.
+    /// A gitignored `.foundry` file cannot land and does not block cleanup.
     #[tokio::test]
-    async fn gitignored_dot_foundry_files_are_archived_rather_than_destroyed() {
+    async fn gitignored_dot_foundry_files_do_not_land_or_block_cleanup() {
         let dir = tempfile::tempdir().unwrap();
         let branch = "foundry-task/ignored-evidence";
         let (checkout, worktree, _) = repo_with_task_branch(dir.path(), branch);
@@ -2414,30 +2205,16 @@ mod tests {
         std::fs::write(worktree.join(".foundry/runtime/nested/session.log"), "runtime state")
             .unwrap();
 
-        let trigger = complete_trigger(&worktree, branch);
-        let result = finalize_block(&checkout).execute(&trigger).await.unwrap();
+        let result = finalize_block(&checkout)
+            .execute(&complete_trigger(&worktree, branch))
+            .await
+            .unwrap();
         let payload = &result.events[0].payload;
 
         assert_eq!(payload["landed"], true, "{payload}");
         assert_eq!(commit_changes(&checkout, "HEAD"), "A\t.gitignore");
         assert!(tracked_under_foundry(&checkout, "HEAD").is_empty(), "ignored file landed");
-        assert!(!worktree.exists(), "archival must not prevent cleanup");
-        let archive = unlanded_mirror(payload);
-        let attempt = archive.parent().unwrap();
-        assert!(
-            attempt.starts_with(
-                foundry_sdk::paths::evidence_dir()
-                    .join(trigger.trace_id.as_ref().unwrap_or(&trigger.id))
-            ),
-            "{}",
-            archive.display()
-        );
-        assert_eq!(
-            std::fs::read_to_string(archive.join(".foundry/runtime/nested/session.log")).unwrap(),
-            "runtime state"
-        );
-        // Test fixture owns this evidence archive; this is not a worktree removal.
-        std::fs::remove_dir_all(attempt).unwrap();
+        assert!(!worktree.exists());
     }
 
     /// Commit a `.gitignore` that ignores the whole of `.foundry/` on the task
@@ -2451,14 +2228,15 @@ mod tests {
     /// The 2026-10-11 Bedrock incident: once a repository ignored `.foundry/`,
     /// staging with a `.foundry` exclude pathspec made git exit 1 ("paths are
     /// ignored"), so every task failed at commit. Ignoring `.foundry` must
-    /// not stop the project change landing, nor let scratch land.
+    /// not stop the project change landing, nor let `.foundry` content land.
     #[tokio::test]
     async fn an_ignored_dot_foundry_does_not_stop_the_project_change_landing() {
         let dir = tempfile::tempdir().unwrap();
         let branch = "foundry-task/ignored-dot-foundry";
         let (checkout, worktree, _) = repo_with_task_branch(dir.path(), branch);
         ignore_dot_foundry_on_task_branch(&worktree);
-        write_agent_evidence(&worktree);
+        std::fs::create_dir_all(worktree.join(".foundry/armature")).unwrap();
+        std::fs::write(worktree.join(".foundry/armature/result.json"), "{}").unwrap();
         write_project_change(&worktree);
 
         let result = finalize_block(&checkout)
@@ -2469,12 +2247,8 @@ mod tests {
 
         assert_eq!(payload["landed"], true, "{payload}");
         assert_eq!(commit_changes(&checkout, "HEAD"), "A\tdocs/notes.md");
-        assert!(tracked_under_foundry(&checkout, "HEAD").is_empty(), "scratch landed on trunk");
+        assert!(tracked_under_foundry(&checkout, "HEAD").is_empty(), ".foundry landed on trunk");
         assert!(!worktree.exists());
-        let mirror = unlanded_mirror(payload);
-        assert_agent_evidence_archived(mirror);
-        // Test fixture owns this evidence archive; this is not a worktree removal.
-        std::fs::remove_dir_all(mirror.parent().unwrap()).unwrap();
     }
 
     /// An ignored `.foundry` that HEAD still partly tracks: the deletion of a
@@ -2510,11 +2284,6 @@ mod tests {
         assert_eq!(tracked_under_foundry(&checkout, "HEAD"), ".foundry/kept.json");
         assert_eq!(git(&checkout, &["show", "HEAD:.foundry/kept.json"]), "kept");
         assert!(!worktree.exists());
-        let mirror = unlanded_mirror(payload);
-        assert_eq!(std::fs::read_to_string(mirror.join(".foundry/kept.json")).unwrap(), "agent");
-        assert_eq!(std::fs::read_to_string(mirror.join(".foundry/forced.json")).unwrap(), "forced");
-        // Test fixture owns this evidence archive; this is not a worktree removal.
-        std::fs::remove_dir_all(mirror.parent().unwrap()).unwrap();
     }
 
     /// A tracked `.foundry` file the agent replaced with a directory: the
@@ -2538,15 +2307,8 @@ mod tests {
 
         assert_eq!(payload["landed"], true, "{payload}");
         assert_eq!(commit_changes(&checkout, "HEAD"), "D\t.foundry/state\nA\tdocs/notes.md");
-        assert!(tracked_under_foundry(&checkout, "HEAD").is_empty(), "scratch landed on trunk");
+        assert!(tracked_under_foundry(&checkout, "HEAD").is_empty(), ".foundry landed on trunk");
         assert!(!worktree.exists());
-        let mirror = unlanded_mirror(payload);
-        assert_eq!(
-            std::fs::read_to_string(mirror.join(".foundry/state/inner.json")).unwrap(),
-            "inner"
-        );
-        // Test fixture owns this evidence archive; this is not a worktree removal.
-        std::fs::remove_dir_all(mirror.parent().unwrap()).unwrap();
     }
 
     // --- git hooks inside push: the derived limit --------------------------

@@ -268,6 +268,28 @@ pub(crate) async fn execute_agent_block(
     .await
 }
 
+/// The run's payload with its scratch directory recorded, and that
+/// directory. A task run's executor allocated it with the workspace and a
+/// retry keeps the one its run has; any other run gets one here. When it
+/// cannot be created, the run fails before any agent session.
+fn with_scratch_dir(
+    ctx: &ExecutionContext<'_>,
+) -> Result<(serde_json::Value, PathBuf), TaskBlockResult> {
+    let mut payload = ctx.payload.clone();
+    match crate::scratch::ensure_in(
+        &mut payload,
+        &foundry_sdk::paths::evidence_dir(),
+        ctx.trace_id.as_deref(),
+    ) {
+        Ok(directory) => Ok((payload, directory)),
+        Err(error) => {
+            let error = format!("cannot create the run's scratch directory: {error}");
+            let outcome = AgentOutcome::Unavailable { error };
+            Err(build_agent_execution_result(ctx, outcome, SessionEnd::Failed, false, vec![]))
+        }
+    }
+}
+
 async fn execute_agent_block_in_store(
     agent: &dyn AgentGateway,
     shell: &dyn ShellGateway,
@@ -287,6 +309,15 @@ async fn execute_agent_block_in_store(
         }
         Ok(None) => {}
     }
+    let (scratch_payload, scratch_dir) = match with_scratch_dir(ctx) {
+        Ok(prepared) => prepared,
+        Err(failed) => return failed,
+    };
+    let ctx = &ExecutionContext {
+        payload: &scratch_payload,
+        trace_id: ctx.trace_id.clone(),
+        ..*ctx
+    };
     let project_path = PathBuf::from(&entry.path);
     let agent_file = super::resolve_agent_file(&entry.agent);
     let provider =
@@ -322,6 +353,7 @@ async fn execute_agent_block_in_store(
             env,
             timeout,
             trace_id: ctx.trace_id.clone(),
+            scratch_dir,
         },
         ctx.label,
     )
@@ -555,7 +587,6 @@ fn stopped_before_agent(ctx: &ExecutionContext<'_>, reason: String) -> TaskBlock
         land_blocked: None,
         trunk_arrivals: Vec::new(),
         proof_evidence: None,
-        uncommitted_artifacts: None,
         verdict: TaskVerdict::RunnerError { detail: reason },
         context: LoopContext::extract_from(ctx.payload),
         failure: foundry_sdk::gateway::AgentFailureMetadata::default(),

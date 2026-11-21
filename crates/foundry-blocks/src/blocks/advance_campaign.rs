@@ -3454,7 +3454,6 @@ mod tests {
                     preservation_ref: None,
                     land_blocked: None,
                     proof_evidence: None,
-                    uncommitted_artifacts: None,
                     trunk_arrivals: Vec::new(),
                     verdict: TaskVerdict::Complete,
                     context: LoopContext {
@@ -3546,7 +3545,6 @@ mod tests {
                     preservation_ref: None,
                     land_blocked: None,
                     proof_evidence: None,
-                    uncommitted_artifacts: None,
                     trunk_arrivals: Vec::new(),
                     verdict: TaskVerdict::Complete,
                     context: LoopContext {
@@ -3630,7 +3628,6 @@ mod tests {
                     preservation_ref: None,
                     land_blocked: None,
                     proof_evidence: None,
-                    uncommitted_artifacts: None,
                     trunk_arrivals: Vec::new(),
                     verdict: TaskVerdict::Complete,
                     context: LoopContext {
@@ -3737,7 +3734,6 @@ mod tests {
                     preservation_ref: Some("foundry-task/parite-61ef680dcf08".to_string()),
                     land_blocked: None,
                     proof_evidence: None,
-                    uncommitted_artifacts: None,
                     trunk_arrivals: Vec::new(),
                     verdict: TaskVerdict::Remainder {
                         gaps: vec!["deployment evidence".to_string()],
@@ -3860,7 +3856,6 @@ mod tests {
             preservation_ref: Some("4a855db".to_string()),
             land_blocked: None,
             proof_evidence: None,
-            uncommitted_artifacts: None,
             trunk_arrivals: Vec::new(),
             verdict: TaskVerdict::Remainder {
                 gaps: vec!["exercise the generated gRPC boundary".to_string()],
@@ -4128,7 +4123,6 @@ mod tests {
                     preservation_ref: None,
                     land_blocked: None,
                     proof_evidence: None,
-                    uncommitted_artifacts: None,
                     trunk_arrivals: Vec::new(),
                     verdict: TaskVerdict::Remainder {
                         gaps: vec!["registry init still writes the local file".to_string()],
@@ -4674,7 +4668,6 @@ mod tests {
             preservation_ref: Some("foundry-task/preserved".to_string()),
             land_blocked: None,
             proof_evidence: None,
-            uncommitted_artifacts: None,
             trunk_arrivals: Vec::new(),
             verdict,
             context: LoopContext {

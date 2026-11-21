@@ -1,7 +1,8 @@
 //! Age-based pruning of the evidence store.
 //!
-//! Finalize Task writes one directory per run under the evidence root,
-//! `{evidence_dir}/{trace_id}/{attempt}/`, and nothing used to delete them:
+//! Every agent run has a scratch directory under the evidence root,
+//! `{evidence_dir}/{trace_id}/{attempt}/` (see the `scratch` module), and nothing
+//! used to delete them:
 //! on the ops host 2,893 trace directories had built up, 1,338 of them older
 //! than 30 days. The daemon now deletes a trace directory once it has not
 //! been written for `FOUNDRY_EVIDENCE_RETENTION_DAYS` (default 30; `0` turns
@@ -23,9 +24,8 @@
 //! makes the trace young again. The age is checked a second time just before
 //! deletion, so a trace written during the prune survives.
 //!
-//! Task results keep naming the deleted directories (`proof_evidence`,
-//! `uncommitted_artifacts`); after the retention period those paths no
-//! longer exist. The work item, its branch or bundle, and the trace record
+//! Task results keep naming the deleted directories (`proof_evidence`);
+//! after the retention period those paths no longer exist. The work item, its branch or bundle, and the trace record
 //! remain.
 
 use std::collections::HashSet;
@@ -98,8 +98,9 @@ pub(crate) fn select_expired(
 
 /// Every trace id that ledger work still holds: items waiting to start, and
 /// items occupying a slot (running, or settled with cleanup unfinished).
-/// Finalize Task names its evidence by the trigger's trace id, or the event
-/// id when it has none, so both ids of each admitted root count.
+/// A run's scratch directory is named by its trace id. Evidence written
+/// before scratch directories existed was named by the trace id, or the event
+/// id when there was none, so both ids of each admitted root count.
 #[must_use]
 pub fn in_flight_traces(store: &WorkItemStore) -> HashSet<String> {
     store

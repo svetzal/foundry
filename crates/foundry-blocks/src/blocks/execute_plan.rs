@@ -14,13 +14,14 @@ use crate::gateway::{AgentGateway, ProcessShellGateway, ShellGateway};
 
 use super::{ExecutionContext, SimulatedSuccess, TriggerContext};
 
-/// Every task execution, standalone or campaign cycle, gets this. Task
-/// finalization commits nothing under `.foundry/` (see
-/// `crate::workspace::FOUNDRY_DIR`), so the executor must know where durable
-/// work belongs.
+/// Every task execution, standalone or campaign cycle, gets this, with
+/// `{SCRATCH}` replaced by the run's scratch directory. That directory is
+/// outside the repository and task finalization commits nothing under
+/// `.foundry/` (see `crate::workspace::FOUNDRY_DIR`), so the executor must
+/// know where durable work belongs.
 const TASK_SCRATCH_PROMPT: &str = "
 
-FOUNDRY SCRATCH: files under .foundry/ are Foundry scratch for execution evidence (logs, screenshots, harness output, proof). They never land in the repository; Foundry archives them to its evidence store. Put anything the project must keep in a normal project path, for example docs/ or the test tree, and do not make repository files reference .foundry/ paths as if they were committed.
+FOUNDRY SCRATCH: {SCRATCH} is this run's scratch directory for execution evidence (logs, screenshots, harness output, proof). It is outside the repository and nothing in it lands; Foundry keeps it in its evidence store. Put anything the project must keep in a normal project path, for example docs/ or the test tree, and do not make repository files reference scratch or .foundry/ paths as if they were committed.
 ";
 
 /// Every task execution gets this: Foundry, not the agent, owns what happens
@@ -32,22 +33,22 @@ TRUNK CI: Foundry lands your work and then watches the branch's CI itself, so do
 const EARLY_PROOF_PROMPT: &str = r#"
 
 PROOF FIRST: before expanding fixtures, documentation, or running the full quality suite, exercise the hardest acceptance behavior through the project's public API, with its I/O boundary stubbed by an in-process test double as TEST DESIGN describes. Observe its rejecting case and corrected passing case. A marker toggle or count-only test is insufficient.
-Record .foundry/proof.json with this exact behavioral shape:
+Record {SCRATCH}/proof.json with this exact behavioral shape:
 {
   "kind": "behavioral",
   "source_change": "src/core.rs: describe the source/input change",
-  "rejecting": {"command": "test command", "exit_code": 1, "log": ".foundry/logs/rejecting.log"},
-  "corrected": {"command": "test command", "exit_code": 0, "log": ".foundry/logs/corrected.log"}
+  "rejecting": {"command": "test command", "exit_code": 1, "log": "{SCRATCH}/logs/rejecting.log"},
+  "corrected": {"command": "test command", "exit_code": 0, "log": "{SCRATCH}/logs/corrected.log"}
 }
-source_change is a single non-empty string. rejecting and corrected are top-level objects. Each log must exist; rejecting must be nonzero and corrected zero. Record actual probe exit codes.
+source_change is a single non-empty string. rejecting and corrected are top-level objects. Each log is an absolute path inside {SCRATCH}, for example a log path that foundry capture printed, and must exist; rejecting must be nonzero and corrected zero. Record actual probe exit codes.
 For a non-behavioral objective, use this exact direct shape with the smallest passing acceptance probe:
 {
   "kind": "direct",
   "reason": "Explain why this objective is non-behavioral",
-  "corrected": {"command": "acceptance command", "exit_code": 0, "log": ".foundry/logs/corrected.log"}
+  "corrected": {"command": "acceptance command", "exit_code": 0, "log": "{SCRATCH}/logs/corrected.log"}
 }
 Validate the file's JSON, field types, actual exit codes, and existence of each log before finishing. The reviewer must inspect this evidence.
-BLOCKED: if you cannot reach the acceptance boundary because a capability, access or owner decision is missing (for example, the objective needs an operating system, service or credential that no available host provides), do not fabricate evidence and do not write .foundry/proof.json. Record .foundry/blocker.json with this exact shape instead, then stop:
+BLOCKED: if you cannot reach the acceptance boundary because a capability, access or owner decision is missing (for example, the objective needs an operating system, service or credential that no available host provides), do not fabricate evidence and do not write {SCRATCH}/proof.json. Record {SCRATCH}/blocker.json with this exact shape instead, then stop:
 {
   "kind": "blocked",
   "tried": "what was attempted",
@@ -167,27 +168,14 @@ impl TaskBlock for ExecutePlan {
             let project_path = if workflow == WorkflowType::Task {
                 let base_ref =
                     execution_payload.get("base_ref").and_then(serde_json::Value::as_str);
-                // A campaign cycle's workspace is named from the campaign and
-                // cycle it serves, not from this run's event id. Cancellation
-                // knows the campaign but cannot know the run — nothing in the
-                // event stream names the worktree until the agent has already
-                // finished — so this is what lets a killed cycle's orphaned
-                // worktree be found and disposed of afterwards.
-                let workspace_id = match (
-                    execution_payload.get("campaign").and_then(serde_json::Value::as_str),
-                    execution_payload.get("campaign_cycle").and_then(serde_json::Value::as_u64),
-                ) {
-                    (Some(campaign), Some(cycle)) => {
-                        crate::workspace::campaign_workspace_id(campaign, cycle, &run_id)
-                    }
-                    _ => crate::workspace::run_workspace_id(&run_id),
-                };
-                let prepared = prepare_with_reconciliation(
+                let workspace_id = task_workspace_id(&execution_payload, &run_id);
+                let prepared = prepare_task_run(
                     &*shell,
                     &entry,
                     &workspace_id,
                     base_ref.map(str::to_owned),
                     &mut execution_payload,
+                    trace_id.as_deref(),
                 )
                 .await;
                 match prepared {
@@ -213,16 +201,20 @@ impl TaskBlock for ExecutePlan {
 
             let mut execution_entry = entry.clone();
             execution_entry.path = project_path.to_string_lossy().to_string();
-            let plan = &plan_payload.plan;
-            let principle = &plan_payload.principle;
-            let gates = plan_payload.chain.gates.as_ref();
-            let mut prompt = build_execution_prompt(&project, plan, principle, gates);
-            prompt.push_str(&task_prompt_suffix(
+            let prompt = match plan_prompt(
+                &project,
+                &plan_payload,
                 workflow,
-                execution_payload.get("campaign").is_some()
-                    || execution_payload.get("reconciliation").is_some(),
-            ));
-            append_reconciliation_prompt(&mut prompt, &execution_payload);
+                &mut execution_payload,
+                trace_id.as_deref(),
+            ) {
+                Ok(prompt) => prompt,
+                Err(error) => {
+                    return Ok(TaskBlockResult::failure(format!(
+                        "{project}: cannot create the run's scratch directory: {error}"
+                    )));
+                }
+            };
             let ctx = ExecutionContext {
                 trace_id: trace_id.clone(),
                 project: &project,
@@ -245,6 +237,70 @@ impl TaskBlock for ExecutePlan {
             .await)
         })
     }
+}
+
+/// The name of a task run's workspace.
+///
+/// A campaign cycle's workspace is named from the campaign and cycle it
+/// serves, not from this run's event id. Cancellation knows the campaign but
+/// cannot know the run — nothing in the event stream names the worktree until
+/// the agent has already finished — so this is what lets a killed cycle's
+/// orphaned worktree be found and disposed of afterwards.
+fn task_workspace_id(payload: &serde_json::Value, run_id: &str) -> String {
+    match (
+        payload.get("campaign").and_then(serde_json::Value::as_str),
+        payload.get("campaign_cycle").and_then(serde_json::Value::as_u64),
+    ) {
+        (Some(campaign), Some(cycle)) => {
+            crate::workspace::campaign_workspace_id(campaign, cycle, run_id)
+        }
+        _ => crate::workspace::run_workspace_id(run_id),
+    }
+}
+
+/// Prepare a task run: its isolated workspace, then a fresh scratch
+/// directory recorded in `payload`. A resumed or continued task must not see
+/// the proof of the run before it, so the run never keeps an inherited one.
+async fn prepare_task_run(
+    shell: &dyn ShellGateway,
+    entry: &foundry_sdk::registry::ProjectEntry,
+    workspace_id: &str,
+    base_ref: Option<String>,
+    payload: &mut serde_json::Value,
+    trace_id: Option<&str>,
+) -> anyhow::Result<super::task_workspace::TaskWorkspace> {
+    let workspace =
+        prepare_with_reconciliation(shell, entry, workspace_id, base_ref, payload).await?;
+    crate::scratch::allocate_into(payload, &foundry_sdk::paths::evidence_dir(), trace_id)
+        .map_err(|error| anyhow::anyhow!("cannot create the task's scratch directory: {error}"))?;
+    Ok(workspace)
+}
+
+/// The execution prompt, with the task rules naming the run's scratch
+/// directory. A run with no scratch directory yet gets one, recorded in
+/// `payload`.
+fn plan_prompt(
+    project: &str,
+    plan_payload: &PlanCompletedPayload,
+    workflow: WorkflowType,
+    payload: &mut serde_json::Value,
+    trace_id: Option<&str>,
+) -> std::io::Result<String> {
+    let scratch =
+        crate::scratch::ensure_in(payload, &foundry_sdk::paths::evidence_dir(), trace_id)?;
+    let mut prompt = build_execution_prompt(
+        project,
+        &plan_payload.plan,
+        &plan_payload.principle,
+        plan_payload.chain.gates.as_ref(),
+    );
+    prompt.push_str(&task_prompt_suffix(
+        workflow,
+        payload.get("campaign").is_some() || payload.get("reconciliation").is_some(),
+        &scratch,
+    ));
+    append_reconciliation_prompt(&mut prompt, payload, &scratch);
+    Ok(prompt)
 }
 
 async fn prepare_with_reconciliation(
@@ -280,13 +336,18 @@ async fn prepare_with_reconciliation(
     }
 }
 
-fn append_reconciliation_prompt(prompt: &mut String, payload: &serde_json::Value) {
+fn append_reconciliation_prompt(
+    prompt: &mut String,
+    payload: &serde_json::Value,
+    scratch: &std::path::Path,
+) {
     use std::fmt::Write as _;
     if let Some(reconciliation) = payload.get("reconciliation") {
+        let scratch = scratch.display();
         // Writing to String is infallible.
         let _ = write!(
             prompt,
-            "\nBOUNDED RECONCILIATION: one attempt in this task, starting on current trunk. Immutable source evidence: {reconciliation}\nRead the original objective and review findings above. Inspect the preserved commit with git show and compare its changes with current trunk. Reapply the remaining intended behavior in this worktree, retaining trunk changes and omitting source changes already satisfied by trunk. Explain each adaptation or omission in your result. Do not checkout, reset to, rebase, rewrite or delete the source ref; do not edit another worktree. Do not commit or push. Run acceptance proof and normal gates. If a product choice is needed, write .foundry/blocker.json with the exact question. If reconciliation cannot be completed, retain useful work and report the obstacle; do not dispatch another attempt.\n"
+            "\nBOUNDED RECONCILIATION: one attempt in this task, starting on current trunk. Immutable source evidence: {reconciliation}\nRead the original objective and review findings above. Inspect the preserved commit with git show and compare its changes with current trunk. Reapply the remaining intended behavior in this worktree, retaining trunk changes and omitting source changes already satisfied by trunk. Explain each adaptation or omission in your result. Do not checkout, reset to, rebase, rewrite or delete the source ref; do not edit another worktree. Do not commit or push. Run acceptance proof and normal gates. If a product choice is needed, write {scratch}/blocker.json with the exact question. If reconciliation cannot be completed, retain useful work and report the obstacle; do not dispatch another attempt.\n"
         );
     }
 }
@@ -324,7 +385,6 @@ fn workspace_failure_result(
             preservation_ref: None,
             land_blocked,
             proof_evidence: None,
-            uncommitted_artifacts: None,
             trunk_arrivals: Vec::new(),
             verdict: TaskVerdict::RunnerError {
                 detail: error.to_string(),
@@ -375,11 +435,12 @@ fn build_no_correction_result(
     })
 }
 
-/// What a task adds to the plan prompt: the `.foundry` scratch rule, the
-/// trunk CI rule and the shared test-design rule for every task, then early proof for a campaign
-/// cycle. Iterate, maintain and prompt runs commit through other paths and get
-/// none of them.
-fn task_prompt_suffix(workflow: WorkflowType, campaign: bool) -> String {
+/// What a task adds to the plan prompt: the scratch rule, the trunk CI rule
+/// and the shared test-design rule for every task, then early proof for a
+/// campaign cycle, each naming the run's absolute `scratch` directory.
+/// Iterate, maintain and prompt runs commit through other paths and get none
+/// of them.
+fn task_prompt_suffix(workflow: WorkflowType, campaign: bool, scratch: &std::path::Path) -> String {
     let mut suffix = String::new();
     if workflow == WorkflowType::Task {
         suffix.push_str(TASK_SCRATCH_PROMPT);
@@ -390,7 +451,7 @@ fn task_prompt_suffix(workflow: WorkflowType, campaign: bool) -> String {
     if campaign {
         suffix.push_str(EARLY_PROOF_PROMPT);
     }
-    suffix
+    suffix.replace("{SCRATCH}", &scratch.to_string_lossy())
 }
 
 fn build_execution_prompt(
@@ -662,6 +723,114 @@ mod tests {
             "preserved edit"
         );
         assert!(!path.exists());
+    }
+
+    /// A campaign cycle through the whole task chain. The executor is given a
+    /// scratch directory outside the repository (in its prompt and as
+    /// `FOUNDRY_SCRATCH_DIR`), writes its proof and logs there, review reads
+    /// them from there, and finalize names that directory as the proof
+    /// evidence. Nothing under `.foundry/` reaches trunk. A later run of the
+    /// same work gets a fresh scratch directory.
+    #[tokio::test]
+    async fn a_campaign_task_writes_and_reads_its_proof_in_the_scratch_directory() {
+        use crate::blocks::test_helpers::git_repo::{CleanProcessShellGateway, git, repo};
+        use foundry_sdk::task_block::TaskBlock as _;
+
+        let fixture = repo();
+        let project = "execute-plan-scratch";
+        let registry =
+            || test_helpers::registry_with_project(project, fixture.work.to_str().unwrap());
+        let agent = FakeAgentGateway::success();
+        let block = ExecutePlan::with_gateways(
+            agent.clone(),
+            registry(),
+            Arc::new(CleanProcessShellGateway),
+        );
+        let trigger = test_event!(EventType::PlanCompleted, project, {
+            "project": project,
+            "plan": "document the slice",
+            "principle": "",
+            "category": "",
+            "workflow": "task",
+            "correction_needed": true,
+            "prompt": "document the slice",
+            "campaign": "scratch-campaign",
+            "campaign_cycle": 1,
+            "campaign_limits": {},
+            "scratch_dir": "/inherited/from/an/earlier/run",
+        });
+
+        let executed = block.execute(&trigger).await.unwrap();
+
+        let payload = &executed.events[0].payload;
+        let worktree = std::path::PathBuf::from(payload["task_worktree"].as_str().unwrap());
+        let scratch = std::path::PathBuf::from(payload["scratch_dir"].as_str().unwrap());
+        assert_ne!(scratch, std::path::Path::new("/inherited/from/an/earlier/run"));
+        assert!(scratch.starts_with(foundry_sdk::paths::evidence_dir()), "{}", scratch.display());
+        assert!(!scratch.starts_with(&worktree) && !scratch.starts_with(&fixture.work));
+        assert!(scratch.join("logs").is_dir());
+        let invocation = &agent.invocations()[0];
+        assert!(
+            invocation.env.contains(&(
+                "FOUNDRY_SCRATCH_DIR".to_string(),
+                scratch.to_string_lossy().into_owned()
+            )),
+            "{:?}",
+            invocation.env
+        );
+        let proof_path = scratch.join("proof.json");
+        assert!(invocation.prompt.contains(&format!("Record {}", proof_path.display())));
+        assert!(!invocation.prompt.contains(".foundry/logs"), "{}", invocation.prompt);
+
+        // Model the executor: a project change, proof and its log in scratch,
+        // and a stray log an old habit left in the worktree.
+        std::fs::write(worktree.join("NOTES.md"), "documented\n").unwrap();
+        let log = scratch.join("logs/corrected.log");
+        std::fs::write(&log, "book built").unwrap();
+        let proof = serde_json::json!({"kind":"direct", "reason":"documentation-only objective",
+            "corrected":{"command":"mdbook build book","exit_code":0,"log":log}});
+        std::fs::write(&proof_path, proof.to_string()).unwrap();
+        std::fs::create_dir_all(worktree.join(".foundry/logs")).unwrap();
+        std::fs::write(worktree.join(".foundry/logs/1.stdout.log"), "stray").unwrap();
+
+        let verified =
+            super::super::RunVerifyGates::new(Arc::new(CleanProcessShellGateway), registry())
+                .execute(&executed.events[0])
+                .await
+                .unwrap();
+        let review_agent =
+            FakeAgentGateway::success_with("```json\n{\"verdict\":\"complete\"}\n```");
+        let reviewed = super::super::ReviewTask::new(review_agent.clone(), registry())
+            .execute(&verified.events[0])
+            .await
+            .unwrap();
+        assert_eq!(review_agent.invocations().len(), 1, "sound proof reaches the reviewer");
+        assert!(
+            review_agent.invocations()[0]
+                .prompt
+                .contains(&format!("Inspect the executor's proof at {}", proof_path.display()))
+        );
+        let finalized = super::super::FinalizeTask::with_gateways(
+            registry(),
+            Arc::new(CleanProcessShellGateway),
+        )
+        .execute(&reviewed.events[0])
+        .await
+        .unwrap();
+
+        let result = &finalized.events[0].payload;
+        assert_eq!(result["landed"], true, "{result}");
+        assert_eq!(result["proof_evidence"], scratch.to_string_lossy().as_ref());
+        assert_eq!(std::fs::read_to_string(&proof_path).unwrap(), proof.to_string());
+        assert_eq!(
+            git(&fixture.work, &["ls-tree", "-r", "--name-only", "main", "--", ".foundry"]),
+            "",
+            "nothing under .foundry reaches trunk"
+        );
+        assert_eq!(git(&fixture.work, &["show", "main:NOTES.md"]), "documented");
+        assert!(!worktree.exists());
+        // Test fixture owns the scratch directory it caused to be created.
+        std::fs::remove_dir_all(&scratch).unwrap();
     }
 
     /// The start preparation recorded travels with the run, so finalize can
@@ -1002,15 +1171,28 @@ mod tests {
         assert!(prompt.contains("1. Do the thing"), "expected plan content in:\n{prompt}");
     }
 
-    /// Task finalization commits nothing under `.foundry/`, so every task,
-    /// standalone or campaign, is told so; other workflows are not.
+    /// The run's scratch directory in these prompt tests.
+    fn scratch() -> &'static std::path::Path {
+        std::path::Path::new("/srv/foundry/evidence/trace/attempt")
+    }
+
+    /// Scratch lives outside the repository, so every task, standalone or
+    /// campaign, is told its absolute scratch path; other workflows are not.
     #[test]
-    fn every_task_prompt_says_dot_foundry_is_scratch_and_only_campaigns_require_proof() {
+    fn every_task_prompt_names_its_scratch_directory_and_only_campaigns_require_proof() {
         use foundry_sdk::workflow::WorkflowType;
 
-        let standalone = super::task_prompt_suffix(WorkflowType::Task, false);
-        assert!(standalone.contains("files under .foundry/ are Foundry scratch"), "{standalone}");
-        assert!(standalone.contains("never land in the repository"), "{standalone}");
+        let standalone = super::task_prompt_suffix(WorkflowType::Task, false, scratch());
+        assert!(
+            standalone
+                .contains("/srv/foundry/evidence/trace/attempt is this run's scratch directory"),
+            "{standalone}"
+        );
+        assert!(
+            standalone.contains("outside the repository and nothing in it lands"),
+            "{standalone}"
+        );
+        assert!(!standalone.contains("{SCRATCH}"), "{standalone}");
         assert!(standalone.contains("docs/ or the test tree"), "{standalone}");
         assert!(!standalone.contains("PROOF FIRST"), "{standalone}");
         assert!(
@@ -1018,13 +1200,27 @@ mod tests {
             "{standalone}"
         );
 
-        let campaign = super::task_prompt_suffix(WorkflowType::Task, true);
+        let campaign = super::task_prompt_suffix(WorkflowType::Task, true, scratch());
         assert!(campaign.contains("TRUNK CI:"), "{campaign}");
-        assert!(campaign.contains("files under .foundry/ are Foundry scratch"), "{campaign}");
         assert!(campaign.contains("PROOF FIRST"), "{campaign}");
+        // Proof, its logs and the blocker are absolute paths in scratch.
+        assert!(
+            campaign.contains("Record /srv/foundry/evidence/trace/attempt/proof.json"),
+            "{campaign}"
+        );
+        assert!(
+            campaign.contains(r#""log": "/srv/foundry/evidence/trace/attempt/logs/rejecting.log""#),
+            "{campaign}"
+        );
         // A campaign executor that cannot reach the boundary has a recorded
         // way to say so instead of leaving proof absent.
-        assert!(campaign.contains("Record .foundry/blocker.json"), "{campaign}");
+        assert!(
+            campaign.contains("Record /srv/foundry/evidence/trace/attempt/blocker.json"),
+            "{campaign}"
+        );
+        assert!(!campaign.contains(".foundry/proof.json"), "{campaign}");
+        assert!(!campaign.contains(".foundry/logs"), "{campaign}");
+        assert!(!campaign.contains("{SCRATCH}"), "{campaign}");
         assert!(campaign.contains(r#""kind": "blocked""#), "{campaign}");
         assert!(campaign.contains("do not fabricate evidence"), "{campaign}");
         assert!(!standalone.contains("blocker.json"), "{standalone}");
@@ -1038,7 +1234,7 @@ mod tests {
             WorkflowType::Maintain,
             WorkflowType::Prompt,
         ] {
-            assert!(super::task_prompt_suffix(workflow, false).is_empty(), "{workflow}");
+            assert!(super::task_prompt_suffix(workflow, false, scratch()).is_empty(), "{workflow}");
         }
     }
 
@@ -1053,12 +1249,12 @@ mod tests {
 
         let guidance = super::super::agent_helpers::TEST_DESIGN_GUIDANCE;
         for campaign in [false, true] {
-            let suffix = super::task_prompt_suffix(WorkflowType::Task, campaign);
+            let suffix = super::task_prompt_suffix(WorkflowType::Task, campaign, scratch());
             assert!(suffix.contains(guidance), "{suffix}");
             assert!(!suffix.contains("through the real boundary"), "{suffix}");
         }
 
-        let campaign = super::task_prompt_suffix(WorkflowType::Task, true);
+        let campaign = super::task_prompt_suffix(WorkflowType::Task, true, scratch());
         assert!(
             campaign.contains(
                 "exercise the hardest acceptance behavior through the project's public API, with its I/O boundary stubbed by an in-process test double"
@@ -1082,12 +1278,12 @@ mod tests {
         use foundry_sdk::workflow::WorkflowType;
 
         for campaign in [false, true] {
-            let suffix = super::task_prompt_suffix(WorkflowType::Task, campaign);
+            let suffix = super::task_prompt_suffix(WorkflowType::Task, campaign, scratch());
             for phrase in super::super::agent_helpers::SEAM_AUTHORIZATION_PHRASES {
                 assert!(suffix.contains(phrase), "missing {phrase}: {suffix}");
             }
         }
-        let campaign = super::task_prompt_suffix(WorkflowType::Task, true);
+        let campaign = super::task_prompt_suffix(WorkflowType::Task, true, scratch());
         assert!(
             campaign.contains(
                 "An internal seam that TEST DESIGN pre-authorizes is never a missing owner decision: add it and continue, do not write a blocker for it."

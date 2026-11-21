@@ -1165,7 +1165,6 @@ mod tests {
             preservation_ref: None,
             land_blocked: None,
             proof_evidence: None,
-            uncommitted_artifacts: None,
             trunk_arrivals: Vec::new(),
             verdict: crate::payload::TaskVerdict::Complete,
             context: crate::payload::LoopContext::default(),

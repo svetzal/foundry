@@ -463,7 +463,6 @@ fn landed_result(name: &str, summary: &str) -> TaskRunCompletedPayload {
         preservation_ref: None,
         land_blocked: None,
         proof_evidence: None,
-        uncommitted_artifacts: None,
         trunk_arrivals: Vec::new(),
         verdict: TaskVerdict::Complete,
         context: LoopContext {

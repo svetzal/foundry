@@ -154,8 +154,8 @@ that times out) also ends as `runner_error`, without a review session or a
 proof check. The detail is the session's own message, for example `plan
 execution failed: <message>` or `agent unavailable: <error>`. "Before it does
 work" means the session changed no project file (changes under `.foundry/` and
-auxiliary worktree paths do not count) and left no `.foundry/proof.json` or
-`.foundry/blocker.json`. A failed session that did change files, or that wrote
+auxiliary worktree paths do not count) and left no `proof.json` or
+`blocker.json` in its scratch directory. A failed session that did change files, or that wrote
 early evidence, is reviewed as usual: the proof check runs, then the reviewer.
 A session that finished but wrote no proof is still a `defect`.
 
@@ -439,9 +439,12 @@ foundry capture -- cargo test --workspace
 ```
 
 This command needs no daemon. It returns the child's exit code and stores both
-complete streams in `~/.foundry/tool-logs/`. Passing commands print only status
-and log paths. Failures print at most 2 KiB from each stream. Use `--log-dir`
-to choose another directory. Logs remain until you remove them. Gate runs keep
+complete streams in the `logs/` directory of the session's scratch directory
+(`$FOUNDRY_SCRATCH_DIR/logs`). Outside a Foundry session, the logs go to
+`~/.foundry/tool-logs/`. Passing commands print only status and absolute log
+paths. Failures print at most 2 KiB from each stream. Use `--log-dir` to
+choose another directory. Logs in a scratch directory follow evidence
+retention. Logs in `tool-logs/` remain until you remove them. Gate runs keep
 their own logs for failed gates under `~/.foundry/evidence/gate-logs/`, which
 Foundry prunes automatically.
 
@@ -519,21 +522,25 @@ Before broad fixture or documentation changes, the executor must exercise the
 hardest acceptance behavior through the project's public API, with its I/O
 boundary stubbed by an in-process test double (see [Test design](#test-design)).
 It must record the rejecting case and the corrected passing case in
-`.foundry/proof.json`:
+`proof.json` in its scratch directory (see
+[The scratch directory](workflow-formations.md#the-scratch-directory)):
 
 ```json
 {
   "kind": "behavioral",
   "source_change": "Describe the changed source/input and its paths",
-  "rejecting": {"command": "test command", "exit_code": 1, "log": "full-log-path"},
-  "corrected": {"command": "test command", "exit_code": 0, "log": "full-log-path"}
+  "rejecting": {"command": "test command", "exit_code": 1, "log": "/absolute/path/in/scratch/logs/rejecting.log"},
+  "corrected": {"command": "test command", "exit_code": 0, "log": "/absolute/path/in/scratch/logs/corrected.log"}
 }
 ```
 
 Write `source_change` as a single non-empty string. For compatibility, a
 non-empty array of non-empty strings is interpreted as their joined text.
 `rejecting` and `corrected` are top-level objects. Validate the file's JSON,
-field types, actual exit codes, and log paths before finishing.
+field types, actual exit codes, and log paths before finishing. Each `log` is
+an absolute path to a file in the scratch directory, for example a path that
+`foundry capture` printed. Review rejects a relative path, a path outside the
+scratch directory and a path to a file that does not exist.
 
 For a non-behavioral objective, use this direct shape:
 
@@ -541,15 +548,15 @@ For a non-behavioral objective, use this direct shape:
 {
   "kind": "direct",
   "reason": "Explain why this objective is non-behavioral",
-  "corrected": {"command": "acceptance command", "exit_code": 0, "log": ".foundry/logs/corrected.log"}
+  "corrected": {"command": "acceptance command", "exit_code": 0, "log": "/absolute/path/in/scratch/logs/corrected.log"}
 }
 ```
 
 Sometimes the executor cannot reach the acceptance boundary because a
 capability, an access or an owner decision is missing. For example, the
 objective needs macOS and every available host runs Linux. Then the executor
-must not write `.foundry/proof.json` and must not invent evidence. It records
-`.foundry/blocker.json` and stops:
+must not write `proof.json` and must not invent evidence. It records
+`blocker.json` in its scratch directory and stops:
 
 ```json
 {
@@ -576,32 +583,25 @@ Review reads the blocker before the proof:
   the owner answers with `campaign decide`, `resume`, `complete` or `cancel`.
 - An invalid blocker (wrong `kind`, an empty or absent text field, `options`
   that is not an array of non-empty strings, or malformed JSON) is a `defect`
-  whose diagnosis starts with
-  `invalid execution blocker at .foundry/blocker.json`.
+  whose diagnosis starts with `invalid execution blocker at`, followed by the
+  absolute path of the blocker file.
 - With no blocker, review checks the proof as described above. A missing or
   malformed proof stays a `defect`.
 
-Review reads the worktree proof before finalization. Before committing,
-Foundry copies the proof and named logs into
-`~/.foundry/evidence/<trace-id>/<unique-attempt>/` (event id when no trace is
-present). The task result's `proof_evidence` field records that directory for
-later audits. `original-proof.json` retains the exact submitted bytes;
-`proof.json` uses relative paths to copied `rejecting.log` and `corrected.log`,
-so the archive is readable after worktree removal. Malformed proofs and absent
-logs remain failed evidence; archival never invents results. An archival I/O
-failure stops finalization before committing or cleanup.
+Review reads the proof from the scratch directory, which is outside the
+repository at `~/.foundry/evidence/<trace-id>/<attempt-id>/`. Nothing is
+copied, because the scratch directory is already in the evidence store. The
+task result's `proof_evidence` field records that directory for later audits
+when it holds `proof.json`. Malformed proofs and absent logs remain failed
+evidence. Before the task result is recorded, finalization removes build
+output and files over 64 MiB from the scratch directory and lists them in
+`trimmed.json`.
 
-The proof and its logs are not project content. The rules for them are the
-rules for every file under `.foundry/` in a task worktree, described in
-[What lands from a task](workflow-formations.md#what-lands-from-a-task): nothing there is
-committed, and finalization copies it to
-`~/.foundry/evidence/<trace-id>/<unique-attempt>/worktree/` before cleanup. The
-task result's `uncommitted_artifacts` field names that directory. It holds the
-raw proof and logs at their worktree paths, beside the portable proof archive
-in the parent directory. Build output and files over 64 MiB are recorded in
-`worktree-skipped.json` instead of copied. Evidence a campaign must keep in
-the repository goes
-in a normal project path, such as `docs/` or the test tree.
+The proof and its logs are not project content. Nothing under `.foundry/` in
+the repository is committed, as described in
+[What lands from a task](workflow-formations.md#what-lands-from-a-task).
+Evidence a campaign must keep in the repository goes in a normal project path,
+such as `docs/` or the test tree.
 
 New campaign tasks fail with a typed defect if the record is
 missing, malformed, or refers to absent logs. This check spends no reviewer
@@ -1439,7 +1439,8 @@ prerequisites and runner failures. See
 [initiative recovery](initiatives.md#recover-an-operational-blocker).
 A genuine policy choice still uses `blocked_on_decision`.
 
-An executor can record an operational blocker in `.foundry/blocker.json`:
+An executor can record an operational blocker in `blocker.json` in its scratch
+directory:
 
 ```json
 {

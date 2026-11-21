@@ -265,7 +265,6 @@ fn budget_exhausted_campaign(name: &str) -> Campaign {
         preservation_ref: Some("foundry-task/cli-decide-grpc-test-ref".to_string()),
         land_blocked: None,
         proof_evidence: None,
-        uncommitted_artifacts: None,
         trunk_arrivals: Vec::new(),
         verdict: foundry_sdk::payload::TaskVerdict::Complete,
         context: foundry_sdk::payload::LoopContext {

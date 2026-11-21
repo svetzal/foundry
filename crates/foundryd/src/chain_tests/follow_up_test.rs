@@ -55,7 +55,6 @@ fn terminal(item: &WorkItem, verdict: TaskVerdict, commit: &str, campaign: Optio
             preservation_ref: Some(commit.into()),
             land_blocked: None,
             proof_evidence: None,
-            uncommitted_artifacts: None,
             trunk_arrivals: Vec::new(),
             verdict,
             context: LoopContext {

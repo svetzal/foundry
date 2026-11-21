@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -11,7 +12,7 @@ use foundry_sdk::throttle::Throttle;
 use foundry_sdk::workflow::WorkflowType;
 
 use crate::gateway::{AgentAccess, AgentGateway, ModelTier, ReasoningEffort};
-use crate::workspace::{BLOCKER_FILE, PROOF_FILE};
+use crate::scratch::{BLOCKER_FILE, PROOF_FILE};
 
 use super::{AgentBlockSpec, TriggerContext, invoke_agent};
 
@@ -112,7 +113,7 @@ fn render_review_prompt(objective: &str, gates: &str) -> String {
         "You are the skeptical reviewer for a one-shot engineering task. Inspect the actual source, diff, and tests in the current worktree; do not trust the executor's self-report.\n\n\
          OBJECTIVE (every acceptance/evidence phrase is binding):\n{objective}\n\n\
          MECHANICAL GATE RESULTS:\n{gates}\n\n\
-         Decide exactly one typed verdict. COMPLETE requires every objective and evidence requirement to be satisfied and all REQUIRED gates to pass. OPTIONAL gate failures are advisory and must not block COMPLETE unless the objective itself explicitly makes that result acceptance evidence. This review runs before Finalize Task: tracked modifications and untracked new files are both valid deliverable changes and Finalize Task commits them after a COMPLETE verdict, so do not reject work merely because it is untracked or uncommitted. Files under .foundry/ are Foundry scratch and never land, so a deliverable that cites .foundry/ paths as repository content, or that leaves durable project material only under .foundry/, is a defect. Tests that mask identifiers, compare only counts, bypass the project's public API, or otherwise cannot detect the stated defect do not count. When the objective requires proof through a public or generated boundary, at least one test must drive that boundary the way a caller does and assert its observable request or response, with I/O stubbed in process at the transport or gateway; a double that replaces the code under test or mocks library internals is insufficient. Do not demand real servers, sockets, live services or wall-clock timing as proof. Use REMAINDER only for a finite list of missing work on a converging implementation. Use DEFECT for a faulty approach or regression. Use BLOCKED_ON_RECOVERY for a missing operational capability, access, environment or evidence, with a typed recovery kind and exact missing prerequisite. Use BLOCKED_ON_DECISION when reality exposes a genuine product/policy choice that makes the objective unsatisfiable as written.\n\n\
+         Decide exactly one typed verdict. COMPLETE requires every objective and evidence requirement to be satisfied and all REQUIRED gates to pass. OPTIONAL gate failures are advisory and must not block COMPLETE unless the objective itself explicitly makes that result acceptance evidence. This review runs before Finalize Task: tracked modifications and untracked new files are both valid deliverable changes and Finalize Task commits them after a COMPLETE verdict, so do not reject work merely because it is untracked or uncommitted. Nothing under .foundry/ in the repository ever lands, and the executor's scratch directory is outside the repository, so a deliverable that cites .foundry/ or scratch paths as repository content, or that leaves durable project material only there, is a defect. Tests that mask identifiers, compare only counts, bypass the project's public API, or otherwise cannot detect the stated defect do not count. When the objective requires proof through a public or generated boundary, at least one test must drive that boundary the way a caller does and assert its observable request or response, with I/O stubbed in process at the transport or gateway; a double that replaces the code under test or mocks library internals is insufficient. Do not demand real servers, sockets, live services or wall-clock timing as proof. Use REMAINDER only for a finite list of missing work on a converging implementation. Use DEFECT for a faulty approach or regression. Use BLOCKED_ON_RECOVERY for a missing operational capability, access, environment or evidence, with a typed recovery kind and exact missing prerequisite. Use BLOCKED_ON_DECISION when reality exposes a genuine product/policy choice that makes the objective unsatisfiable as written.\n\n\
          {test_design}\n\n\
          {seam_review}\n\n\
          End with exactly one JSON object in a fenced json block, using one of these shapes:\n\
@@ -194,7 +195,7 @@ fn review_objective(context: &LoopContext) -> String {
 }
 
 /// The executor's own account of why it could not reach the acceptance
-/// boundary, read from [`BLOCKER_FILE`].
+/// boundary, read from [`BLOCKER_FILE`] in the run's scratch directory.
 struct Blocker {
     recovery_kind: Option<foundry_sdk::recovery::RecoveryKind>,
     tried: String,
@@ -239,8 +240,8 @@ impl Blocker {
 
 /// Read the executor's blocker record. `None` when there is none, so the
 /// proof check runs as before; an `Err` names what is wrong with the record.
-fn read_blocker(repo: &std::path::Path) -> Option<Result<Blocker, String>> {
-    let path = repo.join(BLOCKER_FILE);
+fn read_blocker(scratch: &std::path::Path) -> Option<Result<Blocker, String>> {
+    let path = scratch.join(BLOCKER_FILE);
     // An unanswerable existence check falls through to the read, which
     // reports the fault as an invalid blocker rather than ignoring it.
     if matches!(path.try_exists(), Ok(false)) {
@@ -289,12 +290,12 @@ fn read_blocker(repo: &std::path::Path) -> Option<Result<Blocker, String>> {
             options,
         })
     };
-    Some(parse().map_err(|e| format!("invalid execution blocker at {BLOCKER_FILE}: {e}")))
+    Some(parse().map_err(|e| format!("invalid execution blocker at {}: {e}", path.display())))
 }
 
 /// Check evidence shape cheaply; the skeptical reviewer checks its meaning.
-fn proof_error(repo: &std::path::Path) -> Option<String> {
-    let path = repo.join(PROOF_FILE);
+fn proof_error(scratch: &std::path::Path) -> Option<String> {
+    let path = scratch.join(PROOF_FILE);
     let check = || -> anyhow::Result<()> {
         let value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
         require_object(&value, "proof")?;
@@ -319,7 +320,7 @@ fn proof_error(repo: &std::path::Path) -> Option<String> {
                 if source_change.trim().is_empty() {
                     anyhow::bail!("behavioral proof requires non-empty source_change");
                 }
-                validate_probe(repo, &value["rejecting"], "rejecting", false)?;
+                validate_probe(scratch, &value["rejecting"], "rejecting", false)?;
             }
             "direct" => {
                 if require_string(&value["reason"], "reason")?.trim().is_empty() {
@@ -330,11 +331,11 @@ fn proof_error(repo: &std::path::Path) -> Option<String> {
                 "proof kind must be behavioral, or direct with a non-behavioral reason"
             ),
         }
-        validate_probe(repo, &value["corrected"], "corrected", true)
+        validate_probe(scratch, &value["corrected"], "corrected", true)
     };
     check()
         .err()
-        .map(|e| format!("invalid or missing early acceptance evidence at {PROOF_FILE}: {e}"))
+        .map(|e| format!("invalid or missing early acceptance evidence at {}: {e}", path.display()))
 }
 
 fn json_type(value: &serde_json::Value) -> &'static str {
@@ -362,7 +363,7 @@ fn require_object(value: &serde_json::Value, field: &str) -> anyhow::Result<()> 
 }
 
 fn validate_probe(
-    repo: &std::path::Path,
+    scratch: &std::path::Path,
     probe: &serde_json::Value,
     field: &str,
     passing: bool,
@@ -384,7 +385,14 @@ fn validate_probe(
         anyhow::bail!("probe requires command");
     }
     let log = require_string(&probe["log"], &format!("{field}.log"))?;
-    if !repo.join(log).is_file() {
+    let log_path = std::path::Path::new(log);
+    if !log_path.is_absolute() || !log_path.starts_with(scratch) {
+        anyhow::bail!(
+            "probe log must be an absolute path in the scratch directory {}: {log}",
+            scratch.display()
+        );
+    }
+    if !log_path.is_file() {
         anyhow::bail!("probe log is missing: {log}");
     }
     Ok(())
@@ -393,11 +401,18 @@ fn validate_probe(
 fn task_review_prompt(
     objective: &str,
     results: &[foundry_sdk::gates::GateResult],
-    campaign: bool,
+    proof_scratch: Option<&std::path::Path>,
 ) -> String {
     let mut prompt = build_review_prompt(objective, results);
-    if campaign {
-        prompt.push_str("\nInspect .foundry/proof.json and its logs: verify the earliest acceptance probe exercised the hardest acceptance behavior through the project's public API, with I/O stubbed in process, before broad expansion. A probe that opens real sockets or local servers, calls external services or asserts wall-clock thresholds is a defect unless the project's own guidance designates that suite as integration or end-to-end. Reject missing evidence, invented results, marker toggles, or failure cases unrelated to the objective. A documented non-behavioral objective may use a direct acceptance probe instead of red/green.");
+    if let Some(scratch) = proof_scratch {
+        let proof = scratch.join(PROOF_FILE);
+        // Writing to String is infallible.
+        let _ = write!(
+            prompt,
+            "\nInspect the executor's proof at {} and its logs, all in its scratch directory {} outside the repository: verify the earliest acceptance probe exercised the hardest acceptance behavior through the project's public API, with I/O stubbed in process, before broad expansion. A probe that opens real sockets or local servers, calls external services or asserts wall-clock thresholds is a defect unless the project's own guidance designates that suite as integration or end-to-end. Reject missing evidence, invented results, marker toggles, or failure cases unrelated to the objective. A documented non-behavioral objective may use a direct acceptance probe instead of red/green.",
+            proof.display(),
+            scratch.display()
+        );
     }
     prompt
 }
@@ -407,12 +422,10 @@ fn reconciliation_review_prompt(
     results: &[foundry_sdk::gates::GateResult],
     context: &LoopContext,
 ) -> String {
-    use std::fmt::Write as _;
-    let mut prompt = task_review_prompt(
-        objective,
-        results,
-        context.campaign.is_some() || context.reconciliation.is_some(),
-    );
+    let proof_scratch = (context.campaign.is_some() || context.reconciliation.is_some())
+        .then(|| scratch_dir(context))
+        .flatten();
+    let mut prompt = task_review_prompt(objective, results, proof_scratch.as_deref());
     if let Some(source) = &context.reconciliation {
         // Writing to String is infallible.
         let _ = write!(
@@ -423,8 +436,13 @@ fn reconciliation_review_prompt(
     prompt
 }
 
+/// The run's scratch directory, where the executor wrote its proof and
+/// blocker.
+fn scratch_dir(context: &LoopContext) -> Option<PathBuf> {
+    context.scratch_dir.as_deref().map(PathBuf::from)
+}
+
 fn campaign_proof_review(
-    directory: &std::path::Path,
     throttle: Throttle,
     context: &LoopContext,
     objective: &str,
@@ -434,11 +452,15 @@ fn campaign_proof_review(
     if throttle == Throttle::DryRun {
         return None;
     }
-    let (verdict, review) = if context.campaign_limits.is_some() || context.reconciliation.is_some()
-    {
-        early_evidence_verdict(directory)?
-    } else {
-        match read_blocker(directory) {
+    let requires_proof = context.campaign_limits.is_some() || context.reconciliation.is_some();
+    let scratch = scratch_dir(context);
+    let (verdict, review) = match (scratch.as_deref(), requires_proof) {
+        (Some(scratch), true) => early_evidence_verdict(scratch)?,
+        (None, true) => defect(
+            "missing early acceptance evidence: the run recorded no scratch directory".to_string(),
+        ),
+        (None, false) => return None,
+        (Some(scratch), false) => match read_blocker(scratch) {
             Some(Ok(blocker)) if blocker.recovery_kind.is_some() => {
                 let detail = blocker.finding();
                 (
@@ -448,7 +470,7 @@ fn campaign_proof_review(
             }
             Some(Err(reason)) => defect(reason),
             _ => return None,
-        }
+        },
     };
     Some(early_review_payload(
         project,
@@ -520,9 +542,7 @@ impl TaskBlock for ReviewTask {
             None if throttle == Throttle::DryRun => Some(PathBuf::from(&entry.path)),
             None => None,
         };
-        if let Some(reviewed) =
-            failed_session_review(&project, &objective, &p, &context, working_dir.as_deref())
-        {
+        if let Some(reviewed) = failed_session_review(&project, &objective, &p, &context) {
             return settle_without_review(project, throttle, reviewed);
         }
         let Some(working_dir) = working_dir else {
@@ -539,14 +559,9 @@ impl TaskBlock for ReviewTask {
             );
             return stop_for_review(project, throttle, reviewed);
         };
-        if let Some(reviewed) = campaign_proof_review(
-            &working_dir,
-            throttle,
-            &context,
-            &objective,
-            &project,
-            &p.results,
-        ) {
+        if let Some(reviewed) =
+            campaign_proof_review(throttle, &context, &objective, &project, &p.results)
+        {
             return stop_for_review(project, throttle, reviewed);
         }
         let prompt = super::with_initiative_context(
@@ -625,7 +640,7 @@ fn review_outcome(outcome: crate::gateway::AgentOutcome) -> (String, TaskVerdict
 ///
 /// There is nothing to review and no proof to expect, so the run settles as
 /// a runner error naming the session's failure, before the proof check and
-/// without a review session. Reporting missing `.foundry/proof.json` as a
+/// without a review session. Reporting missing proof as a
 /// defect would tell campaign formation the work was wrong when it never ran
 /// (the 2026-10-19 Codex capacity outage). Two cases qualify:
 ///
@@ -633,17 +648,16 @@ fn review_outcome(outcome: crate::gateway::AgentOutcome) -> (String, TaskVerdict
 ///   account state): the provider refused the session. The detail names the
 ///   failure kind (`provider unavailable: <message>`).
 /// - Any other failed session ([`GateVerificationCompletedPayload::session_failure`])
-///   that changed no project file and wrote no early evidence to the
-///   worktree. The detail is the session's own failure message. A failed
-///   session that changed files, or that wrote `.foundry/proof.json` or
-///   `.foundry/blocker.json`, did work and goes through the proof check and
+///   that changed no project file and wrote no early evidence to its
+///   scratch directory. The detail is the session's own failure message. A failed
+///   session that changed files, or that wrote `proof.json` or
+///   `blocker.json` in its scratch directory, did work and goes through the proof check and
 ///   the reviewer as usual.
 fn failed_session_review(
     project: &str,
     objective: &str,
     verification: &GateVerificationCompletedPayload,
     context: &LoopContext,
-    working_dir: Option<&std::path::Path>,
 ) -> Option<TaskReviewedPayload> {
     let failure = &verification.failure;
     let (detail, review) = if failure.failure_kind.is_some() {
@@ -652,7 +666,7 @@ fn failed_session_review(
         (detail, review)
     } else {
         let session = verification.session_failure.as_ref()?;
-        if session.left_work || working_dir.is_none_or(wrote_early_evidence) {
+        if session.left_work || scratch_dir(context).is_some_and(|dir| wrote_early_evidence(&dir)) {
             return None;
         }
         let detail = session.message.clone();
@@ -673,7 +687,7 @@ fn failed_session_review(
 }
 
 /// Whether the executor left an early-evidence record (proof or blocker) in
-/// `directory`. An existence check that cannot be answered counts as one, so
+/// its scratch `directory`. An existence check that cannot be answered counts as one, so
 /// the proof check reads it and reports the fault.
 fn wrote_early_evidence(directory: &std::path::Path) -> bool {
     [PROOF_FILE, BLOCKER_FILE]
@@ -817,18 +831,40 @@ mod tests {
         use crate::{blocks::test_helpers, gateway::fakes::FakeAgentGateway};
         use foundry_sdk::{event::EventType, task_block::TaskBlock};
         let dir = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
         let registry = test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
         let agent = FakeAgentGateway::success_with("unused");
         let block = super::ReviewTask::new(agent.clone(), registry);
-        let trigger = test_event!(EventType::GateVerificationCompleted, "p", {
-            "project":"p", "workflow":"task", "all_passed":true,
-            "required_passed":true, "results":[], "retry_count":0,
-            "task_worktree":dir.path().to_str().unwrap(), "campaign_limits":{}
-        });
-        let result = block.execute(&trigger).await.unwrap();
+        let trigger = |scratch: Option<&str>| {
+            let mut trigger = test_event!(EventType::GateVerificationCompleted, "p", {
+                "project":"p", "workflow":"task", "all_passed":true,
+                "required_passed":true, "results":[], "retry_count":0,
+                "task_worktree":dir.path().to_str().unwrap(), "campaign_limits":{}
+            });
+            if let Some(scratch) = scratch {
+                trigger.payload["scratch_dir"] = serde_json::json!(scratch);
+            }
+            trigger
+        };
+
+        let result = block.execute(&trigger(scratch.path().to_str())).await.unwrap();
         assert!(agent.invocations().is_empty());
         assert_eq!(result.events[0].payload["verdict"], "defect");
-        assert!(result.events[0].payload["diagnosis"].as_str().unwrap().contains("proof.json"));
+        let diagnosis = result.events[0].payload["diagnosis"].as_str().unwrap();
+        assert!(
+            diagnosis.contains(&scratch.path().join("proof.json").display().to_string()),
+            "the defect names the proof path in the run's scratch: {diagnosis}"
+        );
+
+        let unrecorded = block.execute(&trigger(None)).await.unwrap();
+        assert!(agent.invocations().is_empty());
+        assert_eq!(unrecorded.events[0].payload["verdict"], "defect");
+        assert!(
+            unrecorded.events[0].payload["diagnosis"]
+                .as_str()
+                .unwrap()
+                .contains("recorded no scratch directory")
+        );
     }
 
     /// The 2026-10-19 incident: Codex was at capacity, execution never
@@ -871,13 +907,13 @@ mod tests {
     /// Review a campaign cycle the way the task chain does: the execution
     /// session ended with `outcome` having changed `changed` (as change
     /// detection reports it), its result goes through Run Verify Gates, and
-    /// that verification triggers the review. `worktree` files are written
-    /// to the task worktree first. The reviewer would answer `complete` if
+    /// that verification triggers the review. `scratch` files are written to
+    /// the run's scratch directory first. The reviewer would answer `complete` if
     /// asked. Returns the `TaskReviewed` payload and how often it was asked.
     async fn review_after_session(
         outcome: crate::gateway::AgentOutcome,
         changed: &[&str],
-        worktree: &[(&str, &str)],
+        scratch_files: &[(&str, &str)],
     ) -> (serde_json::Value, usize) {
         use crate::blocks::execution::{
             ExecutionContext, SessionEnd, build_agent_execution_result,
@@ -886,15 +922,16 @@ mod tests {
         use foundry_sdk::task_block::TaskBlock;
         use foundry_sdk::workflow::WorkflowType;
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join(".foundry")).unwrap();
-        for (path, content) in worktree {
-            std::fs::write(dir.path().join(path), content).unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        for (path, content) in scratch_files {
+            std::fs::write(scratch.path().join(path), content).unwrap();
         }
         let registry = test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
         let dispatch = serde_json::json!({
             "project": "p", "workflow": "task", "prompt": "Parse the config file.",
             "campaign": "c", "campaign_limits": {},
             "task_worktree": dir.path().to_str().unwrap(),
+            "scratch_dir": scratch.path().to_str().unwrap(),
         });
         let ctx = ExecutionContext {
             project: "p",
@@ -999,12 +1036,8 @@ mod tests {
         assert_eq!(changed_source["verdict"], "defect", "{changed_source}");
         assert!(changed_source["diagnosis"].as_str().unwrap().contains("proof.json"));
 
-        let (wrote_proof, _) = review_after_session(
-            failed(),
-            &[],
-            &[(".foundry/proof.json", "{\"kind\":\"direct\"}")],
-        )
-        .await;
+        let (wrote_proof, _) =
+            review_after_session(failed(), &[], &[("proof.json", "{\"kind\":\"direct\"}")]).await;
         assert_eq!(wrote_proof["verdict"], "defect", "{wrote_proof}");
         assert!(
             wrote_proof["diagnosis"].as_str().unwrap().contains("early acceptance evidence"),
@@ -1012,16 +1045,20 @@ mod tests {
         );
     }
 
-    /// Review a campaign cycle whose worktree holds `files`, with a reviewer
-    /// that would answer `complete` if asked. Returns the `TaskReviewed`
-    /// payload and how many times the reviewer was asked.
-    async fn review_campaign_worktree(files: &[(&str, String)]) -> (serde_json::Value, usize) {
+    /// Review a campaign cycle whose scratch directory holds `files`, with a
+    /// reviewer that would answer `complete` if asked. `{SCRATCH}` in a file's
+    /// content becomes the scratch directory's absolute path. Returns the
+    /// `TaskReviewed` payload and how many times the reviewer was asked.
+    async fn review_campaign_scratch(files: &[(&str, String)]) -> (serde_json::Value, usize) {
         use crate::{blocks::test_helpers, gateway::fakes::FakeAgentGateway};
         use foundry_sdk::{event::EventType, task_block::TaskBlock};
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join(".foundry")).unwrap();
+        let scratch = tempfile::tempdir().unwrap();
         for (path, content) in files {
-            std::fs::write(dir.path().join(path), content).unwrap();
+            let target = scratch.path().join(path);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            let content = content.replace("{SCRATCH}", scratch.path().to_str().unwrap());
+            std::fs::write(target, content).unwrap();
         }
         let registry = test_helpers::registry_with_project("p", dir.path().to_str().unwrap());
         let agent = FakeAgentGateway::success_with("```json\n{\"verdict\":\"complete\"}\n```");
@@ -1029,7 +1066,8 @@ mod tests {
         let trigger = test_event!(EventType::GateVerificationCompleted, "p", {
             "project":"p", "workflow":"task", "all_passed":true,
             "required_passed":true, "results":[], "retry_count":0,
-            "task_worktree":dir.path().to_str().unwrap(), "campaign_limits":{}
+            "task_worktree":dir.path().to_str().unwrap(), "campaign_limits":{},
+            "scratch_dir":scratch.path().to_str().unwrap()
         });
         let result = block.execute(&trigger).await.unwrap();
         (result.events[0].payload.clone(), agent.invocations().len())
@@ -1051,15 +1089,14 @@ mod tests {
         blocker["recovery_kind"] = serde_json::json!("capability_unavailable");
         blocker.as_object_mut().unwrap().remove("question");
         let (payload, asked) =
-            review_campaign_worktree(&[(".foundry/blocker.json", blocker.to_string())]).await;
+            review_campaign_scratch(&[("blocker.json", blocker.to_string())]).await;
         assert_eq!(asked, 0);
         assert_eq!(payload["verdict"], "blocked_on_recovery");
         assert_eq!(payload["kind"], "capability_unavailable");
         assert!(payload["detail"].as_str().unwrap().contains("macOS host"));
         assert!(payload.get("options").is_none());
         blocker["recovery_kind"] = serde_json::json!("anything_goes");
-        let (invalid, _) =
-            review_campaign_worktree(&[(".foundry/blocker.json", blocker.to_string())]).await;
+        let (invalid, _) = review_campaign_scratch(&[("blocker.json", blocker.to_string())]).await;
         assert_eq!(
             invalid["verdict"], "defect",
             "unknown operational kinds cannot silently become owner choices"
@@ -1076,54 +1113,38 @@ mod tests {
                 trunk: "trunk-commit".into(),
                 files: vec!["src/lib.rs".into()],
             }),
+            scratch_dir: Some(directory.path().to_string_lossy().into_owned()),
             ..LoopContext::default()
         };
-        let result = campaign_proof_review(
-            directory.path(),
-            Throttle::Full,
-            &context,
-            "retain behavior",
-            "p",
-            &[],
-        )
-        .unwrap();
+        let result =
+            campaign_proof_review(Throttle::Full, &context, "retain behavior", "p", &[]).unwrap();
         assert!(matches!(result.verdict, foundry_sdk::payload::TaskVerdict::Defect { .. }));
         let prompt = super::reconciliation_review_prompt("retain behavior", &[], &context);
         assert!(prompt.contains("source-commit"));
         assert!(prompt.contains("Unexplained loss of required behavior is a defect"));
-        assert!(prompt.contains("proof.json"));
+        assert!(
+            prompt.contains(&directory.path().join("proof.json").display().to_string()),
+            "{prompt}"
+        );
     }
 
     #[test]
     fn standalone_operational_blocker_is_checked_without_requiring_campaign_proof() {
         let directory = tempfile::tempdir().unwrap();
-        std::fs::create_dir(directory.path().join(".foundry")).unwrap();
+        let context = LoopContext {
+            scratch_dir: Some(directory.path().to_string_lossy().into_owned()),
+            ..LoopContext::default()
+        };
         let mut blocker = darwin_blocker();
         blocker["recovery_kind"] = serde_json::json!("capability_unavailable");
         blocker.as_object_mut().unwrap().remove("question");
-        std::fs::write(directory.path().join(".foundry/blocker.json"), blocker.to_string())
-            .unwrap();
-        let result = campaign_proof_review(
-            directory.path(),
-            Throttle::Full,
-            &LoopContext::default(),
-            "diagnose timeout",
-            "p",
-            &[],
-        )
-        .unwrap();
+        std::fs::write(directory.path().join("blocker.json"), blocker.to_string()).unwrap();
+        let result =
+            campaign_proof_review(Throttle::Full, &context, "diagnose timeout", "p", &[]).unwrap();
         assert!(matches!(result.verdict, TaskVerdict::BlockedOnRecovery { .. }));
-        std::fs::remove_file(directory.path().join(".foundry/blocker.json")).unwrap();
+        std::fs::remove_file(directory.path().join("blocker.json")).unwrap();
         assert!(
-            campaign_proof_review(
-                directory.path(),
-                Throttle::Full,
-                &LoopContext::default(),
-                "ordinary task",
-                "p",
-                &[]
-            )
-            .is_none()
+            campaign_proof_review(Throttle::Full, &context, "ordinary task", "p", &[]).is_none()
         );
     }
 
@@ -1133,8 +1154,7 @@ mod tests {
     #[tokio::test]
     async fn a_campaign_blocker_asks_the_owner_instead_of_reporting_missing_proof() {
         let (payload, asked) =
-            review_campaign_worktree(&[(".foundry/blocker.json", darwin_blocker().to_string())])
-                .await;
+            review_campaign_scratch(&[("blocker.json", darwin_blocker().to_string())]).await;
 
         assert_eq!(asked, 0, "a blocked cycle needs the owner, not a paid review");
         assert_eq!(payload["verdict"], "blocked_on_decision");
@@ -1166,7 +1186,7 @@ mod tests {
                 Some(empty) => blocker.as_object_mut().unwrap().insert("options".into(), empty),
             };
             let (payload, _) =
-                review_campaign_worktree(&[(".foundry/blocker.json", blocker.to_string())]).await;
+                review_campaign_scratch(&[("blocker.json", blocker.to_string())]).await;
 
             assert_eq!(payload["verdict"], "blocked_on_decision");
             assert_eq!(payload["options"], serde_json::json!(super::DEFAULT_BLOCKER_OPTIONS));
@@ -1196,14 +1216,15 @@ mod tests {
 
         for (content, expected) in cases {
             let (payload, asked) =
-                review_campaign_worktree(&[(".foundry/blocker.json", content.clone())]).await;
+                review_campaign_scratch(&[("blocker.json", content.clone())]).await;
 
             assert_eq!(asked, 0);
             assert_eq!(payload["verdict"], "defect", "{content}");
             let diagnosis = payload["diagnosis"].as_str().unwrap();
             assert!(
-                diagnosis.starts_with("invalid execution blocker at .foundry/blocker.json: "),
-                "{content}: {diagnosis}"
+                diagnosis.starts_with("invalid execution blocker at /")
+                    && diagnosis.contains("/blocker.json: "),
+                "the defect names the blocker's absolute path: {content}: {diagnosis}"
             );
             assert!(diagnosis.contains(expected), "{content}: {diagnosis}");
         }
@@ -1211,15 +1232,14 @@ mod tests {
 
     #[tokio::test]
     async fn no_blocker_and_no_proof_is_still_the_missing_proof_defect() {
-        let (payload, asked) = review_campaign_worktree(&[]).await;
+        let (payload, asked) = review_campaign_scratch(&[]).await;
 
         assert_eq!(asked, 0);
         assert_eq!(payload["verdict"], "defect");
         let diagnosis = payload["diagnosis"].as_str().unwrap();
         assert!(
-            diagnosis.starts_with(
-                "invalid or missing early acceptance evidence at .foundry/proof.json: "
-            ),
+            diagnosis.starts_with("invalid or missing early acceptance evidence at /")
+                && diagnosis.contains("/proof.json: "),
             "{diagnosis}"
         );
         assert_eq!(payload["review"], diagnosis);
@@ -1228,15 +1248,40 @@ mod tests {
     #[tokio::test]
     async fn a_valid_proof_without_a_blocker_goes_to_the_reviewer() {
         let proof = serde_json::json!({"kind":"direct", "reason":"documentation-only objective",
-            "corrected":{"command":"mdbook build book","exit_code":0,"log":".foundry/pass.log"}});
-        let (payload, asked) = review_campaign_worktree(&[
-            (".foundry/proof.json", proof.to_string()),
-            (".foundry/pass.log", "book built".to_string()),
+            "corrected":{"command":"mdbook build book","exit_code":0,"log":"{SCRATCH}/logs/pass.log"}});
+        let (payload, asked) = review_campaign_scratch(&[
+            ("proof.json", proof.to_string()),
+            ("logs/pass.log", "book built".to_string()),
         ])
         .await;
 
         assert_eq!(asked, 1, "sound proof proceeds to the skeptical reviewer");
         assert_eq!(payload["verdict"], "complete");
+    }
+
+    /// Proof logs are absolute paths in the scratch directory. A relative
+    /// log, or one in the repository, is not evidence that survives the run.
+    #[tokio::test]
+    async fn a_proof_log_outside_the_scratch_directory_is_a_defect() {
+        for log in ["logs/pass.log", "/tmp/elsewhere/pass.log"] {
+            let proof = serde_json::json!({"kind":"direct", "reason":"documentation-only objective",
+                "corrected":{"command":"mdbook build book","exit_code":0,"log":log}});
+            let (payload, asked) = review_campaign_scratch(&[
+                ("proof.json", proof.to_string()),
+                ("logs/pass.log", "book built".to_string()),
+            ])
+            .await;
+
+            assert_eq!(asked, 0, "{log}");
+            assert_eq!(payload["verdict"], "defect", "{log}");
+            assert!(
+                payload["diagnosis"]
+                    .as_str()
+                    .unwrap()
+                    .contains("probe log must be an absolute path in the scratch directory"),
+                "{payload}"
+            );
+        }
     }
     use foundry_sdk::gates::GateResult;
     use foundry_sdk::payload::TaskVerdict;
@@ -1316,14 +1361,15 @@ mod tests {
     fn every_task_review_judges_tests_by_the_shared_test_design_rule() {
         let guidance = super::super::agent_helpers::TEST_DESIGN_GUIDANCE;
         for campaign in [false, true] {
-            let prompt = super::task_review_prompt("ship the slice", &[], campaign);
+            let prompt =
+                super::task_review_prompt("ship the slice", &[], campaign.then(review_scratch));
             assert!(prompt.contains(guidance), "{prompt}");
             assert!(!prompt.contains("hardest real boundary"), "{prompt}");
             assert!(!prompt.contains("inject around the real boundary"), "{prompt}");
             assert!(!prompt.contains("stub installed above that boundary"), "{prompt}");
         }
 
-        let campaign = super::task_review_prompt("ship the slice", &[], true);
+        let campaign = super::task_review_prompt("ship the slice", &[], Some(review_scratch()));
         assert!(
             campaign.contains(
                 "exercised the hardest acceptance behavior through the project's public API, with I/O stubbed in process"
@@ -1345,7 +1391,8 @@ mod tests {
     #[test]
     fn every_task_review_accepts_internal_seams_and_rejects_unlicensed_public_api_changes() {
         for campaign in [false, true] {
-            let prompt = super::task_review_prompt("ship the slice", &[], campaign);
+            let prompt =
+                super::task_review_prompt("ship the slice", &[], campaign.then(review_scratch));
             for phrase in super::super::agent_helpers::SEAM_AUTHORIZATION_PHRASES {
                 assert!(prompt.contains(phrase), "missing {phrase}: {prompt}");
             }
@@ -1363,22 +1410,48 @@ mod tests {
         }
     }
 
-    /// Finalize Task commits nothing under `.foundry/`, so every task review,
-    /// not only a campaign's, treats project material left there as missing.
+    /// The run's scratch directory in these prompt tests.
+    fn review_scratch() -> &'static std::path::Path {
+        std::path::Path::new("/srv/foundry/evidence/trace/attempt")
+    }
+
+    /// Nothing under `.foundry/` lands and scratch is outside the repository,
+    /// so every task review, not only a campaign's, treats project material
+    /// left in either as missing.
     #[test]
-    fn every_task_review_treats_dot_foundry_deliverables_as_a_defect() {
+    fn every_task_review_treats_scratch_deliverables_as_a_defect() {
         for campaign in [false, true] {
-            let prompt = super::task_review_prompt("ship the slice", &[], campaign);
+            let prompt =
+                super::task_review_prompt("ship the slice", &[], campaign.then(review_scratch));
             assert!(
-                prompt.contains("Files under .foundry/ are Foundry scratch and never land"),
+                prompt.contains("Nothing under .foundry/ in the repository ever lands"),
                 "{prompt}"
             );
-            assert!(prompt.contains("cites .foundry/ paths as repository content"), "{prompt}");
             assert!(
-                prompt.contains("durable project material only under .foundry/, is a defect"),
+                prompt.contains("cites .foundry/ or scratch paths as repository content"),
+                "{prompt}"
+            );
+            assert!(
+                prompt.contains("durable project material only there, is a defect"),
                 "{prompt}"
             );
         }
+    }
+
+    /// A campaign reviewer is told where the proof is: an absolute path in
+    /// the executor's scratch directory, not in the repository.
+    #[test]
+    fn a_campaign_review_names_the_proof_in_the_scratch_directory() {
+        let prompt = super::task_review_prompt("ship the slice", &[], Some(review_scratch()));
+        assert!(
+            prompt.contains(
+                "Inspect the executor's proof at /srv/foundry/evidence/trace/attempt/proof.json and its logs"
+            ),
+            "{prompt}"
+        );
+        assert!(!prompt.contains(".foundry/proof.json"), "{prompt}");
+        let standalone = super::task_review_prompt("ship the slice", &[], None);
+        assert!(!standalone.contains("proof.json"), "{standalone}");
     }
 
     // A reviewer that backgrounds a command and ends its turn waiting for a
@@ -1549,32 +1622,30 @@ mod tests {
     fn early_proof_needs_actual_rejection_correction_and_existing_logs() {
         let dir = tempfile::tempdir().unwrap();
         assert!(super::proof_error(dir.path()).is_some());
-        std::fs::create_dir(dir.path().join(".foundry")).unwrap();
         std::fs::write(dir.path().join("reject.log"), "assertion failed").unwrap();
         std::fs::write(dir.path().join("pass.log"), "assertion passed").unwrap();
         let mut proof = serde_json::json!({"kind":"behavioral", "source_change":"src/core.rs",
-            "rejecting":{"command":"test core","exit_code":1,"log":"reject.log"},
-            "corrected":{"command":"test core","exit_code":0,"log":"pass.log"}});
-        let path = dir.path().join(".foundry/proof.json");
+            "rejecting":{"command":"test core","exit_code":1,"log":dir.path().join("reject.log")},
+            "corrected":{"command":"test core","exit_code":0,"log":dir.path().join("pass.log")}});
+        let path = dir.path().join("proof.json");
         std::fs::write(&path, proof.to_string()).unwrap();
         assert!(super::proof_error(dir.path()).is_none());
         proof["rejecting"]["exit_code"] = serde_json::json!(0);
         std::fs::write(&path, proof.to_string()).unwrap();
         assert!(super::proof_error(dir.path()).is_some());
         proof["rejecting"]["exit_code"] = serde_json::json!(1);
-        proof["corrected"]["log"] = serde_json::json!("absent.log");
+        proof["corrected"]["log"] = serde_json::json!(dir.path().join("absent.log"));
         std::fs::write(&path, proof.to_string()).unwrap();
         assert!(super::proof_error(dir.path()).is_some());
     }
     #[test]
     fn early_proof_accepts_source_path_arrays() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join(".foundry")).unwrap();
         std::fs::write(dir.path().join("probe.log"), "actual probe output").unwrap();
         let proof = serde_json::json!({"kind":"behavioral", "source_change":["src/core.rs", "tests/core.rs"],
-            "rejecting":{"command":"test core","exit_code":1,"log":"probe.log"},
-            "corrected":{"command":"test core","exit_code":0,"log":"probe.log"}});
-        let path = dir.path().join(".foundry/proof.json");
+            "rejecting":{"command":"test core","exit_code":1,"log":dir.path().join("probe.log")},
+            "corrected":{"command":"test core","exit_code":0,"log":dir.path().join("probe.log")}});
+        let path = dir.path().join("proof.json");
         std::fs::write(&path, proof.to_string()).unwrap();
         assert_eq!(super::proof_error(dir.path()), None);
     }
@@ -1582,12 +1653,11 @@ mod tests {
     #[test]
     fn early_proof_names_wrong_field_types() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join(".foundry")).unwrap();
         std::fs::write(dir.path().join("probe.log"), "actual probe output").unwrap();
         let mut proof = serde_json::json!({"kind":"behavioral", "source_change":"src/core.rs",
-            "rejecting":{"command":"test core","exit_code":1,"log":"probe.log"},
-            "corrected":{"command":"test core","exit_code":0,"log":"probe.log"}});
-        let path = dir.path().join(".foundry/proof.json");
+            "rejecting":{"command":"test core","exit_code":1,"log":dir.path().join("probe.log")},
+            "corrected":{"command":"test core","exit_code":0,"log":dir.path().join("probe.log")}});
+        let path = dir.path().join("proof.json");
         for (value, expected) in [
             (serde_json::json!(42), "number"),
             (serde_json::json!({}), "object"),

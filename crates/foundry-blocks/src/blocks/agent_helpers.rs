@@ -1,5 +1,5 @@
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use foundry_sdk::task_block::TaskBlockResult;
@@ -216,6 +216,19 @@ pub(crate) struct CodingAgentSpec {
     pub timeout: Duration,
     /// Trace this invocation belongs to, from the block's triggering event.
     pub trace_id: Option<String>,
+    /// The session's scratch directory, outside the repository
+    /// ([`crate::scratch`]). The agent is told its path and receives it as
+    /// `FOUNDRY_SCRATCH_DIR`.
+    pub scratch_dir: PathBuf,
+}
+
+/// What every coding session is told about where its scratch and command
+/// logs go: the absolute scratch path, never a path in the repository.
+pub(crate) fn scratch_prompt(scratch: &Path) -> String {
+    let dir = scratch.display();
+    format!(
+        "\n\nSCRATCH DIRECTORY: {dir} is this session's scratch directory, outside the repository (also in $FOUNDRY_SCRATCH_DIR). Write logs, screenshots, harness output and other run evidence there, not in the repository. Do not create a .foundry/ directory in the repository: nothing under .foundry/ ever lands.\nCOMMAND OUTPUT: run verbose builds/tests through `foundry capture -- <command> [args]`. It writes complete logs to {dir}/logs, prints their absolute paths, returns the actual exit code, and emits a bounded failure tail. For shell pipelines use `foundry capture -- sh -c '...'` with pipefail where supported. Keep source reads scoped to relevant slices."
+    )
 }
 
 /// Invoke an agent with `Full` access at the `Balanced` tier and `Medium`
@@ -229,17 +242,22 @@ pub(crate) async fn invoke_coding_agent(
     spec: CodingAgentSpec,
     trace_label: &str,
 ) -> AgentOutcome {
+    let mut env = spec.env;
+    env.push((
+        foundry_sdk::paths::SCRATCH_DIR_ENV.into(),
+        spec.scratch_dir.to_string_lossy().into_owned(),
+    ));
     invoke_agent(
         agent,
         AgentBlockSpec {
-            prompt: format!("{}\n\nCOMMAND OUTPUT: run verbose builds/tests through `foundry capture --log-dir .foundry/logs -- <command> [args]`. It keeps complete logs inside the execution worktree at `.foundry/logs`, returns the actual exit code, and emits a bounded failure tail. For shell pipelines use `foundry capture --log-dir .foundry/logs -- sh -c '...'` with pipefail where supported. Keep source reads scoped to relevant slices.", spec.prompt),
+            prompt: format!("{}{}", spec.prompt, scratch_prompt(&spec.scratch_dir)),
             working_dir: spec.working_dir,
             access: AgentAccess::Full,
             tier: ModelTier::Balanced,
             effort: ReasoningEffort::Medium,
             agent_file: spec.agent_file,
             provider: spec.provider,
-            env: spec.env,
+            env,
             timeout: spec.timeout,
             trace_id: spec.trace_id,
             requires_json: false,

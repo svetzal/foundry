@@ -31,15 +31,47 @@ fn declared_root(request: &AgentRequest) -> Result<PathBuf> {
             "declared writable root differs from Claude working directory"
         );
     }
-    let text = root.to_str().context("Claude writable root must be UTF-8")?;
-    anyhow::ensure!(
-        !text.contains(['*', '?', '[', ']', '(', ')', '{', '}', '\\', '\n', '\r']),
-        "Claude writable root must not contain permission-pattern characters"
-    );
+    ensure_plain_pattern(&root, "Claude writable root")?;
     Ok(root)
 }
 
-fn settings(root: &Path, access: AgentAccess, scratch: &Path, policy_directory: &Path) -> Value {
+/// A path that goes into a permission rule must be UTF-8 and hold no
+/// permission-pattern characters.
+fn ensure_plain_pattern(path: &Path, what: &str) -> Result<()> {
+    let text = path.to_str().with_context(|| format!("{what} must be UTF-8"))?;
+    anyhow::ensure!(
+        !text.contains(['*', '?', '[', ']', '(', ')', '{', '}', '\\', '\n', '\r']),
+        "{what} must not contain permission-pattern characters"
+    );
+    Ok(())
+}
+
+/// The run's scratch directory the session may also write
+/// (`FOUNDRY_SCRATCH_DIR`), resolved. It must be outside the repository.
+fn declared_run_scratch(request: &AgentRequest, root: &Path) -> Result<Option<PathBuf>> {
+    let Some((_, declared)) =
+        request.env.iter().find(|(key, _)| key == foundry_sdk::paths::SCRATCH_DIR_ENV)
+    else {
+        return Ok(None);
+    };
+    let scratch = Path::new(declared)
+        .canonicalize()
+        .context("cannot resolve the run's scratch directory")?;
+    anyhow::ensure!(
+        !scratch.starts_with(root),
+        "the run's scratch directory must be outside the selected repository"
+    );
+    ensure_plain_pattern(&scratch, "the run's scratch directory")?;
+    Ok(Some(scratch))
+}
+
+fn settings(
+    root: &Path,
+    access: AgentAccess,
+    scratch: &Path,
+    policy_directory: &Path,
+    run_scratch: Option<&Path>,
+) -> Value {
     let mut policy = json!({
         "permissions": { "allow": ["Read", "Glob", "Grep", "Bash", "WebFetch", "WebSearch"], "deny": ["mcp__*"] },
         "disableAllHooks": true,
@@ -61,6 +93,14 @@ fn settings(root: &Path, access: AgentAccess, scratch: &Path, policy_directory: 
             "WebFetch",
             "WebSearch"
         ]);
+        // The run's scratch directory is the one other place this session
+        // writes: proof, blocker and command logs, outside the repository.
+        if let Some(run_scratch) = run_scratch {
+            if let Some(allow) = policy["permissions"]["allow"].as_array_mut() {
+                allow.insert(1, json!(format!("Edit(/{}/**)", run_scratch.display())));
+            }
+            policy["sandbox"]["filesystem"]["allowWrite"] = json!([run_scratch]);
+        }
     }
     policy
 }
@@ -72,6 +112,7 @@ pub(super) fn prepare(request: &AgentRequest, session_id: &str) -> Result<Option
         return Ok(None);
     }
     let root = declared_root(request)?;
+    let run_scratch = declared_run_scratch(request, &root)?;
     let files = RunFiles::create(
         foundry_sdk::paths::foundry_home().join("agent-sandboxes").join(session_id),
     )
@@ -92,7 +133,13 @@ pub(super) fn prepare(request: &AgentRequest, session_id: &str) -> Result<Option
     let settings_path = policy_directory.join("settings.json");
     std::fs::write(
         &settings_path,
-        serde_json::to_vec(&settings(&root, request.access, &scratch, &policy_directory))?,
+        serde_json::to_vec(&settings(
+            &root,
+            request.access,
+            &scratch,
+            &policy_directory,
+            run_scratch.as_deref(),
+        ))?,
     )
     .context("cannot write Claude boundary settings")?;
     Ok(Some(Boundary {
@@ -114,6 +161,7 @@ mod tests {
             AgentAccess::Full,
             std::path::Path::new("/home/stacey/.foundry/agent-sandboxes/id/scratch"),
             std::path::Path::new("/home/stacey/.foundry/agent-sandboxes/id/policy"),
+            None,
         );
         assert_eq!(
             policy["permissions"]["allow"][0],
@@ -133,6 +181,7 @@ mod tests {
             AgentAccess::ReadOnly,
             std::path::Path::new("/scratch"),
             std::path::Path::new("/policy"),
+            None,
         );
         assert!(
             policy["permissions"]["deny"]
@@ -151,6 +200,62 @@ mod tests {
             serde_json::json!(["/repo", "/policy"])
         );
         assert_eq!(policy["sandbox"]["filesystem"]["allowWrite"], serde_json::json!(["/scratch"]));
+    }
+
+    #[test]
+    fn writable_policy_also_grants_the_runs_scratch_directory() {
+        let policy = settings(
+            std::path::Path::new("/srv/foundry/worktrees/task"),
+            AgentAccess::Full,
+            std::path::Path::new("/srv/foundry/agent-sandboxes/id/scratch"),
+            std::path::Path::new("/srv/foundry/agent-sandboxes/id/policy"),
+            Some(std::path::Path::new("/srv/foundry/evidence/trace/attempt")),
+        );
+        assert_eq!(
+            policy["permissions"]["allow"].as_array().unwrap()[0..2],
+            [
+                serde_json::json!("Edit(//srv/foundry/worktrees/task/**)"),
+                serde_json::json!("Edit(//srv/foundry/evidence/trace/attempt/**)")
+            ]
+        );
+        assert_eq!(
+            policy["sandbox"]["filesystem"]["allowWrite"],
+            serde_json::json!(["/srv/foundry/evidence/trace/attempt"])
+        );
+    }
+
+    fn writable_request(work: &Path, scratch: &Path) -> AgentRequest {
+        AgentRequest {
+            prompt: "test".into(),
+            project: "test".into(),
+            working_dir: work.into(),
+            access: AgentAccess::Full,
+            tier: crate::gateway::ModelTier::Balanced,
+            effort: crate::gateway::ReasoningEffort::Medium,
+            agent_file: None,
+            provider: None,
+            env: vec![
+                ("FOUNDRY_WRITABLE_ROOT".into(), work.to_string_lossy().into()),
+                ("FOUNDRY_SCRATCH_DIR".into(), scratch.to_string_lossy().into()),
+            ],
+            timeout: std::time::Duration::ZERO,
+            trace_id: None,
+            requires_json: false,
+        }
+    }
+
+    #[test]
+    fn the_runs_scratch_directory_must_be_outside_the_repository() {
+        let work = tempfile::tempdir().unwrap();
+        let inside = work.path().join(".foundry");
+        std::fs::create_dir(&inside).unwrap();
+        let root = declared_root(&writable_request(work.path(), &inside)).unwrap();
+        assert!(declared_run_scratch(&writable_request(work.path(), &inside), &root).is_err());
+
+        let outside = tempfile::tempdir().unwrap();
+        let declared =
+            declared_run_scratch(&writable_request(work.path(), outside.path()), &root).unwrap();
+        assert_eq!(declared, Some(outside.path().canonicalize().unwrap()));
     }
 
     #[test]

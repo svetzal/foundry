@@ -612,7 +612,7 @@ cycle by itself; the recheck of a `runner_unavailable` recovery left after
 those repeats dispatches the same objective without forming.
 New RPCs refuse older daemons without a decision or resume fallback.
 Standalone operational blockers preserve work; use `queue resume <id>` after
-correcting their prerequisite. `.foundry/blocker.json` can set `recovery_kind`
+correcting their prerequisite. `blocker.json` in the run's scratch directory can set `recovery_kind`
 to `capability_unavailable`, `access_unavailable`, `environment_unavailable`,
 `missing_evidence`, `unmet_precondition` or `runner_unavailable`.
 Without that field, legacy blockers still represent owner decisions.

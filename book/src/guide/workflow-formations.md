@@ -184,46 +184,61 @@ remote task branch or in a Git bundle.
 #### What lands from a task
 
 Finalize Task commits every change the executor left in the worktree, except
-under `.foundry/`. In a task worktree, `.foundry/` is Foundry scratch for
-execution evidence: proof, logs, screenshots, harness output. Nothing under it
-lands, on trunk or on the preserved branch, even when the executor staged it.
-The one exception is a deletion of a file that HEAD tracks under `.foundry/`.
-That deletion is committed, so a task can remove legacy content. A project that
-already tracks files under `.foundry/` keeps them until a task or a person
-deletes them. An executor's edits to those files do not land. These rules
-apply whether or not the project's `.gitignore` ignores `.foundry/`.
+changes under `.foundry/`. Nothing under `.foundry/` lands, on trunk or on the
+preserved branch, even when the executor staged it. The one exception is a
+deletion of a file that HEAD tracks under `.foundry/`. That deletion is
+committed, so a task can remove legacy content. A project that already tracks
+files under `.foundry/` keeps them until a task or a person deletes them. An
+executor's edits to those files do not land. These rules apply whether or not
+the project's `.gitignore` ignores `.foundry/`. Every Foundry commit that
+stages files, the maintenance commit included, applies the same rule.
 
-Before Finalize Task removes the worktree, it copies every `.foundry` file that
-did not land to
-`~/.foundry/evidence/<trace-id>/<unique-attempt>/worktree/<repository path>`.
-This includes new files, gitignored files, and the executor's version of
-edited tracked files. The task result's `uncommitted_artifacts` field names that
-`worktree` directory. The field is absent when nothing under `.foundry/` was
-left unlanded. Then Finalize Task restores the edited tracked files to HEAD and
-removes the other files. If a copy fails, finalization stops before it removes
-or restores a file.
+Before Finalize Task removes the worktree, it restores edited tracked files
+under `.foundry/` to HEAD and removes the other files there. These files are
+not evidence: executors keep their evidence outside the repository.
 
-Build output and dependency trees are not copied, because the next build makes
-them again. A file is left out when a directory on its path below `.foundry/`
-is named `target`, `coverage-target`, `_build`, `deps`, `node_modules`,
-`.next`, `.turbo`, `.venv`, `__pycache__`, `.pytest_cache`, `.mypy_cache`,
-`.ruff_cache`, `.gradle`, `.build` or `.dart_tool`. A file larger than 64 MiB
-is also left out: evidence files are much smaller (the gate runner keeps at
-most 8 MiB of each stream). What is left out is still recorded. When anything
-was left out, `worktree-skipped.json` beside the `worktree` directory lists
-each such directory with its file count and bytes, and each oversized file
-with its size, and gives the totals. Cleanup removes these files as before.
-Before this rule, gates that build under `.foundry/` (a coverage
-`CARGO_TARGET_DIR`, an integration checkout) put tens of gigabytes into the
-evidence store. The daemon deletes evidence after 30 days by default; see
+#### The scratch directory
+
+Each agent run has a scratch directory outside the project checkout, in the
+evidence store:
+
+```text
+~/.foundry/evidence/<trace-id>/<attempt>/
+  proof.json      early acceptance proof (campaign cycles, reconciliations)
+  blocker.json    the executor's blocker, in place of proof
+  logs/           complete command logs from `foundry capture`
+  trimmed.json    what Finalize Task removed, when it removed anything
+```
+
+The prompt gives the executor the absolute path, and the session receives it
+as `FOUNDRY_SCRATCH_DIR`. `foundry capture` without `--log-dir` writes its logs
+to `$FOUNDRY_SCRATCH_DIR/logs`. A sandboxed session (a campaign or an
+initiative) may write to this directory as well as to its worktree. Every task
+run gets a new directory, so a resumed or continued task never sees the proof
+of the run before it. A retry in the same run keeps the directory.
+
+Review reads `proof.json` and `blocker.json` from the scratch directory. The
+task result's `proof_evidence` field names the directory when it holds
+`proof.json`.
+
+Before the scratch directory settles in the evidence store, Finalize Task
+removes build output and dependency trees from it, because the next build
+makes them again. It removes each directory named `target`, `coverage-target`,
+`_build`, `deps`, `node_modules`, `.next`, `.turbo`, `.venv`, `__pycache__`,
+`.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.gradle`, `.build` or
+`.dart_tool`, and each file larger than 64 MiB. Evidence files are much
+smaller: the gate runner keeps at most 8 MiB of each stream. When it removes
+anything, it writes `trimmed.json`, which lists each such directory with its
+file count and bytes, each oversized file with its size, and the totals. The
+daemon deletes evidence after 30 days by default; see
 [Evidence retention](maintenance-workflow.md#evidence-retention).
 
 So a task puts anything the project must keep in a normal project path, for
-example `docs/` or the test tree. Evidence under `.foundry/` lives in the
-evidence store and is referenced from the work item, not from repository
-files. The execution prompt tells every task executor this. The reviewer
-treats a deliverable that leaves project material only under `.foundry/`, or
-that cites `.foundry/` paths as repository content, as a defect.
+example `docs/` or the test tree. Evidence lives in the evidence store and is
+referenced from the work item, not from repository files. The execution prompt
+tells every task executor this. The reviewer treats a deliverable that leaves
+project material only under `.foundry/` or in scratch, or that cites those
+paths as repository content, as a defect.
 
 ### Campaign Formation
 

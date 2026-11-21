@@ -74,7 +74,6 @@ fn terminal(item: &WorkItem, verdict: TaskVerdict, landed: bool, reference: &str
             preservation_ref: Some(reference.into()),
             land_blocked: None,
             proof_evidence: None,
-            uncommitted_artifacts: None,
             trunk_arrivals: Vec::new(),
             verdict,
             context: LoopContext::default(),

@@ -47,10 +47,19 @@ fn resolve_foundry_home(explicit: Option<OsString>, home: impl FnOnce() -> Strin
     }
 }
 
+/// Environment variable that gives an agent session its scratch directory.
+///
+/// Foundry sets it for every coding-agent session to an absolute path in the
+/// evidence store, `{evidence_dir}/{trace_id}/{attempt}/`. Agents write
+/// proof, blocker records and command logs there, never inside the project
+/// checkout. `foundry capture` writes its logs to `$FOUNDRY_SCRATCH_DIR/logs`
+/// when it is set.
+pub const SCRATCH_DIR_ENV: &str = "FOUNDRY_SCRATCH_DIR";
+
 /// Returns the evidence store root: `{foundry_home}/evidence`.
 ///
-/// Finalize Task archives each attempt's proof and unlanded `.foundry` files
-/// under `{evidence_dir}/{trace_id}/{attempt}/`, and failed-gate logs go to
+/// Each agent run's scratch directory is `{evidence_dir}/{trace_id}/{attempt}/`
+/// (see [`SCRATCH_DIR_ENV`]), and failed-gate logs go to
 /// `{evidence_dir}/gate-logs/`. The daemon prunes old trace directories
 /// (`FOUNDRY_EVIDENCE_RETENTION_DAYS`); gate logs keep their own retention.
 pub fn evidence_dir() -> PathBuf {

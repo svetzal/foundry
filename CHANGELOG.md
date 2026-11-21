@@ -7,6 +7,42 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- No Foundry commit stages a path under `.foundry/` any more, whatever the
+  repository's `.gitignore` says. Since 2026-10-13 the maintenance commit
+  (`chore(<project>): automated maintenance`) ran a plain `git add -A`, and it
+  committed thousands of `.foundry/logs/*.log` files into about 22 project
+  repositories. The maintenance commit and the task finalize commit now stage
+  everything except `.foundry/`. A deletion of a file that HEAD already tracks
+  under `.foundry/` still lands, so a repository can remove those files.
+
+### Changed
+
+- Agents no longer write scratch into the project checkout. Each agent run
+  gets a scratch directory in the evidence store,
+  `~/.foundry/evidence/<trace>/<attempt>/`, which holds `proof.json`,
+  `blocker.json` and `logs/`. The prompt names the absolute path, and Foundry
+  exports it as `FOUNDRY_SCRATCH_DIR`. `foundry capture` writes its logs to
+  `$FOUNDRY_SCRATCH_DIR/logs` when the command has no `--log-dir`. The Claude and
+  Codex sandboxes of campaign and initiative runs can write to it. Evidence
+  retention deletes scratch directories with the rest of the evidence.
+- Review reads the proof and the blocker from the scratch directory. A proof
+  `log` must now be an absolute path to a file in the scratch directory. Every
+  task run gets a new scratch directory, so a resumed task never sees the
+  proof of an earlier run.
+- Finalize no longer copies `.foundry` files from the task worktree. It
+  discards them and logs a warning. It removes build output and files over
+  64 MiB from the scratch directory and lists them in `trimmed.json`. The
+  task result's `proof_evidence` field names the scratch directory when it
+  holds `proof.json`.
+
+### Removed
+
+- The `uncommitted_artifacts` field of `TaskRunCompleted`, and the
+  `worktree/`, `worktree-skipped.json` and `original-proof.json` evidence
+  files. Events recorded with the field still read.
+
 ## [0.61.0] - 2026-11-21
 
 ### Changed

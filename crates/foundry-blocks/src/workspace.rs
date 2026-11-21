@@ -209,24 +209,16 @@ pub(crate) async fn run_best_effort(shell: &dyn ShellGateway, cwd: &Path, args: 
     }
 }
 
-/// The directory in a task worktree that is Foundry scratch: proof, logs,
-/// screenshots, harness output, anything an agent writes there.
+/// The directory in a project repository that no Foundry commit stages.
 ///
-/// Nothing under it lands in a task commit. The single exception is a
-/// deletion of a file HEAD tracks there, so a task can remove legacy content a
-/// project committed before this rule. Finalization archives everything else
-/// under it to Foundry's evidence store and then removes it.
+/// Foundry once told agents to write scratch (proof, logs, screenshots,
+/// harness output) here, inside the checkout. Scratch now lives outside the
+/// repository ([`crate::scratch`]), but a project can still have content here,
+/// tracked or not. Every Foundry commit path stages through
+/// [`stage_all_but_foundry_dir`], so nothing under it lands, whatever the
+/// project's `.gitignore` says. The single exception is a deletion of a file
+/// HEAD tracks there, so a project can clean up content it committed before.
 pub(crate) const FOUNDRY_DIR: &str = ".foundry";
-
-/// The early-proof record in a task worktree. `archive_proof` in
-/// `blocks::finalize_task` keeps an interpreted, portable copy of it.
-pub(crate) const PROOF_FILE: &str = ".foundry/proof.json";
-
-/// The record a campaign executor writes in place of [`PROOF_FILE`] when it
-/// cannot reach the acceptance boundary because a capability, access or owner
-/// decision is missing. Review turns a valid one into a question for the
-/// owner rather than a missing-proof defect.
-pub(crate) const BLOCKER_FILE: &str = ".foundry/blocker.json";
 
 /// Run a git command that lists paths with `-z` and return them, empty
 /// entries dropped. Not [`checked`]: trimming the output could alter a name.
@@ -252,33 +244,22 @@ async fn nul_separated_paths(
         .collect())
 }
 
-/// Commit whatever the agent left in the worktree. `Ok(false)` when the tree
-/// was already clean or nothing committable remained.
-///
-/// Everything outside [`FOUNDRY_DIR`] is staged. Under it, only deletions of
-/// files HEAD tracks are staged: new files and modifications never land, even
-/// when the agent staged them.
-pub(crate) async fn commit_worktree(
-    shell: &dyn ShellGateway,
-    worktree: &Path,
-    project: &str,
-) -> Result<bool> {
-    let status = checked(shell, worktree, &["status", "--porcelain"]).await?;
-    if status.is_empty() {
-        return Ok(false);
-    }
+/// Stage every change in `repo` except those under [`FOUNDRY_DIR`]. Under it,
+/// only deletions of files HEAD tracks are staged: new files and
+/// modifications never land, even when something else staged them.
+pub(crate) async fn stage_all_but_foundry_dir(shell: &dyn ShellGateway, repo: &Path) -> Result<()> {
     // Stage everything, then return the index under .foundry to HEAD,
-    // undoing whatever the agent or this `add` staged there. No exclude
-    // pathspec: when .gitignore ignores .foundry, git rejects a pathspec
-    // naming it ("paths are ignored", exit 1), while `add -A .` skips
-    // ignored paths without complaint.
-    checked(shell, worktree, &["add", "-A", "--", "."]).await?;
-    checked(shell, worktree, &["reset", "-q", "HEAD", "--", FOUNDRY_DIR]).await?;
+    // undoing whatever was staged there. No exclude pathspec: when
+    // .gitignore ignores .foundry, git rejects a pathspec naming it ("paths
+    // are ignored", exit 1), while `add -A .` skips ignored paths without
+    // complaint.
+    checked(shell, repo, &["add", "-A", "--", "."]).await?;
+    checked(shell, repo, &["reset", "-q", "HEAD", "--", FOUNDRY_DIR]).await?;
     // With the index at HEAD, an index-to-worktree deletion is a file HEAD
-    // tracks that the agent removed (or replaced with a directory).
+    // tracks that was removed (or replaced with a directory).
     let deleted = nul_separated_paths(
         shell,
-        worktree,
+        repo,
         &[
             "diff",
             "--name-only",
@@ -292,13 +273,36 @@ pub(crate) async fn commit_worktree(
     if !deleted.is_empty() {
         let mut args = vec!["--literal-pathspecs", "rm", "--cached", "--quiet", "--"];
         args.extend(deleted.iter().map(String::as_str));
-        checked(shell, worktree, &args).await?;
+        checked(shell, repo, &args).await?;
     }
-    let diff = run(shell, worktree, &["diff", "--cached", "--quiet"]).await?;
+    Ok(())
+}
+
+/// Whether the index holds staged changes. Errors when git cannot tell.
+pub(crate) async fn has_staged_changes(shell: &dyn ShellGateway, repo: &Path) -> Result<bool> {
+    let diff = run(shell, repo, &["diff", "--cached", "--quiet"]).await?;
     match diff.exit_code {
-        0 => return Ok(false),
-        1 => {}
+        0 => Ok(false),
+        1 => Ok(true),
         code => anyhow::bail!("git staged diff failed ({code}): {}", diff.stderr),
+    }
+}
+
+/// Commit whatever the agent left in the worktree, staged by
+/// [`stage_all_but_foundry_dir`]. `Ok(false)` when the tree was already clean
+/// or nothing committable remained.
+pub(crate) async fn commit_worktree(
+    shell: &dyn ShellGateway,
+    worktree: &Path,
+    project: &str,
+) -> Result<bool> {
+    let status = checked(shell, worktree, &["status", "--porcelain"]).await?;
+    if status.is_empty() {
+        return Ok(false);
+    }
+    stage_all_but_foundry_dir(shell, worktree).await?;
+    if !has_staged_changes(shell, worktree).await? {
+        return Ok(false);
     }
     checked(shell, worktree, &["commit", "-m", &format!("feat({project}): automated task")])
         .await?;
@@ -363,8 +367,9 @@ pub(crate) async fn unlanded_foundry_files(
 /// untracked and ignored file under [`FOUNDRY_DIR`], so the worktree can be
 /// removed.
 ///
-/// Callers archive `unlanded` first: this is the only place task files are
-/// discarded rather than committed.
+/// Agents keep their scratch outside the repository, so whatever is here is
+/// neither project work nor run evidence: it never lands, and the worktree is
+/// about to go.
 pub(crate) async fn clean_foundry_dir(
     shell: &dyn ShellGateway,
     worktree: &Path,

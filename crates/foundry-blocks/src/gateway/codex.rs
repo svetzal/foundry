@@ -57,6 +57,21 @@ use super::{
     engine::{CliAgentAdapter, CliAgentGateway, Interpreted, Invocation, SessionContext},
 };
 
+/// Directories a sandboxed codex session may write besides its working
+/// directory: Foundry's tool-log directory and the run's scratch directory
+/// (`FOUNDRY_SCRATCH_DIR`), both outside the repository.
+fn extra_writable_roots(request: &AgentRequest) -> Vec<PathBuf> {
+    let mut roots = vec![foundry_sdk::paths::foundry_home().join("tool-logs")];
+    roots.extend(
+        request
+            .env
+            .iter()
+            .filter(|(key, _)| key == foundry_sdk::paths::SCRATCH_DIR_ENV)
+            .map(|(_, dir)| PathBuf::from(dir)),
+    );
+    roots
+}
+
 /// Adapter that captures the codex-specific CLI invocation contract.
 pub(crate) struct CodexAdapter;
 
@@ -100,8 +115,8 @@ impl CliAgentAdapter for CodexAdapter {
                     "approval_policy=never".into(),
                     "-c".into(),
                     format!(
-                        "sandbox_workspace_write.writable_roots=[{}]",
-                        serde_json::json!(foundry_sdk::paths::foundry_home().join("tool-logs"))
+                        "sandbox_workspace_write.writable_roots={}",
+                        serde_json::json!(extra_writable_roots(request))
                     ),
                     "-c".into(),
                     "sandbox_workspace_write.network_access=true".into(),
@@ -843,7 +858,10 @@ mod tests {
             effort: ReasoningEffort::Medium,
             agent_file: None,
             provider: Some(AgentProvider::Codex),
-            env: vec![("FOUNDRY_WRITABLE_ROOT".into(), "/tmp/worktree".into())],
+            env: vec![
+                ("FOUNDRY_WRITABLE_ROOT".into(), "/tmp/worktree".into()),
+                ("FOUNDRY_SCRATCH_DIR".into(), "/srv/foundry/evidence/t/a".into()),
+            ],
             timeout: std::time::Duration::from_secs(30),
             trace_id: None,
             requires_json: false,
@@ -860,6 +878,7 @@ mod tests {
             .find(|a| a.starts_with("sandbox_workspace_write.writable_roots="))
             .unwrap();
         assert!(roots.contains("tool-logs"));
+        assert!(roots.contains("\"/srv/foundry/evidence/t/a\""), "{roots}");
         assert!(!roots.contains("Work/Projects"));
         assert_eq!(invocation.stdin.as_deref(), Some(b"work".as_slice()));
     }

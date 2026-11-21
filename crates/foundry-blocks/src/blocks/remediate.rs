@@ -147,6 +147,7 @@ impl TaskBlock for RemediateVulnerability {
                     env: super::push_guard::push_disabled_environment(),
                     timeout: entry.timeout(),
                     trace_id: trace_id.clone(),
+                    scratch_dir: crate::scratch::allocate_in_evidence_store(trace_id.as_deref())?,
                 },
                 &label,
             );

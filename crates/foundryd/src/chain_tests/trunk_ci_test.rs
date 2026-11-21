@@ -223,7 +223,6 @@ fn terminal(item: &WorkItem, commit: &str, campaign: Option<(&str, u64)>) -> Eve
             preservation_ref: Some(commit.into()),
             land_blocked: None,
             proof_evidence: None,
-            uncommitted_artifacts: None,
             trunk_arrivals: Vec::new(),
             verdict: TaskVerdict::Complete,
             context: LoopContext {
