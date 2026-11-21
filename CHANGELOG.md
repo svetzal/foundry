@@ -29,6 +29,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
   entries. `prost-types` is now a test-only dependency of `foundryd`, and the
   CLI no longer depends on it.
 
+### Fixed
+
+- `foundry queue` and `foundry queue open` work again on a large ledger. On
+  mojility-ops-01 a 47 MB `work-items.json` (3,973 items) made the
+  `ListWorkItems` reply 4.2 MB, over tonic's 4 MiB default, and both commands
+  failed with "decoded message length too large". `foundryd` and every CLI
+  client now send and accept messages up to `FOUNDRY_GRPC_MAX_MESSAGE_MIB`
+  mebibytes (default 64). An oversized reply's error names the variable.
+
 ## [0.60.0] - 2026-11-21
 
 ### Added

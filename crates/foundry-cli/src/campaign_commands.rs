@@ -18,7 +18,7 @@ use crate::daemon::{connect_daemon_required, status_to_anyhow};
 use crate::proto::{
     AddCampaignRequest, AdvanceCampaignRequest, CancelCampaignRequest, CompleteCampaignRequest,
     DecideCampaignRequest, EditCampaignRequest, GetCampaignRequest, ListCampaignsRequest,
-    PauseCampaignRequest, ResumeCampaignRequest, WatchRequest, foundry_client::FoundryClient,
+    PauseCampaignRequest, ResumeCampaignRequest, WatchRequest,
 };
 use crate::render;
 use crate::workflow_commands::WorkflowRunner;
@@ -667,7 +667,7 @@ pub async fn advance(
         .ok_or_else(|| anyhow::anyhow!("daemon returned no campaign in GetCampaignResponse"))?
         .project;
 
-    let mut watch_client = FoundryClient::connect(addr.to_string()).await?;
+    let mut watch_client = crate::daemon::connect(addr).await?;
     let mut stream = watch_client
         .watch(WatchRequest {
             project: project.clone(),

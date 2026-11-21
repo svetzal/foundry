@@ -8,7 +8,7 @@ use crate::commands::parse_traceparent_from_env;
 use crate::daemon::{connect_daemon_online, connect_daemon_required};
 use crate::proto::{
     EmitRequest, HistoryRequest, HistoryTrace, SpanRequest, StatusRequest, TraceRequest,
-    TraceResponse, WatchRequest, WorkflowStatus, foundry_client::FoundryClient,
+    TraceResponse, WatchRequest, WorkflowStatus,
 };
 use crate::render;
 
@@ -20,7 +20,7 @@ pub async fn emit(
     payload: Option<String>,
     wait: bool,
 ) -> Result<()> {
-    let mut client = FoundryClient::connect(addr.to_string()).await?;
+    let mut client = crate::daemon::connect(addr).await?;
 
     let (env_trace_id, env_parent_span_id) = parse_traceparent_from_env();
     let request = EmitRequest {

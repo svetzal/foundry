@@ -300,7 +300,7 @@ async fn main() -> Result<()> {
     tracing::info!("foundryd listening on {addr}");
 
     Server::builder()
-        .add_service(proto::foundry_server::FoundryServer::new(service))
+        .add_service(service.into_server())
         .serve_with_incoming(incoming)
         .await?;
 

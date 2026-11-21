@@ -2,6 +2,12 @@
 
 The Foundry service is defined in `proto/foundry.proto`.
 
+`foundryd` and the `foundry` CLI send and accept messages up to
+`FOUNDRY_GRPC_MAX_MESSAGE_MIB` mebibytes (default 64), not tonic's 4 MiB
+default. A message over the limit fails with an `OUT_OF_RANGE` status whose
+message says "message length too large". Other clients must raise their own
+decode limit to read a large `ListWorkItems` response.
+
 ## Service: `Foundry`
 
 ### `Emit(EmitRequest) → EmitResponse`

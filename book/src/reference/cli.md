@@ -14,6 +14,10 @@ The `foundry` CLI communicates with a running `foundryd` daemon over gRPC.
 2. `FOUNDRY_DAEMON_ADDR`
 3. `http://127.0.0.1:50051`
 
+`FOUNDRY_GRPC_MAX_MESSAGE_MIB` (default 64) sets the largest message the CLI
+sends or accepts, in MiB. The daemon applies the same variable. When a reply is
+too large, the error names the variable; raise it on both hosts.
+
 ## `foundry emit`
 
 Emit an event into the system. May trigger a workflow chain.

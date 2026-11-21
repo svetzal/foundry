@@ -137,6 +137,17 @@ impl FoundryService {
         spawn_workflow(event, &self.ctx);
     }
 
+    /// This service as the `Foundry` gRPC server, with the message limit from
+    /// `FOUNDRY_GRPC_MAX_MESSAGE_MIB` (see [`foundry_sdk::grpc`]) in both
+    /// directions instead of tonic's 4 MiB decode limit.
+    #[must_use]
+    pub fn into_server(self) -> crate::proto::foundry_server::FoundryServer<Self> {
+        let limit = foundry_sdk::grpc::max_message_bytes();
+        crate::proto::foundry_server::FoundryServer::new(self)
+            .max_decoding_message_size(limit)
+            .max_encoding_message_size(limit)
+    }
+
     /// A service over `stores`, reading the pacing files the environment
     /// names (see [`PacingPaths::from_env`]) until [`Self::with_pacing`]
     /// says otherwise.

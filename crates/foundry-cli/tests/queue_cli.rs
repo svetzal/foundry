@@ -26,7 +26,6 @@ use foundry_sdk::work_item::{
     WorkDisposition, WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkItemStore, WorkLane,
 };
 use foundryd::{
-    proto::foundry_server::FoundryServer,
     service::{FoundryService, RuntimeContext, StoreConfig},
     trace_store::TraceStore,
     workflow_tracker::WorkflowTracker,
@@ -242,7 +241,7 @@ async fn start_server(service: FoundryService) -> String {
 
     tokio::spawn(async move {
         Server::builder()
-            .add_service(FoundryServer::new(service))
+            .add_service(service.into_server())
             .serve_with_incoming(incoming)
             .await
             .expect("gRPC server error");
@@ -619,6 +618,78 @@ async fn online_queue_open_omits_running_and_landed_ids() {
     ] {
         assert!(!out.contains(absent), "'{absent}' must not appear in:\n{out}");
     }
+}
+
+/// Open items whose `ListWorkItems` response is about 6 MiB, over tonic's
+/// default 4 MiB decode limit, like the 3,973-item ledger on mojility-ops-01.
+const LARGE_LEDGER_ITEMS: usize = 48;
+
+fn large_ledger() -> WorkItemStore {
+    let reason = "r".repeat(128 * 1024);
+    WorkItemStore {
+        items: (0..LARGE_LEDGER_ITEMS)
+            .map(|n| {
+                let mut item = item(
+                    &format!("wi_large_{n:03}"),
+                    "alpha",
+                    WorkItemKind::Maintenance,
+                    WorkLane::Maintenance,
+                    WorkItemState::Failed,
+                    2_000 + i64::try_from(n).expect("small index"),
+                );
+                item.reason.clone_from(&reason);
+                item
+            })
+            .collect(),
+        ..WorkItemStore::default()
+    }
+}
+
+async fn daemon_over_large_ledger() -> (String, NamedTempFile, TempDir) {
+    let ledger = NamedTempFile::new().expect("tempfile for the daemon ledger");
+    large_ledger().save(ledger.path()).expect("seed the daemon ledger");
+    let state = tempfile::tempdir().expect("tempdir for daemon state");
+    let service = make_service(ledger.path().to_path_buf(), state.path());
+    let addr = start_server(service).await;
+    (addr, ledger, state)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn online_queue_open_reads_a_ledger_over_tonics_default_message_limit() {
+    let (addr, ledger, _state) = daemon_over_large_ledger().await;
+    let home = tempfile::tempdir().expect("client home");
+
+    let output = run_foundry(home.path(), ledger.path(), &addr, &["queue", "open", "--json"]);
+    assert_command_succeeded(&output);
+    let stdout = stdout_string(&output);
+    assert!(stdout.len() > 4 * 1024 * 1024, "the response must exceed 4 MiB");
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("--json output must parse");
+    let items = parsed["items"].as_array().expect("an items array");
+    assert_eq!(items.len(), LARGE_LEDGER_ITEMS);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lower_client_message_limit_refuses_the_response_and_names_the_variable() {
+    let (addr, ledger, _state) = daemon_over_large_ledger().await;
+    let home = tempfile::tempdir().expect("client home");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_foundry"))
+        .args(["--addr", &addr, "queue", "open"])
+        .env("HOME", home.path())
+        .env_remove("FOUNDRY_HOME")
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .env("FOUNDRY_WORK_ITEMS_PATH", ledger.path())
+        .env("FOUNDRY_CAMPAIGNS_PATH", client_campaigns_path(home.path()))
+        .env("FOUNDRY_GRPC_MAX_MESSAGE_MIB", "1")
+        .output()
+        .expect("run foundry binary");
+
+    assert!(!output.status.success(), "a 1 MiB limit must refuse a 6 MiB response");
+    let stderr = stderr_string(&output);
+    assert!(stderr.contains("message length too large"), "{stderr}");
+    assert!(stderr.contains("FOUNDRY_GRPC_MAX_MESSAGE_MIB"), "{stderr}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

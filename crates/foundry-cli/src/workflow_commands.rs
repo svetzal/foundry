@@ -5,7 +5,7 @@ use anyhow::Result;
 use foundry_sdk::event::PayloadExt;
 
 use crate::commands::parse_throttle;
-use crate::proto::{EmitRequest, WatchRequest, WatchResponse, foundry_client::FoundryClient};
+use crate::proto::{EmitRequest, WatchRequest, WatchResponse};
 use crate::render;
 
 /// Connect, emit, and stream watch events until `is_terminal` returns true.
@@ -59,7 +59,7 @@ impl WorkflowRunner {
         is_terminal: impl Fn(&str, &str) -> bool,
     ) -> Result<(String, Vec<WatchResponse>)> {
         // Subscribe before emitting so we don't miss events.
-        let mut watch_client = FoundryClient::connect(self.addr.clone()).await?;
+        let mut watch_client = crate::daemon::connect(&self.addr).await?;
         let mut stream = watch_client
             .watch(WatchRequest {
                 project: self.project.clone(),
@@ -67,7 +67,7 @@ impl WorkflowRunner {
             .await?
             .into_inner();
 
-        let mut emit_client = FoundryClient::connect(self.addr.clone()).await?;
+        let mut emit_client = crate::daemon::connect(&self.addr).await?;
         let payload_json = if payload.is_null() {
             String::new()
         } else {
@@ -114,7 +114,7 @@ impl WorkflowRunner {
 
     /// Fetch and render the trace for `event_id` after a 1-second delay.
     pub(crate) async fn show_trace(&self, event_id: &str) -> Result<()> {
-        let mut trace_client = FoundryClient::connect(self.addr.clone()).await?;
+        let mut trace_client = crate::daemon::connect(&self.addr).await?;
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         let trace_resp = trace_client
             .trace(crate::proto::TraceRequest {
@@ -135,7 +135,7 @@ pub async fn run(addr: &str, project: Option<String>, throttle: &str) -> Result<
     let is_system_run = project_name == "system";
 
     // Subscribe to the watch stream before emitting so we don't miss events.
-    let mut watch_client = FoundryClient::connect(addr.to_string()).await?;
+    let mut watch_client = crate::daemon::connect(addr).await?;
     let watch_request = WatchRequest {
         project: if is_system_run {
             String::new()
@@ -146,7 +146,7 @@ pub async fn run(addr: &str, project: Option<String>, throttle: &str) -> Result<
     let mut stream = watch_client.watch(watch_request).await?.into_inner();
 
     // Now emit the maintenance run event using a separate connection.
-    let mut emit_client = FoundryClient::connect(addr.to_string()).await?;
+    let mut emit_client = crate::daemon::connect(addr).await?;
     let opener_event_type = if is_system_run {
         "maintenance_cycle_started"
     } else {

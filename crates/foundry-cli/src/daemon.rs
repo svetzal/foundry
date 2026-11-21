@@ -10,7 +10,8 @@
 //!   offline recovery path use [`connect_daemon_online`].
 //!
 //! This module is the single home for connection and error-shaping logic so
-//! command modules do not duplicate it.
+//! command modules do not duplicate it. Every client comes from [`connect`],
+//! which applies the shared message limit (see [`foundry_sdk::grpc`]).
 
 use anyhow::Result;
 
@@ -30,6 +31,19 @@ pub fn resolve_daemon_addr(explicit: Option<&str>, configured_default: Option<&s
         .to_string()
 }
 
+/// Connect to the daemon at `addr` with the message limit from
+/// `FOUNDRY_GRPC_MAX_MESSAGE_MIB` in both directions, instead of tonic's
+/// 4 MiB decode limit.
+pub async fn connect(
+    addr: &str,
+) -> Result<FoundryClient<tonic::transport::Channel>, tonic::transport::Error> {
+    let limit = foundry_sdk::grpc::max_message_bytes();
+    Ok(FoundryClient::connect(addr.to_string())
+        .await?
+        .max_decoding_message_size(limit)
+        .max_encoding_message_size(limit))
+}
+
 /// Connect to the daemon or return a stable actionable error.
 ///
 /// Use this for commands whose default online path must not fall back to a
@@ -38,7 +52,7 @@ pub async fn connect_daemon_required(
     addr: &str,
     offline_hint: &str,
 ) -> Result<FoundryClient<tonic::transport::Channel>> {
-    FoundryClient::connect(addr.to_string()).await.map_err(|_| {
+    connect(addr).await.map_err(|_| {
         anyhow::anyhow!(
             "foundryd is not reachable at {addr}; start the daemon or rerun with `{offline_hint}`"
         )
@@ -47,15 +61,25 @@ pub async fn connect_daemon_required(
 
 /// Connect to the daemon for commands that have no offline recovery mode.
 pub async fn connect_daemon_online(addr: &str) -> Result<FoundryClient<tonic::transport::Channel>> {
-    FoundryClient::connect(addr.to_string())
+    connect(addr)
         .await
         .map_err(|_| anyhow::anyhow!("foundryd is not reachable at {addr}; start the daemon"))
 }
 
 /// Convert a [`tonic::Status`] to an [`anyhow::Error`] with a consistent
-/// `"daemon error: <code> — <message>"` format.
+/// `"daemon error: <code> — <message>"` format. A message over the size
+/// limit also names the variable that raises it.
 #[allow(clippy::needless_pass_by_value)]
 pub fn status_to_anyhow(s: tonic::Status) -> anyhow::Error {
+    if foundry_sdk::grpc::is_message_too_large(s.message()) {
+        return anyhow::anyhow!(
+            "daemon error: {} — {}; set {} (in MiB, default {}) higher on the daemon and this host",
+            s.code(),
+            s.message(),
+            foundry_sdk::grpc::MAX_MESSAGE_MIB_ENV,
+            foundry_sdk::grpc::DEFAULT_MAX_MESSAGE_MIB
+        );
+    }
     anyhow::anyhow!("daemon error: {} — {}", s.code(), s.message())
 }
 
@@ -71,6 +95,22 @@ mod tests {
             err.to_string().contains("daemon error:"),
             "formatted error should start with 'daemon error:'"
         );
+    }
+
+    #[test]
+    fn status_to_anyhow_names_the_limit_variable_for_an_oversized_message() {
+        let status = tonic::Status::out_of_range(
+            "Error, decoded message length too large: found 4208032 bytes, the limit is: 4194304 bytes",
+        );
+        let err = status_to_anyhow(status).to_string();
+        assert!(err.contains("decoded message length too large"), "{err}");
+        assert!(err.contains("FOUNDRY_GRPC_MAX_MESSAGE_MIB"), "{err}");
+    }
+
+    #[test]
+    fn status_to_anyhow_leaves_other_errors_without_the_limit_hint() {
+        let err = status_to_anyhow(tonic::Status::not_found("project missing")).to_string();
+        assert!(!err.contains("FOUNDRY_GRPC_MAX_MESSAGE_MIB"), "{err}");
     }
 
     #[tokio::test]
