@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.61.0] - 2026-11-21
+
 ### Changed
 
 - Foundry builds with Rust 1.100.0, the current stable release, in
