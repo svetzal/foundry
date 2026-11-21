@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReconcileFinding {
     pub project: String,
-    /// `orphan_worktree`, `orphan_branch`, `pruned_branch`, `broken_item`, unresolved,
+    /// `orphan_worktree`, `orphan_branch`, `pruned_branch`, `swept_worktree`,
+    /// `swept_branch`, `broken_item`, unresolved,
     /// informational or `dirty_checkout`.
     pub category: String,
     /// Exact item id, ref name or filesystem path; never inferred from item ids.

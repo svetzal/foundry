@@ -1,7 +1,9 @@
-//! Inventory, conservative scheduled settlement, and guarded landed-branch cleanup.
+//! Inventory, conservative scheduled settlement, guarded landed-branch
+//! cleanup, and the sweep of aged orphan worktrees and task branches.
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, ensure};
 use foundry_sdk::event::{Event, EventType};
@@ -26,6 +28,44 @@ pub struct ReconcileWork {
     worktrees: PathBuf,
     events: PathBuf,
     output: PathBuf,
+    /// How old an orphan must be before the sweep removes it; `None` turns
+    /// the sweep off.
+    sweep_after: Option<Duration>,
+}
+
+/// Environment variable that sets the orphan sweep age, in days.
+pub const ORPHAN_SWEEP_DAYS_ENV: &str = "FOUNDRY_ORPHAN_SWEEP_DAYS";
+
+/// Default orphan sweep age, in days.
+///
+/// Settlement disposes of what an item no longer needs, so the sweep only
+/// catches what that missed: a crash, a failed removal, a ledger fault, and
+/// the backlog from before disposal existed. Seven days is longer than any
+/// task or campaign cycle runs and longer than a weekend. Each reconcile run
+/// (every three hours) reports a young orphan as an anomaly, so a person sees
+/// it about 56 times before anything is deleted.
+pub const DEFAULT_ORPHAN_SWEEP_DAYS: u64 = 7;
+
+const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// The sweep age from `FOUNDRY_ORPHAN_SWEEP_DAYS`, or `None` when the sweep
+/// is off. Unset or unparseable means the default; `0` turns it off.
+#[must_use]
+pub fn sweep_after_from_env() -> Option<Duration> {
+    parse_sweep_after(std::env::var(ORPHAN_SWEEP_DAYS_ENV).ok().as_deref())
+}
+
+fn parse_sweep_after(value: Option<&str>) -> Option<Duration> {
+    let days = value
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .map_or(DEFAULT_ORPHAN_SWEEP_DAYS, u64::from);
+    (days > 0).then(|| DAY * u32::try_from(days).unwrap_or(u32::MAX))
+}
+
+/// Whether something last written at `written` is older than `max_age`. A
+/// write in the future (clock skew) is young.
+fn older_than(written: SystemTime, max_age: Duration) -> bool {
+    SystemTime::now().duration_since(written).is_ok_and(|age| age > max_age)
 }
 
 impl ReconcileWork {
@@ -42,7 +82,16 @@ impl ReconcileWork {
             worktrees,
             events,
             output,
+            sweep_after: sweep_after_from_env(),
         }
+    }
+
+    /// Sweep orphans older than `sweep_after`, or never with `None`, rather
+    /// than as `FOUNDRY_ORPHAN_SWEEP_DAYS` says.
+    #[must_use]
+    pub fn with_sweep_after(mut self, sweep_after: Option<Duration>) -> Self {
+        self.sweep_after = sweep_after;
+        self
     }
 
     async fn reconcile(&self, trigger: &Event) -> Result<TaskBlockResult> {
@@ -91,17 +140,18 @@ impl ReconcileWork {
         report.orphan_worktrees = count(&report, "orphan_worktree");
         report.orphan_branches = count(&report, "orphan_branch");
         let pruned = count(&report, "pruned_branch");
+        let swept = (count(&report, "swept_worktree"), count(&report, "swept_branch"));
         report.broken_items = count(&report, "broken_item");
         report.unresolved = count(&report, "unresolved");
         report.success = report.errors.is_empty();
-        render(&mut report, pruned);
+        render(&mut report, pruned, swept);
         let destination = self
             .output
             .join(format!("{}.md", foundry_sdk::time::UtcDateTime::now().format("%Y-%m-%d")));
         if let Err(error) = write_report(&destination, &report.markdown).await {
             report.success = false;
             report.errors.push(format!("digest write {}: {error:#}", destination.display()));
-            render(&mut report, pruned);
+            render(&mut report, pruned, swept);
         } else {
             report.digest_path = Some(destination.display().to_string());
         }
@@ -120,6 +170,15 @@ impl ReconcileWork {
         let ledger = self.ledger.clone();
         let store = tokio::task::spawn_blocking(move || load_snapshot(&ledger)).await??;
         let mut verified = Vec::new();
+        // A ref any waiting, running or open item owns or starts from is
+        // never an orphan, in whichever registered project it is recorded.
+        let held: BTreeSet<String> = store
+            .items
+            .iter()
+            .filter(|item| super::work_disposal::holds_refs(item))
+            .flat_map(super::work_disposal::referenced)
+            .map(|reference| reference.trim_start_matches("refs/heads/").to_string())
+            .collect();
         for project in projects {
             let items: Vec<_> = store
                 .items
@@ -129,8 +188,9 @@ impl ReconcileWork {
                 })
                 .cloned()
                 .collect();
-            if let Err(error) =
-                self.inspect_project(&project, &items, report, &mut verified, prune).await
+            if let Err(error) = self
+                .inspect_project(&project, &items, &held, report, &mut verified, prune)
+                .await
             {
                 report.errors.push(format!("{} ({}): {error:#}", project.name, project.path));
                 for item in items {
@@ -160,6 +220,7 @@ impl ReconcileWork {
         &self,
         project: &ProjectEntry,
         items: &[WorkItem],
+        held: &BTreeSet<String>,
         report: &mut WorkReconcileCompletedPayload,
         verified: &mut Vec<(WorkItem, String)>,
         prune: bool,
@@ -260,8 +321,10 @@ impl ReconcileWork {
             ],
         )
         .await?;
-        let (owned_paths, owned_branches, unknown_running) =
+        let (owned_paths, mut owned_branches, unknown_running) =
             self.inspect_items(project, items, report, verified, (&trees, &trunks)).await;
+        owned_branches.extend(held.iter().cloned());
+        let sweep_after = self.sweep_after.filter(|_| !unknown_running);
         let root = self.worktrees.join(crate::workspace::slug(&project.name));
         let directory_root = root.clone();
         let directories = if let Some(directories) =
@@ -293,18 +356,37 @@ impl ReconcileWork {
             } else {
                 "orphan_worktree"
             };
-            finding(
-                report,
-                &project.name,
-                category,
-                path,
-                &format!(
-                    "branch={}; registered={}; directory={}",
-                    trees.get(path).map_or("detached/unknown", String::as_str),
-                    trees.contains_key(path),
-                    Path::new(path).exists()
-                ),
+            let mut detail = format!(
+                "branch={}; registered={}; directory={}",
+                trees.get(path).map_or("detached/unknown", String::as_str),
+                trees.contains_key(path),
+                Path::new(path).exists()
             );
+            let category = match sweep_after {
+                Some(max_age)
+                    if category == "orphan_worktree"
+                        && Path::new(path).starts_with(&root)
+                        && newest_write(Path::new(path)).is_none_or(|w| older_than(w, max_age)) =>
+                {
+                    match super::work_disposal::remove_worktree(
+                        checkout,
+                        Path::new(path),
+                        &self.worktrees,
+                    )
+                    .await
+                    {
+                        Ok(()) => "swept_worktree",
+                        Err(error) => {
+                            // Best-effort: the orphan stays reported with the reason.
+                            tracing::warn!(project = %project.name, %path, %error, "sweep retained worktree");
+                            detail = format!("{detail}; sweep failed: {error:#}");
+                            category
+                        }
+                    }
+                }
+                _ => category,
+            };
+            finding(report, &project.name, category, path, &detail);
         }
         for row in refs.lines() {
             let (reference, hash) = row.split_once(' ').context("malformed branch inventory")?;
@@ -368,6 +450,23 @@ impl ReconcileWork {
                         // Best-effort: a failed prune leaves the branch reported.
                         tracing::warn!(project = %project.name, %reference, %error, "prune retained branch");
                         trunk_status = format!("{trunk_status}; prune failed: {error:#}");
+                    }
+                }
+            }
+            if let Some(max_age) = sweep_after
+                && branch.starts_with("foundry-task/")
+                && older_than(ref_written(checkout, reference, hash).await, max_age)
+            {
+                let remote = reference.starts_with("refs/remotes/origin/");
+                match sweep_branch(project, branch, reference, hash, remote).await {
+                    Ok(()) => {
+                        finding(report, &project.name, "swept_branch", reference, &detail);
+                        continue;
+                    }
+                    Err(error) => {
+                        // Best-effort: a failed sweep leaves the branch reported.
+                        tracing::warn!(project = %project.name, %reference, %error, "sweep retained branch");
+                        trunk_status = format!("{trunk_status}; sweep failed: {error:#}");
                     }
                 }
             }
@@ -530,6 +629,60 @@ async fn git(path: &Path, args: &[&str]) -> Result<String> {
     Ok(result.stdout.trim_end().to_string())
 }
 
+/// The newest modification time of `path` and its immediate entries, or
+/// `None` when the directory is gone.
+fn newest_write(path: &Path) -> Option<SystemTime> {
+    let own = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
+    let entries = std::fs::read_dir(path).into_iter().flatten().flatten();
+    Some(
+        entries
+            .filter_map(|entry| entry.metadata().and_then(|m| m.modified()).ok())
+            .fold(own, SystemTime::max),
+    )
+}
+
+/// When `reference` last changed: the later of its tip's committer date and
+/// its newest reflog entry. A branch just created at an old commit is young.
+async fn ref_written(checkout: &Path, reference: &str, hash: &str) -> SystemTime {
+    let seconds = |text: &str| {
+        text.trim()
+            .parse::<u64>()
+            .ok()
+            .map(|s| SystemTime::UNIX_EPOCH + Duration::from_secs(s))
+    };
+    let committed = git(checkout, &["show", "-s", "--format=%ct", hash])
+        .await
+        .ok()
+        .and_then(|t| seconds(&t));
+    let logged = git(checkout, &["reflog", "show", "-1", "--format=%ct", reference, "--"])
+        .await
+        .ok()
+        .and_then(|t| seconds(&t));
+    // Unknown means young: the sweep never deletes what it cannot date.
+    committed.max(logged).unwrap_or_else(SystemTime::now)
+}
+
+/// Delete an aged orphan `foundry-task/*` branch without trunk proof. For an
+/// origin branch already gone from origin, the stale tracking ref is removed
+/// instead, so it is not reported again.
+async fn sweep_branch(
+    project: &ProjectEntry,
+    branch: &str,
+    reference: &str,
+    hash: &str,
+    remote: bool,
+) -> Result<()> {
+    let name = format!("refs/heads/{branch}");
+    match super::work_disposal::prune(project, &name, remote, false).await {
+        Ok(()) => Ok(()),
+        Err(error) if remote && error.to_string() == "ref already gone" => {
+            git(Path::new(&project.path), &["update-ref", "-d", reference, hash]).await?;
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn load_snapshot(path: &Path) -> Result<WorkItemStore> {
     let _guard = ledger_write_gate().lock().map_err(|e| anyhow::anyhow!("ledger gate: {e}"))?;
     Ok(WorkItemStore::load(path)?)
@@ -658,7 +811,7 @@ fn finding(
 fn count(report: &WorkReconcileCompletedPayload, category: &str) -> usize {
     report.findings.iter().filter(|finding| finding.category == category).count()
 }
-fn render(report: &mut WorkReconcileCompletedPayload, pruned: usize) {
+fn render(report: &mut WorkReconcileCompletedPayload, pruned: usize, swept: (usize, usize)) {
     let mut totals = format!(
         "Settled: {}; orphan worktrees: {}; orphan branches: {}; broken items: {}; unresolved: {}",
         report.settled_ids.len(),
@@ -669,6 +822,13 @@ fn render(report: &mut WorkReconcileCompletedPayload, pruned: usize) {
     );
     if pruned > 0 {
         totals = format!("{totals}; pruned branches: {pruned}");
+    }
+    let (swept_worktrees, swept_branches) = swept;
+    if swept_worktrees > 0 {
+        totals = format!("{totals}; swept worktrees: {swept_worktrees}");
+    }
+    if swept_branches > 0 {
+        totals = format!("{totals}; swept branches: {swept_branches}");
     }
     let mut lines = vec!["# Work reconciliation".to_string(), totals];
     lines.extend(report.settled_ids.iter().map(|id| format!("- landed: `{id}`")));

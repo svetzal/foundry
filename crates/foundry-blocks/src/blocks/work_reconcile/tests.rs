@@ -1114,3 +1114,257 @@ async fn pruning_deletes_only_orphan_branches_origins_trunk_contains() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// Run git in `path` as if at `date`, so commits and reflog entries are old.
+async fn git_at(path: &Path, date: &str, args: &[&str]) -> String {
+    let env = [
+        ("GIT_COMMITTER_DATE".to_owned(), date.to_owned()),
+        ("GIT_AUTHOR_DATE".to_owned(), date.to_owned()),
+    ];
+    let result = crate::shell::run(path, "git", args, Some(&env), None).await.unwrap();
+    assert!(result.success, "git {args:?}: {}", result.stderr);
+    result.stdout.trim_end().to_owned()
+}
+
+/// Set the modification time of `path` and its immediate entries to 2020.
+async fn age(path: &Path) {
+    let mut paths = vec![path.to_path_buf()];
+    paths.extend(std::fs::read_dir(path).unwrap().map(|entry| entry.unwrap().path()));
+    for path in paths {
+        let status = Command::new("touch")
+            .args(["-h", "-t", "202001010000"])
+            .arg(&path)
+            .status()
+            .await
+            .unwrap();
+        assert!(status.success());
+    }
+}
+
+fn local_ref(checkout: &Path, reference: &str) -> bool {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", reference])
+        .current_dir(checkout)
+        .status()
+        .unwrap()
+        .success()
+}
+
+/// A checkout with aged, young, held and non-Foundry branches, an aged
+/// orphan worktree and a young one. Returns the checkout and both worktrees.
+async fn sweep_fixture(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    const OLD: &str = "2020-01-01T00:00:00Z";
+    let remote = root.join("remote.git");
+    let checkout = root.join("checkout");
+    git(root, &["init", "--bare", remote.to_str().unwrap()]).await;
+    git(root, &["init", "-b", "main", checkout.to_str().unwrap()]).await;
+    git(&checkout, &["config", "user.name", "Regression"]).await;
+    git(&checkout, &["config", "user.email", "regression@example.test"]).await;
+    git(&checkout, &["remote", "add", "origin", remote.to_str().unwrap()]).await;
+    std::fs::write(checkout.join("app.txt"), "base\n").unwrap();
+    git(&checkout, &["add", "app.txt"]).await;
+    git_at(&checkout, OLD, &["commit", "-m", "base"]).await;
+    // Unlanded work on each branch: the sweep needs no trunk proof.
+    for branch in ["foundry-task/aged", "foundry-task/held", "feature/old"] {
+        git_at(&checkout, OLD, &["checkout", "-q", "-b", branch, "main"]).await;
+        std::fs::write(checkout.join(branch.replace('/', "-")), branch).unwrap();
+        git(&checkout, &["add", "--all"]).await;
+        git_at(&checkout, OLD, &["commit", "-m", branch]).await;
+        git_at(&checkout, OLD, &["checkout", "-q", "main"]).await;
+    }
+    git(&checkout, &["checkout", "-q", "-b", "foundry-task/young", "main"]).await;
+    std::fs::write(checkout.join("young"), "young").unwrap();
+    git(&checkout, &["add", "young"]).await;
+    git(&checkout, &["commit", "-m", "young"]).await;
+    git(&checkout, &["checkout", "-q", "main"]).await;
+    git_at(
+        &checkout,
+        OLD,
+        &[
+            "push",
+            "-q",
+            "origin",
+            "main",
+            "foundry-task/aged",
+            "foundry-task/held",
+            "foundry-task/young",
+            "feature/old",
+        ],
+    )
+    .await;
+    // A tracking ref whose origin branch was deleted long ago.
+    git_at(
+        &checkout,
+        OLD,
+        &[
+            "update-ref",
+            "refs/remotes/origin/foundry-task/gone",
+            "main",
+        ],
+    )
+    .await;
+    let worktrees = root.join("worktrees");
+    let aged_tree = worktrees.join("regression").join("aged");
+    std::fs::create_dir_all(aged_tree.parent().unwrap()).unwrap();
+    git(
+        &checkout,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            aged_tree.to_str().unwrap(),
+            "foundry-task/aged",
+        ],
+    )
+    .await;
+    std::fs::write(aged_tree.join("scratch"), "left by a crashed run").unwrap();
+    age(&aged_tree).await;
+    let young_tree = worktrees.join("regression").join("young");
+    std::fs::create_dir_all(&young_tree).unwrap();
+    std::fs::write(young_tree.join("scratch"), "a run that just started").unwrap();
+
+    (checkout, aged_tree, young_tree)
+}
+
+async fn assert_sweep_removes_only_aged_unreferenced_orphans() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path();
+    let (checkout, aged_tree, young_tree) = sweep_fixture(root).await;
+    let worktrees = root.join("worktrees");
+    // A queued item that starts from the held branch keeps it.
+    let mut queued = open_item(
+        "wi_queued",
+        foundry_sdk::work_item::WorkItemState::Queued,
+        foundry_sdk::time::UtcDateTime::now(),
+        None,
+    );
+    queued.settled_at = None;
+    queued.pending_root = Some(foundry_sdk::event::Event::new(
+        foundry_sdk::event::EventType::ExecutionRequested,
+        "regression".into(),
+        foundry_sdk::throttle::Throttle::Full,
+        serde_json::json!({ "base_ref": "foundry-task/held" }),
+    ));
+    let ledger = root.join("ledger.json");
+    foundry_sdk::work_item::WorkItemStore {
+        version: 1,
+        items: vec![queued],
+    }
+    .save(&ledger)
+    .unwrap();
+    let reconcile = |sweep_after| {
+        let block = ReconcileWork::new(
+            registry_with_project("regression", checkout.to_str().unwrap()),
+            ledger.clone(),
+            worktrees.clone(),
+            root.join("events"),
+            root.join("digest"),
+        )
+        .with_sweep_after(sweep_after);
+        async move {
+            let trigger = make_trigger(
+                foundry_sdk::event::EventType::WorkReconcileStarted,
+                "system",
+                serde_json::json!({}),
+            );
+            let result = block.execute(&trigger).await.unwrap();
+            let report: WorkReconcileCompletedPayload =
+                result.events.last().unwrap().parse_payload().unwrap();
+            assert!(report.success, "{:?}", report.errors);
+            report
+        }
+    };
+    let swept = |report: &WorkReconcileCompletedPayload| -> Vec<String> {
+        report
+            .findings
+            .iter()
+            .filter(|f| f.category.starts_with("swept_"))
+            .map(|f| f.identity.clone())
+            .collect()
+    };
+
+    // With the sweep off, aged orphans are only reported.
+    let report = reconcile(None).await;
+    assert!(swept(&report).is_empty(), "{:?}", report.findings);
+    assert!(aged_tree.exists());
+    assert!(on_origin(root, "foundry-task/aged").await);
+
+    let report = reconcile(Some(Duration::from_secs(7 * 24 * 60 * 60))).await;
+    assert_eq!(
+        swept(&report),
+        vec![
+            aged_tree.display().to_string(),
+            "refs/heads/foundry-task/aged".to_owned(),
+            "refs/remotes/origin/foundry-task/aged".to_owned(),
+            "refs/remotes/origin/foundry-task/gone".to_owned(),
+        ],
+        "{:#?}",
+        report.findings
+    );
+    assert!(report.markdown.contains("swept worktrees: 1; swept branches: 3"));
+    assert!(!aged_tree.exists());
+    assert!(!git(&checkout, &["worktree", "list"]).await.contains("aged"));
+    assert!(!local_ref(&checkout, "refs/heads/foundry-task/aged"));
+    assert!(!on_origin(root, "foundry-task/aged").await);
+    assert!(!local_ref(&checkout, "refs/remotes/origin/foundry-task/gone"));
+    // Young orphans are reported and kept.
+    assert!(young_tree.exists());
+    assert!(local_ref(&checkout, "refs/heads/foundry-task/young"));
+    assert!(on_origin(root, "foundry-task/young").await);
+    assert!(report.findings.iter().any(|f| f.category == "orphan_branch"
+        && f.identity == "refs/heads/foundry-task/young"));
+    // A branch an open item references is not an orphan at all.
+    assert!(local_ref(&checkout, "refs/heads/foundry-task/held"));
+    assert!(on_origin(root, "foundry-task/held").await);
+    assert!(report.findings.iter().all(|f| !f.identity.contains("foundry-task/held")));
+    // A branch outside foundry-task/ is never touched.
+    assert!(local_ref(&checkout, "refs/heads/feature/old"));
+    assert!(on_origin(root, "feature/old").await);
+
+    // The sweep is idempotent.
+    let report = reconcile(Some(Duration::from_secs(7 * 24 * 60 * 60))).await;
+    assert!(swept(&report).is_empty(), "{:?}", report.findings);
+}
+
+#[tokio::test]
+async fn the_sweep_removes_only_aged_orphans_no_open_item_references() {
+    if std::env::var_os("RECONCILE_SWEEP_CHILD").is_some() {
+        assert_sweep_removes_only_aged_unreferenced_orphans().await;
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let global = root.path().join("gitconfig");
+    std::fs::write(&global, "").unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "blocks::work_reconcile::tests::the_sweep_removes_only_aged_orphans_no_open_item_references",
+            "--nocapture",
+        ])
+        .env("RECONCILE_SWEEP_CHILD", "1")
+        .env("GIT_CONFIG_GLOBAL", global)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("GIT_CONFIG_COUNT")
+        .env_remove("GIT_CONFIG_PARAMETERS")
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn the_sweep_age_defaults_to_seven_days_and_zero_turns_it_off() {
+    let week = Some(Duration::from_secs(7 * 24 * 60 * 60));
+    assert_eq!(super::parse_sweep_after(None), week);
+    assert_eq!(super::parse_sweep_after(Some("not a number")), week);
+    assert_eq!(
+        super::parse_sweep_after(Some(" 2 ")),
+        Some(Duration::from_secs(2 * 24 * 60 * 60))
+    );
+    assert_eq!(super::parse_sweep_after(Some("0")), None);
+}

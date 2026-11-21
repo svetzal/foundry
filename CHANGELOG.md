@@ -41,6 +41,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
   item's settlement, cancellation or disposal event that names what disposal
   removed and what it left. The `WorkItemEvent` message has a new `disposal`
   field, and `--json` events carry it.
+- The work reconciler sweeps aged orphans. On each run, scheduled or not, it
+  removes a Foundry worktree and a `foundry-task/*` branch (local, on origin,
+  or a stale tracking ref) that no open or waiting item owns or starts from
+  and that nothing has changed for 7 days. The sweep needs no trunk proof. It
+  does nothing in a run that cannot account for a running item. Set
+  `FOUNDRY_ORPHAN_SWEEP_DAYS` to change the age, or to `0` to turn the sweep
+  off. The report counts `swept_worktree` and `swept_branch` findings.
 
 ## [0.62.0] - 2026-11-21
 
