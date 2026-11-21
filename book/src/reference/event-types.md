@@ -479,6 +479,15 @@ evidence in the worktree as `runner_error` without a review session.
 | `skipped`   | number | Projects that were skipped (already active or `skip=true`) |
 | `projects`  | array  | Per-project result objects (name, status, duration_secs)   |
 
+**`maintenance_summary_written` payload**
+
+Emitted by `Generate Summary` after it writes a nightly run's summary.
+
+| Field           | Type              | Description |
+| --------------- | ----------------- | ----------- |
+| `summary_path`  | string            | Where the summary was written |
+| `fleet_failure` | object (optional) | Set when most projects failed with one agent cause: `attempted` (projects that ran), `projects` (those that failed with the cause, in name order) and `cause` (the shared agent failure, such as `agent authentication failed: Failed to authenticate: OAuth session expired and could not be refreshed`). See [Maintenance Workflow](../guide/maintenance-workflow.md#a-fleet-wide-failure) |
+
 ## Dependency Update Policy
 
 | Type | Description |

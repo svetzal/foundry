@@ -462,6 +462,10 @@ pub enum EventType {
     ProjectRunCompleted,
     /// Command: per-project traces are persisted, render the run summary.
     MaintenanceSummaryRequested,
+    /// Fact: `GenerateSummary` wrote the run's summary. Carries
+    /// `MaintenanceSummaryWrittenPayload`, including a fleet-wide failure
+    /// when most projects failed with one cause.
+    MaintenanceSummaryWritten,
 
     // Release audit
     ReleaseTagAudited,
@@ -694,6 +698,7 @@ impl EventType {
             | EventType::TrunkCiChecked
             | EventType::ValidationCompleted
             | EventType::MaintenanceCycleCompleted
+            | EventType::MaintenanceSummaryWritten
             | EventType::ProjectRunCompleted
             | EventType::ReleaseTagAudited
             | EventType::GateResolutionCompleted
@@ -865,6 +870,7 @@ mod tests {
             (EventType::OpsObserved, "ops_observed"),
             (EventType::OpsSummaryCompleted, "ops_summary_completed"),
             (EventType::OpsDigestCompleted, "ops_digest_completed"),
+            (EventType::MaintenanceSummaryWritten, "maintenance_summary_written"),
             (EventType::MaintenanceTriageCompleted, "maintenance_triage_completed"),
             (EventType::MaintenanceTriageDigestWritten, "maintenance_triage_digest_written"),
             (EventType::SupplyChainScanStarted, "supply_chain_scan_started"),
@@ -965,6 +971,7 @@ mod tests {
             (EventType::OpsObserved, "ops_observed"),
             (EventType::OpsSummaryCompleted, "ops_summary_completed"),
             (EventType::OpsDigestCompleted, "ops_digest_completed"),
+            (EventType::MaintenanceSummaryWritten, "maintenance_summary_written"),
             (EventType::MaintenanceTriageCompleted, "maintenance_triage_completed"),
             (EventType::MaintenanceTriageDigestWritten, "maintenance_triage_digest_written"),
             (EventType::SupplyChainScanStarted, "supply_chain_scan_started"),

@@ -176,6 +176,28 @@ The block's result line carries a `WARNING:` naming each of these that is not
 empty. Failed install steps are counted there too, and the **Local Installs**
 table gives the reason for each failure or skip.
 
+### A fleet-wide failure
+
+When most of a run's projects fail with the same agent cause, the cause is on
+the host (an expired agent login, an exhausted account), not in the projects.
+On 2026-11-16 an expired Claude login failed all 31 projects for five nights,
+and the summary listed 31 separate failures.
+
+`Generate Summary` reads each failed project's last agent session. A
+classified provider failure is its cause as stated (`agent authentication
+failed: <message>`). Any other session failure is its summary without the
+attempt label (`maintenance failed:`, `retry 3 failed:`). When one cause
+covers at least 80% of the projects that ran, and at least three of them, the
+summary opens with a **Fleet-wide failure** section ahead of every other
+section. It names the share and the cause ("31 of 31 projects failed with the
+same cause: ..."). The block's result line leads its `WARNING:` with it.
+Skipped projects do not count, and neither do projects an interrupted cycle
+left unfinished.
+
+The summary records `maintenance_summary_written` with the fleet failure. The
+ops digest treats that as a P0 anomaly and runs at once, whatever its event
+count (see [Ops Digest](ops-digest.md#anomaly-classification)).
+
 ### When a project's chain fails, or foundryd stops
 
 Each project's run ends in a `project_run_completed` event, and the cycle

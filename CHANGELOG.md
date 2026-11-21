@@ -7,6 +7,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- A nightly run in which most projects fail with the same agent cause is
+  reported as one fleet-wide failure. When one cause covers at least 80% of
+  the projects that ran (at least three), the maintenance summary opens with a
+  **Fleet-wide failure** section naming the share and the cause, and its
+  result line leads with the warning. `Generate Summary` records the new
+  `maintenance_summary_written` event, whose `fleet_failure` forces an ops
+  digest with a P0 `maintenance_fleet_failure` anomaly.
+
 ### Fixed
 
 - A failed agent session now records what the agent CLI said. `session_failure`

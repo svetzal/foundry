@@ -298,6 +298,9 @@ new events have arrived and none are anomalies. Anomalies include P0-urgency
 events, `ci_pipeline_failure`, `maintenance_intervention_recorded` with
 `outcome=unresolved`, `dependency_vulnerability_detected` with severity
 `high`/`critical`, and `maintenance_run_completed` with `reposFailed > 0`.
+A `maintenance_summary_written` that carries a `fleet_failure` (most of a
+nightly run's projects failed with one agent cause) starts a digest with a P0
+`maintenance_fleet_failure` event naming the cause.
 
 **Watermark:** The newest event's `occurredAt` timestamp is written to disk
 after a successful digest so the next run only processes newer events. First-run

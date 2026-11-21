@@ -5,9 +5,9 @@ use chrono::Utc;
 
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{
-    GitSyncFailure, LocalInstallCompletedPayload, MajorUpgradesPlannedPayload,
-    ProjectCompletedPayload, ProjectValidationCompletedPayload, ReleaseCompletedPayload,
-    ReleaseTagAuditedPayload,
+    ExecutionCompletedPayload, FleetFailure, GitSyncFailure, LocalInstallCompletedPayload,
+    MaintenanceSummaryWrittenPayload, MajorUpgradesPlannedPayload, ProjectCompletedPayload,
+    ProjectValidationCompletedPayload, ReleaseCompletedPayload, ReleaseTagAuditedPayload,
 };
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
@@ -201,6 +201,29 @@ fn extract_project_result(project: &str, result: &ProcessResult) -> ProjectResul
         status,
         duration_secs: Some(result.total_duration_ms / 1000),
     }
+}
+
+/// The agent failure behind a project's run: the last agent session's, when
+/// it failed, stated the same way for every project that hit it.
+///
+/// A classified provider failure is its kind and message (`agent
+/// authentication failed: <message>`). Otherwise the session summary loses
+/// its attempt label (`maintenance failed: `, `retry 3 failed: `), which
+/// differs between projects for one cause.
+fn extract_agent_cause(result: &ProcessResult) -> Option<String> {
+    let execution = result
+        .events
+        .iter()
+        .rfind(|e| e.event_type == EventType::ExecutionCompleted)?
+        .parse_payload::<ExecutionCompletedPayload>()
+        .ok()?;
+    let session = execution.session_failure?;
+    if execution.failure.failure_kind.is_some() {
+        return Some(execution.failure.execution_summary());
+    }
+    let message = session.message.trim();
+    let cause = message.split_once(" failed: ").map_or(message, |(_, cause)| cause.trim());
+    (!cause.is_empty()).then(|| cause.to_string())
 }
 
 /// Extract release audit entries from a trace's events.
@@ -409,6 +432,8 @@ struct LoadedResults {
     scanner_failures: Vec<ScannerFailureEntry>,
     wrong_branch: Vec<WrongBranchEntry>,
     dependencies: Vec<ProjectDependencyReport>,
+    /// The agent cause of each project whose run failed with one.
+    agent_causes: Vec<(String, String)>,
 }
 
 fn load_project_results(
@@ -419,7 +444,13 @@ fn load_project_results(
 
     for (project_name, event_id) in project_trace_ids {
         if let Some(result) = trace_writer.read(event_id) {
-            loaded.projects.push(extract_project_result(project_name, &result));
+            let project = extract_project_result(project_name, &result);
+            if matches!(project.status, ProjectStatus::Failed(_))
+                && let Some(cause) = extract_agent_cause(&result)
+            {
+                loaded.agent_causes.push((project_name.clone(), cause));
+            }
+            loaded.projects.push(project);
             loaded.release_audits.extend(extract_release_audits(project_name, &result));
             loaded.auto_releases.extend(extract_auto_releases(project_name, &result));
             loaded.local_installs.extend(extract_local_installs(project_name, &result));
@@ -465,9 +496,40 @@ fn mark_unfinished(
     }
 }
 
+/// The fleet-wide failure among the run's projects, from the agent causes of
+/// those that failed. Skipped projects did not run and do not count. A
+/// project an interruption marked unfinished failed for that reason, whatever
+/// its partial trace's last session said.
+fn fleet_failure(
+    projects: &[ProjectResult],
+    agent_causes: &[(String, String)],
+    interrupted: Option<&foundry_sdk::payload::InterruptedCycle>,
+) -> Option<FleetFailure> {
+    let attempted = projects
+        .iter()
+        .filter(|p| !matches!(p.status, ProjectStatus::Skipped(_)))
+        .count();
+    let failed = |name: &str| {
+        projects
+            .iter()
+            .any(|p| p.name == name && matches!(p.status, ProjectStatus::Failed(_)))
+            && !interrupted.is_some_and(|i| i.unfinished.iter().any(|u| u == name))
+    };
+    FleetFailure::detect(
+        attempted,
+        agent_causes
+            .iter()
+            .filter(|(name, _)| failed(name))
+            .map(|(name, cause)| (name.as_str(), cause.as_str())),
+    )
+}
+
 /// The loud problems in a run, for the block's result line.
 fn summary_warnings(summary: &MaintenanceRunSummary) -> Vec<String> {
     let mut warnings = Vec::new();
+    if let Some(fleet) = &summary.fleet_failure {
+        warnings.push(format!("fleet-wide failure: {}", fleet.headline()));
+    }
     if let Some(interrupted) = &summary.interrupted {
         warnings.push(format!(
             "cycle interrupted: {} project(s) did not finish",
@@ -578,6 +640,8 @@ impl TaskBlock for GenerateSummary {
         let audits_dir = self.audits_dir.clone();
         let registry = Arc::clone(&self.registry);
         let shell = Arc::clone(&self.shell);
+        let project = trigger.project.clone();
+        let throttle = trigger.throttle;
 
         Box::pin(async move {
             let project_trace_ids = p.project_trace_ids;
@@ -593,6 +657,7 @@ impl TaskBlock for GenerateSummary {
                 scanner_failures,
                 wrong_branch,
                 dependencies,
+                agent_causes,
             } = load_project_results(&trace_writer, &project_trace_ids);
             let majors = MajorsSummary {
                 upgrades: p.upgrades,
@@ -615,6 +680,7 @@ impl TaskBlock for GenerateSummary {
             }
 
             projects.sort_by(|a, b| a.name.cmp(&b.name));
+            let fleet_failure = fleet_failure(&projects, &agent_causes, interrupted.as_ref());
 
             let names: Vec<String> = projects.iter().map(|p| p.name.clone()).collect();
             let unpushed = find_unpushed(&names, &registry, &*shell).await;
@@ -635,6 +701,7 @@ impl TaskBlock for GenerateSummary {
                 majors,
                 low_disk,
                 interrupted,
+                fleet_failure,
             };
             let warnings = summary_warnings(&summary);
 
@@ -651,7 +718,16 @@ impl TaskBlock for GenerateSummary {
             } else {
                 format!("Summary written to {path_str}; WARNING: {}", warnings.join("; "))
             };
-            Ok(TaskBlockResult::success(headline, vec![])
+            let written = super::event_from_infallible_payload(
+                EventType::MaintenanceSummaryWritten,
+                &project,
+                throttle,
+                &MaintenanceSummaryWrittenPayload {
+                    summary_path: path_str.clone(),
+                    fleet_failure: summary.fleet_failure,
+                },
+            );
+            Ok(TaskBlockResult::success(headline, vec![written])
                 .with_output(Some(markdown), None)
                 .with_audit_artifacts(vec![path_str]))
         })
@@ -1115,6 +1191,139 @@ mod tests {
         assert!(md.contains("## Failures"));
         assert!(md.contains("bad-project"));
         assert!(md.contains("cargo clippy failed"));
+    }
+
+    /// A project trace whose maintenance agent session failed with `summary`,
+    /// classified as `kind` when given, and whose run then completed failed.
+    fn agent_failed_trace(
+        project: &str,
+        summary: &str,
+        kind: Option<foundry_sdk::gateway::AgentFailureKind>,
+    ) -> ProcessResult {
+        let event = |event_type, payload| {
+            Event::new(event_type, project.to_string(), Throttle::Full, payload)
+        };
+        let mut execution = serde_json::json!({
+            "project": project, "workflow": "maintain", "success": false, "summary": summary,
+            "session_failure": {"message": summary, "left_work": false},
+        });
+        if let Some(kind) = kind {
+            execution["failure_kind"] = serde_json::to_value(kind).unwrap();
+            execution["terminal"] = serde_json::json!(true);
+            execution["message"] =
+                serde_json::json!(summary.split_once(": ").map_or(summary, |(_, message)| message));
+        }
+        ProcessResult {
+            events: vec![
+                event(EventType::ProjectRunStarted, serde_json::json!({})),
+                event(EventType::ExecutionCompleted, execution),
+                event(
+                    EventType::ProjectMaintenanceCompleted,
+                    serde_json::json!({
+                        "project": project, "workflow": "maintain", "success": false,
+                        "summary": "agent failed; workflow stopped",
+                    }),
+                ),
+            ],
+            block_executions: vec![],
+            total_duration_ms: 2000,
+        }
+    }
+
+    async fn summarize(
+        traces: &[(&str, ProcessResult)],
+    ) -> (TaskBlockResult, tempfile::TempDir, tempfile::TempDir) {
+        let traces_dir = tempfile::tempdir().unwrap();
+        let audits_dir = tempfile::tempdir().unwrap();
+        let tw = make_trace_writer(traces_dir.path());
+        let mut ids = serde_json::Map::new();
+        for (project, trace) in traces {
+            let id = format!("evt_{project}");
+            tw.write(&id, trace).unwrap();
+            ids.insert((*project).to_string(), serde_json::json!(id));
+        }
+        let block = summary_block(tw, audits_dir.path());
+        let trigger = test_helpers::make_trigger(
+            EventType::MajorUpgradesPlanned,
+            "_system",
+            serde_json::json!({"project_trace_ids": ids, "total_duration_ms": 9000}),
+        );
+        (block.execute(&trigger).await.unwrap(), traces_dir, audits_dir)
+    }
+
+    /// The 2026-11-16 incident: every project's agent failed with the same
+    /// expired login. The summary leads with one fleet-wide failure naming
+    /// the cause, warns in its result line, and records the fact.
+    #[tokio::test]
+    async fn most_projects_failing_with_one_agent_cause_is_one_fleet_failure() {
+        use foundry_sdk::gateway::AgentFailureKind::Authentication;
+        let cause = "agent authentication failed: Failed to authenticate: OAuth session expired";
+        let (result, _traces, _audits) = summarize(&[
+            ("alpha", agent_failed_trace("alpha", cause, Some(Authentication))),
+            ("beta", agent_failed_trace("beta", cause, Some(Authentication))),
+            ("gamma", agent_failed_trace("gamma", cause, Some(Authentication))),
+            ("delta", agent_failed_trace("delta", cause, Some(Authentication))),
+            ("ok", successful_trace("ok")),
+        ])
+        .await;
+
+        let md = result.raw_output.clone().unwrap();
+        let first_section = md.lines().find(|line| line.starts_with("## ")).unwrap();
+        assert!(first_section.contains("Fleet-wide failure"), "{md}");
+        assert!(md.contains("4 of 5 projects failed with the same cause:"), "{md}");
+        assert!(md.contains(&format!("> {cause}")), "{md}");
+        assert!(
+            result.summary.contains("fleet-wide failure: 4 of 5 projects"),
+            "{}",
+            result.summary
+        );
+        let written: foundry_sdk::payload::MaintenanceSummaryWrittenPayload = result
+            .events
+            .iter()
+            .find(|e| e.event_type == EventType::MaintenanceSummaryWritten)
+            .expect("the summary records that it was written")
+            .parse_payload()
+            .unwrap();
+        let fleet = written.fleet_failure.expect("a fleet failure");
+        assert_eq!(fleet.projects, ["alpha", "beta", "delta", "gamma"]);
+        assert_eq!(fleet.cause, cause);
+    }
+
+    /// Unclassified failures share a cause across attempt labels: one project
+    /// stopped on its first attempt, others on their third retry.
+    #[tokio::test]
+    async fn the_attempt_label_does_not_split_one_cause() {
+        let (result, _traces, _audits) = summarize(&[
+            (
+                "alpha",
+                agent_failed_trace("alpha", "maintenance failed: workspace locked", None),
+            ),
+            ("beta", agent_failed_trace("beta", "retry 3 failed: workspace locked", None)),
+            ("gamma", agent_failed_trace("gamma", "retry 3 failed: workspace locked", None)),
+        ])
+        .await;
+
+        let written: foundry_sdk::payload::MaintenanceSummaryWrittenPayload =
+            result.events[0].parse_payload().unwrap();
+        assert_eq!(written.fleet_failure.unwrap().cause, "workspace locked");
+    }
+
+    #[tokio::test]
+    async fn failures_with_different_causes_are_not_a_fleet_failure() {
+        let (result, _traces, _audits) = summarize(&[
+            (
+                "alpha",
+                agent_failed_trace("alpha", "maintenance failed: workspace locked", None),
+            ),
+            ("beta", agent_failed_trace("beta", "maintenance failed: disk full", None)),
+            ("gamma", failed_trace("gamma")),
+        ])
+        .await;
+
+        assert!(!result.raw_output.unwrap().contains("Fleet-wide failure"));
+        let written: foundry_sdk::payload::MaintenanceSummaryWrittenPayload =
+            result.events[0].parse_payload().unwrap();
+        assert_eq!(written.fleet_failure, None);
     }
 
     #[tokio::test]

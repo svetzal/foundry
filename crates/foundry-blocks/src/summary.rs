@@ -157,6 +157,8 @@ pub(crate) struct MaintenanceRunSummary {
     pub(crate) low_disk: Vec<String>,
     /// Set when foundryd stopped during the cycle and closed it on restart.
     pub(crate) interrupted: Option<foundry_sdk::payload::InterruptedCycle>,
+    /// Set when most of the run's projects failed with one agent cause.
+    pub(crate) fleet_failure: Option<foundry_sdk::payload::FleetFailure>,
 }
 
 fn format_duration(secs: Option<u64>) -> String {
@@ -337,6 +339,32 @@ fn majors_cell(summary: &MaintenanceRunSummary, project: &str) -> String {
 
 /// A cycle foundryd stopped in the middle of: first, because every other
 /// section describes only what ran before the stop.
+/// Most projects failing with one cause is one fault on the host, not many
+/// project faults, so it leads the summary ahead of everything else.
+fn render_fleet_failure(summary: &MaintenanceRunSummary, out: &mut String) {
+    let Some(fleet) = &summary.fleet_failure else {
+        return;
+    };
+    wln!(out, "## \u{1f6a8} Fleet-wide failure");
+    wln!(out);
+    wln!(
+        out,
+        "{} of {} projects failed with the same cause:",
+        fleet.projects.len(),
+        fleet.attempted
+    );
+    wln!(out);
+    wln!(out, "> {}", fleet.cause.replace('\n', " "));
+    wln!(out);
+    wln!(
+        out,
+        "This is one fault on the host, not {} project faults. Fix it first; the \
+         per-project failures below repeat it.",
+        fleet.projects.len()
+    );
+    wln!(out);
+}
+
 fn render_interrupted(summary: &MaintenanceRunSummary, out: &mut String) {
     let Some(interrupted) = &summary.interrupted else {
         return;
@@ -656,6 +684,7 @@ pub(crate) fn render(summary: &MaintenanceRunSummary) -> String {
     wln!(out, "# Foundry Maintenance Run \u{2014} {run_at}");
     wln!(out);
 
+    render_fleet_failure(summary, &mut out);
     render_interrupted(summary, &mut out);
     render_unpushed(summary, &mut out);
     render_scanner_failures(summary, &mut out);
@@ -749,6 +778,35 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 3, 21, 2, 0, 0).unwrap()
     }
 
+    #[test]
+    fn a_fleet_failure_leads_the_summary_with_its_cause() {
+        let cause = "agent authentication failed: Failed to authenticate: OAuth session expired";
+        let mut summary = summary_with_unpushed(vec![UnpushedEntry {
+            name: "foundry".to_string(),
+            status: UnpushedStatus::Ahead {
+                commits: 1,
+                branch: "main".to_string(),
+            },
+        }]);
+        summary.fleet_failure = Some(foundry_sdk::payload::FleetFailure {
+            attempted: 31,
+            projects: (0..31).map(|n| format!("p{n}")).collect(),
+            cause: cause.to_string(),
+        });
+
+        let markdown = render(&summary);
+
+        let first_section = markdown.lines().find(|line| line.starts_with("## ")).unwrap();
+        assert!(first_section.contains("Fleet-wide failure"), "{markdown}");
+        assert!(markdown.contains("31 of 31 projects failed with the same cause:"), "{markdown}");
+        assert!(markdown.contains(&format!("> {cause}")), "{markdown}");
+    }
+
+    #[test]
+    fn no_fleet_failure_renders_no_fleet_section() {
+        assert!(!render(&summary_with_unpushed(vec![])).contains("Fleet-wide failure"));
+    }
+
     fn summary_with_unpushed(unpushed: Vec<UnpushedEntry>) -> MaintenanceRunSummary {
         MaintenanceRunSummary {
             run_at: fixed_time(),
@@ -768,6 +826,7 @@ mod tests {
             majors: MajorsSummary::default(),
             low_disk: vec![],
             interrupted: None,
+            fleet_failure: None,
         }
     }
 
@@ -869,6 +928,7 @@ mod tests {
             majors: MajorsSummary::default(),
             low_disk: vec![],
             interrupted: None,
+            fleet_failure: None,
         };
 
         let md = render(&summary);
@@ -912,6 +972,7 @@ mod tests {
             majors: MajorsSummary::default(),
             low_disk: vec![],
             interrupted: None,
+            fleet_failure: None,
         };
 
         let md = render(&summary);
@@ -955,6 +1016,7 @@ mod tests {
             majors: MajorsSummary::default(),
             low_disk: vec![],
             interrupted: None,
+            fleet_failure: None,
         };
 
         let md = render(&summary);
@@ -985,6 +1047,7 @@ mod tests {
             majors: MajorsSummary::default(),
             low_disk: vec![],
             interrupted: None,
+            fleet_failure: None,
         };
 
         let md = render(&summary);
@@ -1016,6 +1079,7 @@ mod tests {
             majors: MajorsSummary::default(),
             low_disk: vec![],
             interrupted: None,
+            fleet_failure: None,
         };
 
         let md = render(&summary);
@@ -1038,6 +1102,7 @@ mod tests {
             majors: MajorsSummary::default(),
             low_disk: vec![],
             interrupted: None,
+            fleet_failure: None,
         };
 
         let md = render(&summary);
@@ -1065,6 +1130,7 @@ mod tests {
             majors: MajorsSummary::default(),
             low_disk: vec![],
             interrupted: None,
+            fleet_failure: None,
         };
 
         let md = render(&summary);
@@ -1092,6 +1158,7 @@ mod tests {
             majors: MajorsSummary::default(),
             low_disk: vec![],
             interrupted: None,
+            fleet_failure: None,
         };
 
         let md = render(&summary);
@@ -1126,6 +1193,7 @@ mod tests {
             majors: MajorsSummary::default(),
             low_disk: vec![],
             interrupted: None,
+            fleet_failure: None,
         };
 
         let md = render(&summary);
@@ -1163,6 +1231,7 @@ mod tests {
             majors: MajorsSummary::default(),
             low_disk: vec![],
             interrupted: None,
+            fleet_failure: None,
         };
         let md = render(&summary);
         assert!(md.contains("## Release Audit"));
@@ -1199,6 +1268,7 @@ mod tests {
             majors: MajorsSummary::default(),
             low_disk: vec![],
             interrupted: None,
+            fleet_failure: None,
         };
         let md = render(&summary);
         assert!(md.contains("## Auto-Releases"));
@@ -1235,6 +1305,7 @@ mod tests {
             majors: MajorsSummary::default(),
             low_disk: vec![],
             interrupted: None,
+            fleet_failure: None,
         };
         let md = render(&summary);
         assert!(md.contains("## Local Installs"));
@@ -1261,6 +1332,7 @@ mod tests {
             majors: MajorsSummary::default(),
             low_disk: vec![],
             interrupted: None,
+            fleet_failure: None,
         };
         let md = render(&summary);
         assert!(!md.contains("## Release Audit"));

@@ -70,6 +70,28 @@ impl ObserveEvents {
     }
 }
 
+/// The ops event for a nightly run in which most projects failed with one
+/// cause: P0, so it forces the digest and leads its anomalies.
+fn fleet_failure_event(
+    trigger: &Event,
+    fleet: &foundry_sdk::payload::FleetFailure,
+    summary_path: &str,
+) -> OpsEventDigest {
+    OpsEventDigest {
+        id: trigger.id.clone(),
+        event_type: "maintenance_fleet_failure".into(),
+        occurred_at: trigger.occurred_at.to_rfc3339(),
+        domain: "infrastructure".into(),
+        urgency: Some("P0".into()),
+        summary: Some(format!(
+            "Nightly maintenance: {}. One fault on the host; fix it before the next run. \
+             Summary: {summary_path}",
+            fleet.headline()
+        )),
+        client: None,
+    }
+}
+
 /// A synthetic ops event for filesystems low on space, so the digest runs and
 /// says so even when no MBOS event mentions it.
 fn low_disk_event(
@@ -100,17 +122,42 @@ impl TaskBlock for ObserveEvents {
     task_block_meta! {
         name: "Observe Events",
         kind: Observer,
-        sinks_on: [OpsDigestStarted, WorkReconcileCompleted],
+        sinks_on: [OpsDigestStarted, WorkReconcileCompleted, MaintenanceSummaryWritten],
     }
 
     fn accepts(&self, trigger: &Event) -> bool {
-        trigger.event_type == EventType::OpsDigestStarted
-            || trigger
+        match trigger.event_type {
+            EventType::OpsDigestStarted => true,
+            EventType::MaintenanceSummaryWritten => trigger
+                .parse_payload::<foundry_sdk::payload::MaintenanceSummaryWrittenPayload>()
+                .is_ok_and(|summary| summary.fleet_failure.is_some()),
+            _ => trigger
                 .parse_payload::<foundry_sdk::payload::WorkReconcileCompletedPayload>()
-                .is_ok_and(|report| report.has_anomaly())
+                .is_ok_and(|report| report.has_anomaly()),
+        }
     }
 
     fn execute(&self, trigger: &Event) -> foundry_sdk::task_block::BlockFuture<'_> {
+        if trigger.event_type == EventType::MaintenanceSummaryWritten {
+            let summary =
+                parse_payload!(trigger, foundry_sdk::payload::MaintenanceSummaryWrittenPayload);
+            let Some(fleet) = summary.fleet_failure else {
+                // Defensive: accepts() admits only summaries with a fleet failure.
+                return Box::pin(async {
+                    Ok(TaskBlockResult::success("No fleet failure", vec![]))
+                });
+            };
+            let result = trigger.with_payload(
+                EventType::OpsDigestStarted,
+                &OpsDigestStartedPayload {
+                    event_count: 1,
+                    forced_event: Some(fleet_failure_event(trigger, &fleet, &summary.summary_path)),
+                },
+            );
+            return Box::pin(async move {
+                Ok(TaskBlockResult::success("Fleet-wide maintenance failure", vec![result?]))
+            });
+        }
         if trigger.event_type == EventType::WorkReconcileCompleted {
             let report =
                 parse_payload!(trigger, foundry_sdk::payload::WorkReconcileCompletedPayload);
@@ -862,6 +909,54 @@ mod tests {
         let payload: OpsObservedPayload = result.events[0].parse_payload().unwrap();
         assert!(payload.proceed);
         assert!(payload.anomaly_present);
+    }
+
+    fn summary_written(fleet: Option<foundry_sdk::payload::FleetFailure>) -> Event {
+        Event::new(
+            EventType::MaintenanceSummaryWritten,
+            "system".to_string(),
+            Throttle::Full,
+            serde_json::to_value(foundry_sdk::payload::MaintenanceSummaryWrittenPayload {
+                summary_path: "/audits/runs/2026-11-20/summary.md".into(),
+                fleet_failure: fleet,
+            })
+            .unwrap(),
+        )
+    }
+
+    /// A nightly run in which most projects failed with one cause forces the
+    /// digest even below the event threshold: the digest it starts carries a
+    /// P0 anomaly naming the cause, and the pressure gate opens on it.
+    #[tokio::test]
+    async fn a_fleet_wide_maintenance_failure_forces_the_digest_with_a_p0_anomaly() {
+        let intake = TempDir::new().unwrap();
+        let watermark = intake.path().join("watermark");
+        let block = ObserveEvents::new(intake.path(), &watermark)
+            .with_disk(vec![], foundry_sdk::disk::DiskThreshold::from_env());
+        let cause = "agent authentication failed: Failed to authenticate: OAuth session expired";
+        let fleet = foundry_sdk::payload::FleetFailure {
+            attempted: 31,
+            projects: (0..31).map(|n| format!("p{n}")).collect(),
+            cause: cause.into(),
+        };
+        assert!(!block.accepts(&summary_written(None)), "a run without one forces nothing");
+        let summary = summary_written(Some(fleet));
+        assert!(block.accepts(&summary));
+
+        let started = block.execute(&summary).await.unwrap();
+        assert_eq!(started.events[0].event_type, EventType::OpsDigestStarted);
+        let observed = block.execute(&started.events[0]).await.unwrap();
+
+        let payload: OpsObservedPayload = observed.events[0].parse_payload().unwrap();
+        assert!(payload.proceed && payload.anomaly_present);
+        let anomaly = &payload.events[0];
+        assert_eq!(anomaly.event_type, "maintenance_fleet_failure");
+        assert_eq!(anomaly.urgency.as_deref(), Some("P0"));
+        let text = anomaly.summary.as_deref().unwrap();
+        assert!(
+            text.contains(&format!("31 of 31 projects failed with the same cause: {cause}")),
+            "{text}"
+        );
     }
 
     #[test]

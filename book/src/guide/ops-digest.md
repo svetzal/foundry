@@ -58,6 +58,13 @@ Foundry also reads initiative attention from its campaign store API.
 An unanswered shared question older than one day is an anomaly.
 An open initiative with no member activity for thirty days is an anomaly.
 These anomalies open the pressure gate even with fewer than 25 intake events.
+
+A nightly maintenance run in which most projects failed with one agent cause
+also forces a digest. `Observe Events` sinks on `maintenance_summary_written`
+when it carries a `fleet_failure` and starts a digest with one P0 event,
+`maintenance_fleet_failure`, that names the share, the cause and the summary
+path. See
+[Maintenance Workflow](maintenance-workflow.md#a-fleet-wide-failure).
 The digest names the initiative and the question or inactive period.
 An overdue question also names its affected members.
 Older initiatives with no known creation or activity time
