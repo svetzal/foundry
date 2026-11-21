@@ -478,9 +478,8 @@ mod tests {
         let landed_ref =
             finalized.events[0].payload["preservation_ref"].as_str().unwrap().to_string();
         assert_eq!(landed_ref, expected_commit);
-        // Model the ref being removed by the ledger's later settlement. This
-        // test exercises continuation from a commit after the remote ref is gone.
-        git(&checkout, &["push", "origin", "--delete", "foundry-task/landed-cycle"]);
+        // A landing pushes trunk only, so the task branch never reached
+        // origin. Continuation starts from the landed commit.
         assert!(
             git(
                 &checkout,
@@ -492,7 +491,7 @@ mod tests {
                 ]
             )
             .is_empty(),
-            "temporary landed branch should be gone from origin"
+            "a landed task branch never reaches origin"
         );
 
         let next = prepare_task_workspace(

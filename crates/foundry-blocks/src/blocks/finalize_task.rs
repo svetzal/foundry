@@ -688,26 +688,37 @@ async fn landed_commit_ref(shell: &dyn ShellGateway, checkout: &Path) -> Result<
     checked(shell, checkout, &["rev-parse", "HEAD"]).await
 }
 
-/// What committing and preserving a task worktree produced.
+/// What committing a task worktree produced.
 struct Committed {
     /// The task branch carries commits trunk does not.
     deliverable: bool,
     /// Where non-landed work is durable: a branch, or `bundle:{path}`.
+    /// `None` when the work is about to land, or there is nothing to keep.
     preservation_ref: Option<String>,
 }
 
+/// Commit the worktree and, when the work will not be offered to trunk,
+/// preserve it.
+///
+/// Work that may land is not pushed here. The landing pushes trunk, and a
+/// task branch pushed beside it only became a remote branch that someone had
+/// to delete later (about 176 of them on GitHub by 2026-11-21). A landing
+/// that is blocked preserves the branch then, from the worktree that is
+/// still in place, after [`land_with_rebase`] restored the reviewed head.
 async fn commit_and_preserve_if_needed(
     shell: &dyn ShellGateway,
     entry: &ProjectEntry,
     worktree: &Path,
     project: &str,
     branch: &str,
+    offered_to_trunk: bool,
     verdict: &TaskVerdict,
 ) -> Result<Committed> {
     let _committed = commit_worktree(shell, worktree, project).await?;
     let checkout = Path::new(&entry.path);
     let deliverable = branch_has_deliverable(shell, checkout, &entry.branch, branch).await?;
-    let preservation_ref = if deliverable || !verdict.is_complete() {
+    let lands = offered_to_trunk && deliverable;
+    let preservation_ref = if !lands && (deliverable || !verdict.is_complete()) {
         Some(preserve(shell, worktree, project, branch).await?)
     } else {
         None
@@ -813,11 +824,18 @@ impl TaskBlock for FinalizeTask {
             let proof_evidence = proof_evidence(scratch.as_deref());
 
             let verdict = enforce_gate_truth(&payload);
+            let offered_to_trunk = may_land(&verdict, &payload.gate_results);
             let Committed {
                 deliverable,
                 preservation_ref,
             } = match commit_and_preserve_if_needed(
-                &*shell, &entry, &worktree, &project, branch, &verdict,
+                &*shell,
+                &entry,
+                &worktree,
+                &project,
+                branch,
+                offered_to_trunk,
+                &verdict,
             )
             .await
             {
@@ -831,7 +849,7 @@ impl TaskBlock for FinalizeTask {
 
             let mut arrivals = Vec::new();
             let mut drift = None;
-            let landed = if may_land(&verdict, &payload.gate_results) && deliverable {
+            let landed = if offered_to_trunk && deliverable {
                 let landing = land_with_rebase(
                     &*shell,
                     checkout,
@@ -845,6 +863,25 @@ impl TaskBlock for FinalizeTask {
                 arrivals = landing.arrivals;
                 drift = landing.drift;
                 if let Some((reason, detail)) = landing.blocked {
+                    let preservation_ref =
+                        match preserve(&*shell, &worktree, &project, branch).await {
+                            Ok(reference) => Some(reference),
+                            Err(error) => {
+                                // The local task branch still holds the work;
+                                // the worktree stays so nothing is lost.
+                                let mut result = runner_error(
+                                    &project,
+                                    format!(
+                                        "{}; preserving the blocked work failed: {error}",
+                                        blocked_summary(&verdict, reason, &detail)
+                                    ),
+                                    context,
+                                );
+                                result.trunk_arrivals = arrivals;
+                                result.proof_evidence = proof_evidence;
+                                return finish(result);
+                            }
+                        };
                     // FinalizeTask owns the task workspace it is finalizing.
                     remove_workspace(&*shell, checkout, &worktree).await;
                     let mut result = run_completed(
@@ -1130,8 +1167,8 @@ mod tests {
         assert_eq!(result.events[0].payload["gaps"][0], "queue-explain projection");
         assert!(!worktree.exists(), "merged worktree should be removed");
         assert!(
-            !git(&checkout, &["ls-remote", "--heads", "origin", branch]).is_empty(),
-            "origin ref stays until ledger settlement"
+            git(&checkout, &["ls-remote", "--heads", "origin", branch]).is_empty(),
+            "landing pushes trunk, never the task branch"
         );
     }
 
@@ -1346,9 +1383,9 @@ mod tests {
         assert!(!worktree.exists(), "landed worktree should be removed");
         assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), branch_head);
         assert!(
-            !git(&checkout, &["ls-remote", "--heads", "origin", "foundry-task/landed-test"])
+            git(&checkout, &["ls-remote", "--heads", "origin", "foundry-task/landed-test"])
                 .is_empty(),
-            "origin ref stays until ledger settlement"
+            "landing pushes trunk, never the task branch"
         );
         assert!(checkout.join("README.md").exists());
         assert!(
@@ -1701,8 +1738,8 @@ mod tests {
         );
         assert!(!shared.worktree.exists());
         assert!(
-            !git(&shared.checkout, &["ls-remote", "--heads", "origin", branch]).is_empty(),
-            "origin ref stays until ledger settlement"
+            git(&shared.checkout, &["ls-remote", "--heads", "origin", branch]).is_empty(),
+            "landing pushes trunk, never the task branch"
         );
     }
 

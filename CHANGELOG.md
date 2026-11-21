@@ -7,6 +7,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- A task whose work may land no longer pushes its `foundry-task/*` branch to
+  origin before it lands. The landing pushes trunk, so the branch push gave
+  nothing, and each one left a remote branch behind (about 176 on GitHub by
+  2026-11-21). Foundry pushes the task branch only when the work stays off
+  trunk: a verdict that cannot land, or a landing that is blocked. A landed
+  item now records no preservation ref.
+
 ## [0.62.0] - 2026-11-21
 
 ### Fixed
