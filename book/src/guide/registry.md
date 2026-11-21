@@ -168,7 +168,7 @@ automation completes. Exactly one variant is used per entry:
 ```
 
 Homebrew installs run on macOS only. On any other host, `Install Locally`
-skips the step with "install via brew not supported on <os>" and never starts
+skips the step with "install via brew not supported on \<os>" and never starts
 `brew`; the maintenance summary shows the skip and its reason. Clear the
 config on that host with `foundry registry edit <name> --clear-install`, or
 give it a `command` install that works there.

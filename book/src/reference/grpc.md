@@ -528,7 +528,7 @@ does not accept an `active` campaign.
 
 **Retries:** on an `active` or `paused` campaign, a decision whose trimmed text
 and owner equal the latest recorded decision returns `FAILED_PRECONDITION`
-("campaign '<name>' already records this owner decision as its latest; nothing
+("campaign '\<name>' already records this owner decision as its latest; nothing
 to apply") and records nothing. A successful escalated decide leaves the
 campaign `active`, so its retry meets this check before the `add_cycles` check:
 the decision is not recorded twice and `add_cycles` is not applied twice. An

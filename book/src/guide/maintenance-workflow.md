@@ -133,7 +133,7 @@ hold that line:
    attempt Foundry fetches `origin/<branch>` and checks whether it moved to
    commits the checkout holds. The fetch catches a push to an explicit URL,
    which bypasses the push URL. If the agent pushed, the run fails with
-   "needs review: agent pushed directly to origin/<branch> …", naming the
+   "needs review: agent pushed directly to origin/\<branch> …", naming the
    pushed commits and the result of the suppression check, which still runs
    over them. The run is not retried (a retry cannot undo a push), and the
    maintenance summary lists it as failed with that reason. A remediation

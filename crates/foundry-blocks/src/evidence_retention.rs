@@ -279,7 +279,10 @@ mod tests {
             name: "skewed".to_string(),
             newest_write: now() + DAY,
         }];
-        assert!(select_expired(&entries, now(), DAY * 30, &HashSet::new()).is_empty());
+        assert_eq!(
+            select_expired(&entries, now(), DAY * 30, &HashSet::new()),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

@@ -843,14 +843,18 @@ launchctl load   ~/Library/LaunchAgents/com.mojility.foundryd.plist
 #### On the Linux ops host (`mojility-ops-01`)
 
 Build the Linux release on the host itself, from the tag, and install the
-binaries it produced. Use the same Rust toolchain as release CI for packaging;
-the host's newer default can introduce lint rules that CI does not yet use.
+binaries it produced. The script builds with the toolchain the tag pins in
+`rust-toolchain.toml`, the same one release CI uses. It puts rustup's proxies
+in `~/.cargo/bin` first on `PATH` and clears any inherited `RUSTUP_TOOLCHAIN`,
+because a non-interactive ssh shell may lack `~/.cargo/bin` and mise's cargo
+shim ignores both the override and the toolchain file. It installs the pinned
+toolchain if needed and stops if `rustc` reports a different version.
 GitHub publication runs in parallel and does not gate this deployment:
 
 ```bash
 cd ~/Work/Projects/Mojility/foundry && git pull --ff-only
-RUSTUP_TOOLCHAIN=1.94.0 scripts/build-linux-release.sh v0.X.Y
-# gates, release build, tarball; prints the SHA-256 (match release.yml toolchain)
+scripts/build-linux-release.sh v0.X.Y
+# pinned toolchain, gates, release build, tarball; prints the SHA-256
 foundry pacing drain --timeout 30m      # holds every lane, waits for running work to settle, exits 0 when idle; never during the 02:00 nightly
 tar -C /tmp/f -xzf ~/.cache/foundry-release/foundry-0.X.Y-linux-x64.tar.gz
 sudo install -m 0755 /tmp/f/foundry /tmp/f/foundryd /usr/local/bin/

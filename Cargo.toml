@@ -43,7 +43,6 @@ clap = { version = "4", features = ["derive"] }
 
 # gRPC
 tonic = "0.14"
-tonic-build = "0.14"
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"
 prost = "0.14"
@@ -79,10 +78,6 @@ comfy-table = "8"
 strum = { version = "0.28", features = ["derive"] }
 
 # Macro utilities
-pastey = "0.2"
-
-# Semver parsing
-semver = "1"
 
 # TOML parsing (Cargo.toml, pyproject.toml, uv.lock, Gradle version catalogs)
 toml = { version = "1", default-features = false, features = ["parse", "serde", "std"] }

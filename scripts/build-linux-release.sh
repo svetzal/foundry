@@ -29,6 +29,21 @@ git -C "$REPO" fetch -q --tags origin
 git -C "$REPO" worktree add -q --detach "$WT" "$TAG"
 cd "$WT"
 
+# Build with the toolchain the tag pins in rust-toolchain.toml, the one release
+# CI uses. A non-interactive ssh shell may lack ~/.cargo/bin, and mise's cargo
+# shim ignores both RUSTUP_TOOLCHAIN and rust-toolchain.toml, so put rustup's
+# proxies first and drop any inherited toolchain override.
+export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+unset RUSTUP_TOOLCHAIN
+command -v rustup >/dev/null || { echo "rustup not found in ${CARGO_HOME:-$HOME/.cargo}/bin" >&2; exit 1; }
+CHANNEL=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+[ -n "$CHANNEL" ] || { echo "no channel in rust-toolchain.toml" >&2; exit 1; }
+rustup toolchain install "$CHANNEL" --profile minimal --component rustfmt,clippy
+case "$(rustc --version)" in
+    "rustc $CHANNEL "*) rustc --version ;;
+    *) echo "expected rustc $CHANNEL, got: $(rustc --version) ($(command -v rustc))" >&2; exit 1 ;;
+esac
+
 # Gate fixtures must not wait for or read the production campaign/ledger stores,
 # nor write evidence into the production home. FOUNDRY_HOME moves every default
 # path; the explicit overrides below also beat a per-path override inherited

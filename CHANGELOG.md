@@ -7,6 +7,28 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Foundry builds with Rust 1.100.0, the current stable release, in
+  development, CI, release builds and `scripts/build-linux-release.sh`
+  (previously 1.94.0). The minimum supported Rust version stays 1.88. CI now
+  uses `actions/checkout@v7` and `cargo-deny-action` v2.1.3, and the docs site
+  builds with mdBook 0.5.4 and mdbook-mermaid 0.17.1.
+- `scripts/build-linux-release.sh` builds with the toolchain the tag pins in
+  `rust-toolchain.toml`. It puts rustup's proxies in `~/.cargo/bin` first on
+  `PATH`, clears any inherited `RUSTUP_TOOLCHAIN`, installs the pinned
+  toolchain when it is missing, and stops when `rustc` reports another
+  version. On mojility-ops-01 a non-interactive ssh shell lacked
+  `~/.cargo/bin`, and mise's cargo shim ignored both `RUSTUP_TOOLCHAIN` and the
+  toolchain file, so release builds could use the wrong compiler. Run the
+  script without `RUSTUP_TOOLCHAIN=`.
+
+### Removed
+
+- Unused dependencies: `pastey` and the `tonic-build` and `semver` workspace
+  entries. `prost-types` is now a test-only dependency of `foundryd`, and the
+  CLI no longer depends on it.
+
 ## [0.60.0] - 2026-11-21
 
 ### Added

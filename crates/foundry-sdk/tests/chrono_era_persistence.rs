@@ -72,7 +72,7 @@ fn work_item_ledger_round_trips_byte_for_byte() {
 fn campaign_store_round_trips_byte_for_byte() {
     let store = CampaignStore::load(&fixture("campaigns.json")).expect("chrono campaigns load");
     assert!(!store.campaigns.is_empty() && !store.initiatives.is_empty());
-    assert!(!store.findings.is_empty());
+    assert_ne!(store.findings, Vec::new());
     let written = saved("campaigns.json", |path| store.save(path).expect("save"));
     assert_eq!(written, chrono_bytes("campaigns.json"));
 }

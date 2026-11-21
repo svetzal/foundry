@@ -1180,7 +1180,7 @@ A decision alone would leave an active campaign whose next advance escalates on
 budget again, and `resume` does not accept an active campaign.
 
 Running the same command again after it succeeded is refused with "campaign
-'<name>' already records this owner decision as its latest; nothing to apply":
+'\<name>' already records this owner decision as its latest; nothing to apply":
 the decision is not recorded twice and the cycles are not added twice. Foundry
 refuses a decision on an active or paused campaign when its text and owner equal
 the campaign's latest decision. An escalated campaign accepts the same words,
