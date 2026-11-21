@@ -320,13 +320,6 @@ pub(crate) struct UnlandedFoundryFiles {
     pub(crate) modified: Vec<String>,
 }
 
-impl UnlandedFoundryFiles {
-    /// Every unlanded file, untracked first.
-    pub(crate) fn all(&self) -> Vec<String> {
-        self.untracked.iter().chain(&self.modified).cloned().collect()
-    }
-}
-
 /// List what [`commit_worktree`] kept out of the commit under
 /// [`FOUNDRY_DIR`]. Call it after committing, so HEAD is the task commit.
 ///
