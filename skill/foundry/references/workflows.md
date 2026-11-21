@@ -208,7 +208,9 @@ work is preserved as usual, and no successor is dispatched. A stand-down
 settles its advance work item `landed`; `success: false` on
 `CampaignAdvanceCompleted` marks a fault and settles it `failed`. `campaign cancel --now` instead aborts the
 campaign's daemon task outright, which kills the running agent and leaves an
-orphaned worktree for `DisposeCampaignWork` to preserve or discard.
+orphaned worktree for `DisposeCampaignWork` to preserve or discard. Preserved
+work leaves the cycle's item `preserved` for the owner to `queue resume` or
+`queue close`; discarded work settles it `cancelled`.
 Provider-unavailable failures pause without consuming a cycle;
 `blocked_on_decision`, genuine runner faults, and owner-judgment findings
 escalate. Every advance mints trace and cycle-span identity,

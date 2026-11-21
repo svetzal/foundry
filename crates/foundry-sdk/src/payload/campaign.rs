@@ -179,6 +179,11 @@ pub struct CampaignCancelledPayload {
     /// run producing its `TaskRunCompleted` is gone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aborted_trace_id: Option<String>,
+    /// Who cancelled: the CLI client's hostname and optional operator text.
+    /// Recorded as the owner action on an aborted cycle whose work the
+    /// cancellation kept. Absent on events written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_origin: Option<String>,
 }
 
 #[cfg(test)]
@@ -198,6 +203,7 @@ mod tests {
             discard_work: false,
             aborted_event_id: Some("evt_abc".to_string()),
             aborted_trace_id: Some("a".repeat(32)),
+            operator_origin: None,
         }
     }
 

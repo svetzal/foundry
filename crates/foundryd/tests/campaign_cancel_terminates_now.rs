@@ -266,6 +266,7 @@ fn cancel_now(name: &str) -> CancelCampaignRequest {
         reason: "stopping immediately".to_string(),
         terminate_now: true,
         discard_work: false,
+        operator_origin: "max-headroom".to_string(),
     }
 }
 

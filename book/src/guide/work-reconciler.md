@@ -124,7 +124,7 @@ rule depends on the state:
 | `landed` | The worktree, and each `foundry-task/*` branch the item owns, locally and on origin. Each branch needs fresh proof that the registered trunk contains it. |
 | `cancelled` | The same items, with no trunk proof. This includes `queue cancel`, `queue close`, a campaign carry and a campaign cancellation. |
 | Superseded through `resumes` or `continues` by a later landing | The same as `cancelled`. |
-| `preserved`, `needs_decision`, `failed` | Nothing. |
+| `preserved`, `needs_decision`, `failed` | Nothing. This includes a cycle that `campaign cancel --now` kept without `--discard-work`. |
 | `submitted`, `queued`, `held`, `running` | Nothing. |
 
 A ref that another open or waiting item owns, or starts from (`base_ref`), is

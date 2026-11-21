@@ -7,7 +7,7 @@ use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::throttle::Throttle;
 use foundry_sdk::time::UtcDateTime;
-use foundry_sdk::work_item::{WorkDisposition, WorkItem};
+use foundry_sdk::work_item::{WorkDisposition, WorkItem, WorkItemState};
 
 use crate::gateway::ShellGateway;
 use crate::workspace;
@@ -27,16 +27,22 @@ use crate::workspace;
 /// workspace-id convention (see the crate-internal `workspace` module) and
 /// either preserves the work or throws it away, per `discard_work`.
 ///
-/// It then settles the aborted cycle's ledger item `cancelled`, because that
-/// abort also means no `TaskRunCompleted` will ever arrive to settle it — the
-/// item would otherwise sit `running` until a restart closed it with the wrong
-/// reason. Settling here rather than in the `CancelCampaign` RPC is what lets
-/// the item's disposition report what disposal *actually did*: the worktree, and
+/// It then settles the aborted cycle's ledger item, because that abort also
+/// means no `TaskRunCompleted` will ever arrive to settle it — the item would
+/// otherwise sit `running` until a restart closed it with the wrong reason.
+/// With `discard_work` the item settles `cancelled`. Without it the work is
+/// the owner's: the item settles `preserved` on the ref disposal pushed or
+/// bundled (`failed` when preserving failed and the worktree is the only
+/// copy), and stays in `foundry queue open` until the owner resumes or closes
+/// it. Settling here rather than in the `CancelCampaign` RPC is what lets the
+/// item's disposition report what disposal *actually did*: the worktree, and
 /// whether it is gone, are observed after the work above, and the preservation
 /// ref is the one `preserve` returned.
 ///
-/// The one event it emits is that recording — `work_item_cancelled`, on the
-/// aborted cycle's own trace. Disposal failures and ledger faults are logged
+/// The one event it emits is that recording, on the aborted cycle's own
+/// trace: `work_item_cancelled` for a cancelled item, which drives Dispose
+/// Cancelled Work, or `work_item_settled` for one kept open, which disposes
+/// of nothing. Disposal failures and ledger faults are logged
 /// and reported in the block summary rather than failing the workflow: the
 /// campaign is already cancelled, and nothing is served by making the
 /// cancellation itself look unsuccessful.
@@ -218,16 +224,86 @@ fn cancellation_disposition(disposal: &Disposal) -> Option<WorkDisposition> {
     })
 }
 
-/// The `work_item_cancelled` event recording one settled cancellation.
+/// What the cancellation does to the aborted cycle's ledger item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Settlement {
+    /// Settle it `cancelled`: the owner asked for the work to be thrown away,
+    /// or there was no work to keep.
+    Cancel(Option<WorkDisposition>),
+    /// Keep it open for the owner, in this state, with this reason and
+    /// disposition. The campaign ends; the work does not.
+    Keep(WorkItemState, String, Option<WorkDisposition>),
+    /// Leave its state alone: its own run already settled it `landed` or
+    /// `cancelled`, so the abort only ended its cleanup.
+    Release,
+}
+
+/// Decide how the aborted cycle's item settles.
+///
+/// With `--discard-work` the item settles `cancelled`, as it always has.
+/// Without it the work belongs to the owner, as Stacey decided on
+/// 2026-11-21: work preserved on a ref settles `preserved`; work whose
+/// preservation failed settles `failed`, because the worktree left behind is
+/// then its only copy; an item its own typed result already settled open
+/// keeps that state. Only a cycle that had built no worktree and settled
+/// nothing has no work to keep, and settles `cancelled`.
+fn settlement(
+    item: &WorkItem,
+    payload: &CampaignCancelledPayload,
+    disposal: &Disposal,
+) -> Settlement {
+    let disposition = cancellation_disposition(disposal);
+    if payload.discard_work {
+        return Settlement::Cancel(disposition);
+    }
+    let cancelled = format!(
+        "campaign {} cancelled: {}",
+        payload.terminal.campaign,
+        payload.terminal.reason.trim()
+    );
+    match disposal.worktrees.first() {
+        Some(Disposed {
+            preservation_ref: Some(reference),
+            ..
+        }) => Settlement::Keep(
+            WorkItemState::Preserved,
+            format!("{cancelled}; in-flight work kept at {reference}"),
+            disposition,
+        ),
+        Some(Disposed { worktree, .. }) => Settlement::Keep(
+            WorkItemState::Failed,
+            format!(
+                "{cancelled}; could not preserve the in-flight work, worktree left at {}",
+                worktree.display()
+            ),
+            disposition,
+        ),
+        None if item.state.is_open() => {
+            Settlement::Keep(item.state, item.reason.clone(), item.disposition.clone())
+        }
+        None if matches!(item.state, WorkItemState::Landed | WorkItemState::Cancelled) => {
+            Settlement::Release
+        }
+        None => Settlement::Cancel(None),
+    }
+}
+
+/// The lifecycle event recording one settled cycle: `work_item_cancelled`
+/// for a cancelled item, `work_item_settled` for one kept open.
 ///
 /// Carried on the *aborted cycle's* trace, not the cancellation's: the item was
 /// recorded under that trace and every other event about this unit of work is
 /// on it, so that is where a reader looks. `Event::new` leaves the trace unset
 /// and the engine only ever stamps what is unset, so setting it here is what
 /// keeps it.
-fn work_item_cancelled_event(project: &str, throttle: Throttle, item: &WorkItem) -> Event {
+fn work_item_event(project: &str, throttle: Throttle, item: &WorkItem) -> Event {
+    let event_type = if item.state == WorkItemState::Cancelled {
+        EventType::WorkItemCancelled
+    } else {
+        EventType::WorkItemSettled
+    };
     super::event_from_infallible_payload(
-        EventType::WorkItemCancelled,
+        event_type,
         project,
         throttle,
         &WorkItemEventPayload::from_item(item),
@@ -235,7 +311,8 @@ fn work_item_cancelled_event(project: &str, throttle: Throttle, item: &WorkItem)
     .with_trace_id(item.trace_id.clone())
 }
 
-/// Settle the aborted cycle's ledger item `cancelled`, and return it.
+/// Settle the aborted cycle's ledger item per [`settlement`], and return it
+/// when its state changed.
 ///
 /// The service has already aborted and awaited the Rust workflow. Its exact
 /// started root identifies the owner even when a typed task result settled
@@ -243,7 +320,8 @@ fn work_item_cancelled_event(project: &str, throttle: Throttle, item: &WorkItem)
 /// without started-root evidence correlate only by the aborted trace.
 ///
 /// `None` when the cancellation aborted nothing, when no executing item carries
-/// that trace, or when the ledger cannot be read or written.
+/// that trace, when the item's own run already settled it `landed` or
+/// `cancelled`, or when the ledger cannot be read or written.
 fn settle_cancelled_cycle(
     path: &Path,
     project: &str,
@@ -251,7 +329,6 @@ fn settle_cancelled_cycle(
     disposal: &Disposal,
 ) -> Option<WorkItem> {
     let trace = payload.aborted_trace_id.as_deref()?;
-    let disposition = cancellation_disposition(disposal);
     let _guard = super::work_ledger::ledger_lock()?;
     let mut store = super::work_ledger::load_ledger(path)?;
     let owner = store.items.iter().position(|item| {
@@ -275,9 +352,22 @@ fn settle_cancelled_cycle(
     // Disposal has finished after the original workflow unwound. Its slot can
     // now be released even though that aborted traversal cannot call complete.
     item.execution_completed = true;
-    item.settle_cancelled(&payload.terminal.reason, disposition, UtcDateTime::now());
+    let now = UtcDateTime::now();
+    let changed = match settlement(item, payload, disposal) {
+        Settlement::Cancel(disposition) => {
+            item.settle_cancelled(&payload.terminal.reason, disposition, now);
+            true
+        }
+        Settlement::Keep(state, reason, disposition) => {
+            let origin =
+                payload.operator_origin.clone().unwrap_or_else(|| "not recorded".to_string());
+            item.settle_kept_by_campaign_cancel(state, &reason, disposition, origin, now);
+            true
+        }
+        Settlement::Release => false,
+    };
     let settled = item.clone();
-    super::work_ledger::save_ledger(&store, path).then_some(settled)
+    (super::work_ledger::save_ledger(&store, path) && changed).then_some(settled)
 }
 
 impl TaskBlock for DisposeCampaignWork {
@@ -321,14 +411,23 @@ impl TaskBlock for DisposeCampaignWork {
             let settled =
                 settle_cancelled_cycle(&work_items_path, &project_name, &payload, &disposal);
             let summary = match &settled {
-                Some(item) => {
-                    format!("{}; work item {} settled cancelled", disposal.summary, item.id)
-                }
+                Some(item) if item.kept_by_campaign_cancel() => format!(
+                    "{}; work item {} kept {} for its owner",
+                    disposal.summary,
+                    item.id,
+                    item.state.tag()
+                ),
+                Some(item) => format!(
+                    "{}; work item {} settled {}",
+                    disposal.summary,
+                    item.id,
+                    item.state.tag()
+                ),
                 None => disposal.summary.clone(),
             };
             let events = settled
                 .as_ref()
-                .map(|item| vec![work_item_cancelled_event(&project_name, throttle, item)])
+                .map(|item| vec![work_item_event(&project_name, throttle, item)])
                 .unwrap_or_default();
 
             Ok(TaskBlockResult::success(summary, events))
@@ -357,6 +456,7 @@ mod tests {
             discard_work,
             aborted_event_id: None,
             aborted_trace_id: None,
+            operator_origin: None,
         };
         Event::new(
             EventType::CampaignCancelled,
@@ -618,6 +718,7 @@ mod tests {
             discard_work,
             aborted_event_id: Some("evt_abc".to_string()),
             aborted_trace_id: aborted_trace_id.map(str::to_string),
+            operator_origin: Some("max-headroom".to_string()),
         }
     }
 
@@ -727,10 +828,18 @@ mod tests {
             "the pushed branch is how the work is recovered"
         );
         assert_eq!(d.worktree_removed, Some(true));
+        let kept = settled_item(&ledger, &id);
+        assert_eq!(kept.state, WorkItemState::Preserved, "the owner decides what happens next");
         assert_eq!(
-            settled_item(&ledger, &id).state,
-            foundry_sdk::work_item::WorkItemState::Cancelled
+            kept.reason,
+            "campaign ship-billing cancelled: superseded by the rewrite; in-flight work kept at \
+             foundry-task/demo-ship-billing-c2-abcdef"
         );
+        assert!(kept.kept_by_campaign_cancel());
+        let action = kept.operator_action.as_ref().unwrap();
+        assert_eq!(action.origin, "max-headroom");
+        assert_eq!(action.previous_state, WorkItemState::Running);
+        assert!(kept.execution_completed);
     }
 
     /// A preserve that could not push *and* could not bundle leaves the worktree
@@ -752,9 +861,58 @@ mod tests {
             settle_cancelled_cycle(&ledger, "demo", &payload(false, Some(TRACE)), &disposal)
                 .expect("the running cycle item settles");
 
+        assert_eq!(settled.state, WorkItemState::Failed, "left open: the worktree holds the work");
+        assert!(
+            settled.reason.contains("could not preserve the in-flight work"),
+            "{}",
+            settled.reason
+        );
+        assert!(settled.kept_by_campaign_cancel());
         let d = settled.disposition.expect("a disposed worktree is recorded");
         assert_eq!(d.worktree_removed, Some(false), "the only copy of the work is still there");
         assert_eq!(d.preservation_ref, None);
+    }
+
+    /// The cycle's own typed result settled it before the abort reached its
+    /// cleanup. Without `--discard-work` that result stands: preserved work
+    /// stays preserved, kept for the owner, and a landing stays landed.
+    #[tokio::test]
+    async fn an_already_settled_cycle_keeps_its_own_result_without_discard() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = worktrees_root_with(dir.path(), &[]);
+        let (ledger, id) = ledger_with_running_cycle(dir.path());
+        for (state, kept) in [
+            (WorkItemState::Preserved, true),
+            (WorkItemState::Landed, false),
+        ] {
+            let mut store = foundry_sdk::work_item::WorkItemStore::load(&ledger).unwrap();
+            let owner = store.find_mut(&id).unwrap();
+            owner.state = state;
+            owner.reason = "its own result".into();
+            owner.operator_action = None;
+            owner.execution_completed = false;
+            let mut started = Event::new(
+                EventType::ExecutionRequested,
+                "demo".into(),
+                Throttle::Full,
+                serde_json::json!({}),
+            );
+            started.id = "evt_abc".into();
+            owner.started_root = Some(started);
+            store.save(&ledger).unwrap();
+
+            let disposal =
+                dispose(&shell_success(), &root, dir.path(), "demo", "ship-billing", false).await;
+            let settled =
+                settle_cancelled_cycle(&ledger, "demo", &payload(false, Some(TRACE)), &disposal);
+
+            let after = settled_item(&ledger, &id);
+            assert_eq!(after.state, state);
+            assert_eq!(after.reason, "its own result");
+            assert!(after.execution_completed, "the slot is released either way");
+            assert_eq!(after.kept_by_campaign_cancel(), kept);
+            assert_eq!(settled.is_some(), kept, "only a changed item is announced");
+        }
     }
 
     #[tokio::test]
@@ -819,7 +977,7 @@ mod tests {
             foundry_sdk::time::UtcDateTime::now(),
         );
 
-        let event = work_item_cancelled_event("demo", Throttle::Full, &item);
+        let event = work_item_event("demo", Throttle::Full, &item);
 
         assert_eq!(event.event_type, EventType::WorkItemCancelled);
         assert_eq!(event.project, "demo");
@@ -832,7 +990,37 @@ mod tests {
         assert_eq!(event.payload["origin"], "campaign ship-billing cycle 2");
     }
 
+    /// A kept cycle is announced settled, not cancelled, so Dispose Cancelled
+    /// Work never sees it.
+    #[test]
+    fn a_kept_cycle_is_announced_settled_on_its_trace() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ledger, id) = ledger_with_running_cycle(dir.path());
+        let mut item = settled_item(&ledger, &id);
+        item.settle_kept_by_campaign_cancel(
+            WorkItemState::Preserved,
+            "kept",
+            None,
+            "max-headroom".into(),
+            foundry_sdk::time::UtcDateTime::now(),
+        );
+
+        let event = work_item_event("demo", Throttle::Full, &item);
+
+        assert_eq!(event.event_type, EventType::WorkItemSettled);
+        assert_eq!(event.trace_id.as_deref(), Some(TRACE));
+        assert_eq!(event.payload["state"], "preserved");
+    }
+
     fn shell_success() -> GitLikeShell {
         GitLikeShell { fail_prefix: None }
     }
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "isolated Git test fixtures"
+)]
+mod boundary_tests;

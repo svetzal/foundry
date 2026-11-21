@@ -157,10 +157,14 @@ and `foundry queue cancel` for submitted/queued items. These select an exact id,
 retain prior evidence and disposition, and record operator context separately
 from submission origin. They never abort running work or dispose of preserved work.
 
-`foundry campaign cancel --now` emits `WorkItemCancelled` and
-kills the in-flight cycle so no `TaskRunCompleted` can settle its item. That
-item settles `cancelled` with the operator's `--reason` as its reason, and the
-event rides the aborted cycle's trace rather than the cancellation's. A graceful
+`foundry campaign cancel --now` kills the in-flight cycle so no
+`TaskRunCompleted` can settle its item. Without `--discard-work` the item is
+kept for the owner: it settles `preserved` on the pushed branch or bundle
+(`failed` when preserving failed), records owner action `campaign_cancel`, and
+emits `WorkItemSettled`; the campaign's terminal sweep never closes it. With
+`--discard-work` it settles `cancelled` with the operator's `--reason` and emits
+`WorkItemCancelled`. Either event rides the aborted cycle's trace rather than
+the cancellation's. A graceful
 cancel lets its cycle finish; when that cycle settles open, it settles
 `cancelled` because its campaign is cancelled.
 

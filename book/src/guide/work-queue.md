@@ -238,8 +238,10 @@ Foundry's `*Started`/`*Completed` pairing rule.
 state that may still hold an obligation.
 
 `work_item_cancelled` is emitted by `foundry queue close`, `foundry queue
-cancel`, and `foundry campaign cancel <name> --reason … --now`, which stops the
-in-flight cycle outright and cancels the campaign's queued cycles with it. It
+cancel`, and `foundry campaign cancel <name> --reason … --now --discard-work`,
+which stops the in-flight cycle outright and cancels the campaign's queued
+cycles with it. Without `--discard-work` the in-flight cycle is kept open and
+announced with `work_item_settled` instead. It
 is also emitted when a campaign moves past an open cycle (see "Campaign cycles
 the campaign has moved past" below). It
 carries the item's id, project, kind, lane, state, reason and origin, plus the
@@ -942,17 +944,31 @@ tells you when a stop would interrupt nothing.
 
 A `--now` cancellation kills the in-flight cycle, so the `TaskRunCompleted` that
 normally settles its item never arrives. Foundry therefore settles that item
-itself:
+itself, on the item carrying the aborted run's trace:
 
-- The `running` item carrying the aborted run's trace settles **`cancelled`**,
-  with your `--reason` text as its reason and the settlement time recorded. It
-  moves out of `Running` and into the `Settled (last 20)` group; `cancelled` is
-  terminal, so it never shows up under `queue open`.
+- Without `--discard-work`, the work is kept for you. The item settles
+  **`preserved`** on the branch (or `bundle:` path) the work was pushed to,
+  with the reason `campaign <name> cancelled: <reason>; in-flight work kept at
+  <ref>` and an owner action `campaign_cancel` naming your hostname. It moves
+  into `Open — needs a person`, where `queue open` prints the commands for it:
+  `next: foundry queue resume <id> | foundry queue close <id> --reason "..."`.
+  The campaign's own terminal sweep leaves it alone, and so do settle-time
+  disposal and the orphan sweep, until you resume it and the resuming task
+  lands, or you close it. If preserving fails, the item settles **`failed`**
+  instead and its worktree stays as the only copy (`next: foundry queue show
+  <id> | foundry queue close <id> …`). An item the cycle's own result had
+  already settled open keeps that state, also as kept work.
+- With `--discard-work`, the item settles **`cancelled`**, with your `--reason`
+  text as its reason. It moves into the `Settled (last 20)` group, and Dispose
+  Cancelled Work removes its worktree and task branches.
+- A cycle that had built no worktree has nothing to keep, and settles
+  `cancelled` either way.
 - Its disposition records the cycle's worktree and whether that worktree is gone,
-  observed *after* disposal ran — plus the branch (or `bundle:` path) the work was
-  preserved on. With `--discard-work` there is no preservation ref, because the
-  work was thrown away. A cycle that had built no worktree records no
-  disposition at all.
+  observed *after* disposal ran, plus the ref the work was preserved on. With
+  `--discard-work` there is no preservation ref, because the work was thrown
+  away. A cycle that had built no worktree records no disposition at all.
+- `foundry campaign cancel --now` waits for this settlement (up to two minutes)
+  and prints the item. `CancelCampaignResponse.aborted_work_item_id` names it.
 - Correlation is by trace alone, exactly as a normal settlement: if no running
   item carries the aborted run's trace, nothing is settled. Foundry never falls
   back to "the project's newest running item", because that would report an
@@ -986,7 +1002,9 @@ worktree fields:
 - When the campaign completes (formation `done` or `foundry campaign
   complete`) or is cancelled, its remaining open cycles settle with the reason
   `campaign <name> completed` or `campaign <name> cancelled`, followed by `:
-  <reason>` when one was recorded.
+  <reason>` when one was recorded. The one exception is a cycle `campaign
+  cancel --now` kept for its owner: it stays open until the owner resumes or
+  closes it.
 - A graceful cancel lets the in-flight cycle finish after `CampaignCancelled`.
   When that cycle settles open, its own `work_item_settled` finds the campaign
   already cancelled in the campaign store, and the cycle settles `cancelled`

@@ -1306,35 +1306,58 @@ records it, stands down with `decision: "stood_down"` and settles `landed`; the
 campaign stays `cancelled`. To stop immediately instead:
 
 ```bash
-# Kill the running agent, keep its work (committed and pushed or bundled)
+# Kill the running agent, keep its work for you to resume or close
 foundry campaign cancel parite-phase-2d --reason "Wrong approach." --now
 
-# Kill the running agent and throw its uncommitted work away
+# Kill the running agent and throw its work away
 foundry campaign cancel parite-phase-2d --reason "Wrong approach." --now --discard-work
 ```
 
 A whole campaign runs inside a single daemon task, so `--now` aborts that task:
 the running agent process is killed, and the cycle's worktree is left orphaned
 because normal finalization never ran. Foundry then disposes of that worktree
-according to `--discard-work` — preserving the work to a branch or bundle by
-default, or deleting the worktree and its local branch when asked. The cycle
-then settles `cancelled`, and Foundry disposes of the `foundry-task/*` branches
-the cancelled cycle owns, locally and on origin, unless another open item
-still starts from them. This includes a branch that `--now` preserved without
-`--discard-work`. A bundle is not removed. See
+according to `--discard-work`. The campaign ends `cancelled` either way.
+
+Without `--discard-work`, the cycle's work becomes yours. Foundry commits it,
+pushes its branch (or writes a bundle when the push fails) and removes the
+worktree. The cycle's work item settles **`preserved`** on that ref and stays in
+`foundry queue open` until you act on it, like any other preserved item:
+
+- `foundry queue resume <id>` continues the work in a new task. When that task
+  lands, the kept item settles `landed` and its branch is removed.
+- `foundry queue close <id> --reason "..."` settles it `cancelled`, and its
+  branch is removed.
+
+Until then the branch survives settle-time disposal and the reconciler's
+orphan sweep, because an open item references it. If Foundry cannot preserve
+the work at all, the item settles **`failed`** instead and the worktree stays
+on disk as the only copy; `queue show` names it, and `queue close` removes it.
+The cancel command waits for this settlement and prints the item with the
+commands that act on it.
+
+With `--discard-work`, Foundry deletes the worktree and its local branch, the
+cycle settles `cancelled`, and Foundry disposes of the `foundry-task/*`
+branches it owns, locally and on origin, unless another open item still starts
+from them. A bundle is not removed. See
 [Disposal when an item settles](work-reconciler.md#disposal-when-an-item-settles).
+A cycle that had built no worktree has no work to keep, and settles
+`cancelled` either way.
 
 `--discard-work` requires `--now`, because a graceful cancellation has already
 committed and preserved the cycle's work by the time it stops — there would be
 nothing uncommitted left to discard.
 
-A `--now` cancellation also closes the cycle's entry in the work-item ledger. The
-cycle was recorded `running` when it was dispatched, and killing it means the
-`TaskRunCompleted` that normally settles that entry never arrives — so Foundry
-settles it `cancelled` itself, with your `--reason` text as the reason and a
-disposition naming the cycle's worktree, whether that worktree is gone, and the
-ref any preserved work is recoverable from. A `work_item_cancelled` event records
-it, on the aborted cycle's own trace. `foundry queue show <id>` reads the result
+A `--now` cancellation also settles the cycle's entry in the work-item ledger.
+The cycle was recorded `running` when it was dispatched, and killing it means
+the `TaskRunCompleted` that normally settles that entry never arrives, so
+Foundry settles it itself: `preserved` as above, or, with `--discard-work`,
+`cancelled` with your `--reason` text as the reason. The disposition names the
+cycle's worktree, whether that worktree is gone, and the ref any preserved work
+is recoverable from. A kept item records the cancellation as its owner action
+(`campaign_cancel`, with your hostname), and its reason reads `campaign <name>
+cancelled: <reason>; in-flight work kept at <ref>`. A `work_item_settled` event
+(kept) or `work_item_cancelled` event (discarded) records it, on the aborted
+cycle's own trace. `foundry queue show <id>` reads the result
 back. A graceful cancellation lets its cycle finish; when that cycle settles
 open, it settles `cancelled` with the reason `campaign <name> cancelled:
 <reason>`, because the campaign is already cancelled. See [The work

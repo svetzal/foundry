@@ -258,6 +258,7 @@ fn cancel(terminate_now: bool, discard_work: bool) -> CancelCampaignRequest {
         reason: REASON.to_string(),
         terminate_now,
         discard_work,
+        operator_origin: String::new(),
     }
 }
 
@@ -363,9 +364,12 @@ fn item_state(path: &Path, id: &str) -> WorkItemState {
 
 // ── The settlement ──────────────────────────────────────────────────────────
 
-/// The load-bearing proof: the aborted cycle's item settles `cancelled` with the
-/// operator's own reason, and the cancellation is recorded as an event on that
-/// cycle's trace — in the Watch stream and in the durable JSONL log.
+/// The load-bearing proof: an aborted cycle that had built no worktree has no
+/// work to keep, so its item settles `cancelled` with the operator's own
+/// reason, and the cancellation is recorded as an event on that cycle's trace
+/// — in the Watch stream and in the durable JSONL log. The response names the
+/// item, so the CLI can report it. A cycle whose work `--now` keeps is proved
+/// against real Git in `foundry-blocks` (`dispose_campaign_work::boundary_tests`).
 #[tokio::test(flavor = "multi_thread")]
 async fn cancel_now_settles_the_aborted_cycles_item_cancelled_and_records_the_event() {
     let mut harness = make_harness(None);
@@ -378,10 +382,12 @@ async fn cancel_now_settles_the_aborted_cycles_item_cancelled_and_records_the_ev
     let mut client = FoundryClient::connect(addr).await.expect("connect");
     client.emit(campaign_root(TRACE)).await.expect("emit the campaign root");
 
-    client
+    let response = client
         .cancel_campaign(cancel(true, false))
         .await
-        .expect("cancel --now must succeed");
+        .expect("cancel --now must succeed")
+        .into_inner();
+    assert_eq!(response.aborted_work_item_id, item_id, "the response names the aborted cycle");
 
     assert!(
         wait_for("the cycle's item to settle", || item_state(&ledger, &item_id)

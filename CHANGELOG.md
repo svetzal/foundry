@@ -26,6 +26,22 @@ project adheres to [Semantic Versioning](https://semver.org/).
   until that item settles, and then it goes. This replaces the rule that a
   carried campaign cycle kept its branch unless trunk contained it, and that
   an owner-closed item kept its branch.
+- `foundry campaign cancel --now` without `--discard-work` now keeps the
+  in-flight cycle's work for its owner (Stacey, 2026-11-21). The cycle's item
+  settles `preserved` on the branch or bundle disposal pushed, instead of
+  `cancelled`, so settle-time disposal no longer deletes that branch straight
+  away. It stays in `foundry queue open` (with a `next: foundry queue resume
+  <id> | foundry queue close <id> …` line) until the owner resumes it and the
+  resuming task lands, or closes it; either disposes of it as usual. The
+  campaign's terminal sweep leaves it open. When preserving fails, the item
+  settles `failed` and the worktree, then the only copy, is no longer removed.
+  `--now --discard-work` still settles the cycle `cancelled` and disposes of
+  it. The campaign ends `cancelled` either way.
+- `foundry campaign cancel --now` waits up to two minutes for the aborted
+  cycle's item to settle and prints it with the commands that act on it.
+  `CancelCampaignRequest` gains `operator_origin` (the CLI's hostname),
+  recorded as the kept item's `campaign_cancel` owner action, and
+  `CancelCampaignResponse` gains `aborted_work_item_id`.
 - Only `refs/heads/foundry-task/*` branches and worktrees under the Foundry
   worktrees root are disposed of. Disposal never fails a settlement. A failure
   (for example a missing origin or an authentication failure) is logged and

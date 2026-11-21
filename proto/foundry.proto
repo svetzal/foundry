@@ -873,6 +873,10 @@ message CancelCampaignRequest {
     // and preserving it. Only meaningful with terminate_now — a cycle allowed
     // to finish has already had its work committed and preserved.
     bool discard_work = 4;
+    // Opaque operator context: the CLI client's hostname and optional origin
+    // text. Recorded as the owner action on an aborted cycle whose work a
+    // `--now` cancellation keeps for its owner.
+    string operator_origin = 5;
 }
 
 message CancelCampaignResponse {
@@ -880,6 +884,11 @@ message CancelCampaignResponse {
     // The emitted CampaignCancelled event. Empty when the call was a no-op
     // because the campaign was already cancelled.
     string event_id = 2;
+    // The work item of the in-flight cycle a `--now` cancellation aborted.
+    // Empty when nothing was aborted or no ledger item records it. Its
+    // disposal settles it after this response: `preserved` (kept for the
+    // owner) without discard_work, `cancelled` with it.
+    string aborted_work_item_id = 3;
 }
 
 // Manually dispatch one advance iteration for an active campaign.

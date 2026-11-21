@@ -266,7 +266,10 @@ says which point, and `state` says where the item stands.
 `work_item_completed`: an item does not *complete*, it settles, into a state
 that may still hold an obligation. `work_item_cancelled` is emitted by
 `foundry queue close` and `foundry queue cancel` on the exact item's trace,
-and by `foundry campaign cancel --now` on the aborted cycle's trace.
+and by `foundry campaign cancel --now --discard-work` on the aborted cycle's
+trace. A plain `--now` keeps the aborted cycle open and emits
+`work_item_settled` (state `preserved`, or `failed` when preserving failed) on
+that trace instead.
 `work_item_disposed` follows a cancellation, and a settlement that released a
 ref another settled item owned. Its `disposition` records each removed and each
 left worktree and branch (see

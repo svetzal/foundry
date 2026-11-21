@@ -276,6 +276,7 @@ async fn a_gracefully_cancelled_campaigns_in_flight_cycle_settles_when_it_finish
                 discard_work: false,
                 aborted_event_id: None,
                 aborted_trace_id: None,
+                operator_origin: None,
             })
             .unwrap(),
         ))

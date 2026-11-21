@@ -632,6 +632,7 @@ of by the `DisposeCampaignWork` block.
 | `reason`        | string | Owner reason for abandoning the mission                            |
 | `terminate_now` | bool   | Abort the in-flight workflow, killing the running agent process    |
 | `discard_work`  | bool   | Throw the terminated cycle's uncommitted work away                 |
+| `operator_origin` | string | CLI hostname and optional text; recorded as the owner action on a cycle `--now` keeps |
 
 **Response:**
 
@@ -639,6 +640,7 @@ of by the `DisposeCampaignWork` block.
 | ---------- | -------------- | -------------------------------------------------------------------- |
 | `campaign` | CampaignDetail | Full campaign detail reflecting the state after cancellation         |
 | `event_id` | string         | The emitted `CampaignCancelled` event; empty when the call was a no-op |
+| `aborted_work_item_id` | string | The aborted cycle's work item; empty when nothing was aborted. Disposal settles it after the response: `preserved` (or `failed`) and kept for the owner, or `cancelled` with `discard_work` |
 
 **Errors:** `INVALID_ARGUMENT` for a blank reason, `NOT_FOUND` for an unknown
 campaign, `FAILED_PRECONDITION` when the campaign is already completed or the
@@ -648,7 +650,9 @@ current detail with an empty `event_id` and emits no second event.
 
 **CLI:** `foundry campaign cancel <name> --reason "<text>" [--now]
 [--discard-work]` routes through this RPC by default. `--discard-work` requires
-`--now`. `--offline` uses a graceful-only direct-file path that emits no event;
+`--now`. With `--now` the CLI opens a Watch on the campaign's project before the
+call, waits up to two minutes for the `work_item_settled` or
+`work_item_cancelled` of `aborted_work_item_id`, and prints that item. `--offline` uses a graceful-only direct-file path that emits no event;
 `--offline --now` is refused rather than downgraded.
 
 ### `AdvanceCampaign(AdvanceCampaignRequest) → AdvanceCampaignResponse`

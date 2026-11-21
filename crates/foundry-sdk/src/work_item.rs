@@ -286,7 +286,9 @@ impl WorkDisposition {
 /// An owner action, separate from the item's original submission and settlement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkItemOperatorAction {
-    /// `close`, `cancel`, `resume`, `hold` or `release`.
+    /// `close`, `cancel`, `resume`, `hold`, `release`, or
+    /// [`CAMPAIGN_CANCEL_COMMAND`] for a campaign cycle that
+    /// `foundry campaign cancel --now` stopped and kept for its owner.
     pub command: String,
     /// CLI hostname and optional operator context.
     pub origin: String,
@@ -923,9 +925,10 @@ impl WorkItem {
 
     /// Settle the item `cancelled` with `reason`, recording `disposition`.
     ///
-    /// Used when an operator stops the work outright — today only
-    /// `foundry campaign cancel --now`, which aborts the in-flight cycle so no
-    /// typed task result ever arrives to settle the item. `reason` is the
+    /// Used when an operator stops the work outright: `foundry queue close`
+    /// or `cancel`, a campaign or initiative ending, or
+    /// `foundry campaign cancel --now --discard-work`, which aborts the
+    /// in-flight cycle so no typed task result ever arrives to settle the item. `reason` is the
     /// operator's own cancellation reason, recorded verbatim (collapsed to one
     /// line) rather than paraphrased: it is the only account of why the work
     /// stopped.
@@ -949,6 +952,50 @@ impl WorkItem {
         self.disposition = disposition;
     }
 
+    /// Settle a campaign cycle that `foundry campaign cancel --now` aborted,
+    /// but whose work was kept, in the open `state` with `reason`.
+    ///
+    /// The campaign ends, but the cycle's work becomes the owner's: it stays
+    /// open (`preserved` when the work is on a durable ref, `failed` when
+    /// preserving it failed and only the worktree holds it) until the owner
+    /// resumes, closes or cancels it. The recorded
+    /// [`CAMPAIGN_CANCEL_COMMAND`] owner action is what keeps the campaign's
+    /// own terminal sweep from settling it `cancelled` (see
+    /// [`Self::kept_by_campaign_cancel`]). `origin` names who cancelled.
+    pub fn settle_kept_by_campaign_cancel(
+        &mut self,
+        state: WorkItemState,
+        reason: &str,
+        disposition: Option<WorkDisposition>,
+        origin: String,
+        at: UtcDateTime,
+    ) {
+        debug_assert!(state.is_open(), "kept work stays open for its owner");
+        self.operator_action = Some(WorkItemOperatorAction {
+            command: CAMPAIGN_CANCEL_COMMAND.to_string(),
+            origin,
+            previous_state: self.state,
+            previous_reason: self.reason.clone(),
+            previous_settled_at: self.settled_at,
+        });
+        self.state = state;
+        self.reason = one_line(reason);
+        self.settled_at = Some(at);
+        self.disposition = disposition;
+    }
+
+    /// Whether this item is open work an owner's `campaign cancel --now`
+    /// kept: the owner, not the cancelled campaign, decides what happens to
+    /// it next.
+    #[must_use]
+    pub fn kept_by_campaign_cancel(&self) -> bool {
+        self.state.is_open()
+            && self
+                .operator_action
+                .as_ref()
+                .is_some_and(|action| action.command == CAMPAIGN_CANCEL_COMMAND)
+    }
+
     /// Settle the item `failed` with `reason`, keeping whatever disposition
     /// fields are already known.
     ///
@@ -962,6 +1009,10 @@ impl WorkItem {
         self.settled_at = Some(at);
     }
 }
+
+/// The owner-action command recorded on a campaign cycle that
+/// `foundry campaign cancel --now` stopped without `--discard-work`.
+pub const CAMPAIGN_CANCEL_COMMAND: &str = "campaign_cancel";
 
 /// The reason a held item carries. Stable text: an operator reading the ledger
 /// sees the same phrase every time.
@@ -2263,6 +2314,54 @@ mod tests {
         assert_eq!(item.settled_at, Some(at));
         assert!(!item.is_running());
         assert!(!WorkItemState::Cancelled.is_open(), "a cancellation holds no obligation");
+    }
+
+    #[test]
+    fn a_cycle_kept_by_campaign_cancel_stays_open_for_its_owner() {
+        let at = now();
+        let mut item = WorkItem::dispatched(spec(), at);
+        let disposition = WorkDisposition {
+            preservation_ref: Some("foundry-task/alpha-tidy-c3-abcdef".to_string()),
+            worktree: Some(WORKTREE.to_string()),
+            worktree_removed: Some(true),
+            ..WorkDisposition::default()
+        };
+        item.settle_kept_by_campaign_cancel(
+            WorkItemState::Preserved,
+            "campaign tidy cancelled: wrong approach",
+            Some(disposition.clone()),
+            "max-headroom".to_string(),
+            at,
+        );
+
+        assert_eq!(item.state, WorkItemState::Preserved);
+        assert_eq!(item.reason, "campaign tidy cancelled: wrong approach");
+        assert_eq!(item.disposition, Some(disposition));
+        assert_eq!(item.settled_at, Some(at));
+        let action = item.operator_action.as_ref().unwrap();
+        assert_eq!(action.command, CAMPAIGN_CANCEL_COMMAND);
+        assert_eq!(action.origin, "max-headroom");
+        assert_eq!(action.previous_state, WorkItemState::Running);
+        assert!(item.kept_by_campaign_cancel());
+
+        // Once the owner closes it, it is no longer kept work.
+        item.settle_cancelled("owner closed", item.disposition.clone(), at);
+        assert!(!item.kept_by_campaign_cancel());
+    }
+
+    #[test]
+    fn other_owner_actions_do_not_mark_work_as_kept_by_campaign_cancel() {
+        let mut item = WorkItem::dispatched(spec(), now());
+        item.state = WorkItemState::Preserved;
+        assert!(!item.kept_by_campaign_cancel());
+        item.operator_action = Some(WorkItemOperatorAction {
+            command: "release".to_string(),
+            origin: "host".to_string(),
+            previous_state: WorkItemState::Held,
+            previous_reason: "held".to_string(),
+            previous_settled_at: None,
+        });
+        assert!(!item.kept_by_campaign_cancel());
     }
 
     #[test]

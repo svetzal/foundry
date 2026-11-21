@@ -66,6 +66,54 @@ pub fn transition_notice(item: &WorkItem) -> String {
     format!("{}: {} — {}\n", item.id, item.state, item.reason)
 }
 
+/// Whether `item` is a campaign cycle that `foundry campaign cancel --now`
+/// stopped and kept open for its owner.
+fn kept_by_campaign_cancel(item: &WorkItem) -> bool {
+    group_of(&item.state) == Group::Open
+        && item
+            .operator_action
+            .as_ref()
+            .is_some_and(|action| action.command == foundry_sdk::work_item::CAMPAIGN_CANCEL_COMMAND)
+}
+
+/// The owner's commands for a cycle a cancellation kept: resume preserved
+/// work, or look at a worktree whose preservation failed, and close either.
+fn kept_next_line(item: &WorkItem) -> String {
+    let first = if item.state == WorkItemState::Preserved.tag() {
+        format!("foundry queue resume {}", item.id)
+    } else {
+        format!("foundry queue show {}", item.id)
+    };
+    format!("            next: {first} | foundry queue close {} --reason \"...\"", item.id)
+}
+
+/// What a `campaign cancel --now` did to the in-flight cycle's item, once its
+/// disposal settled it: kept for the owner (with the commands that act on
+/// it), or cancelled.
+#[must_use]
+pub fn cancelled_cycle(item: &WorkItem) -> String {
+    if kept_by_campaign_cancel(item) {
+        format!(
+            "In-flight cycle {} kept for you, {}: {}\n{}\n",
+            item.id,
+            item.state,
+            item.reason,
+            kept_next_line(item).trim_start()
+        )
+    } else {
+        format!("In-flight cycle {} {}: {}\n", item.id, item.state, item.reason)
+    }
+}
+
+/// The in-flight cycle's item when its disposal had not settled it by the
+/// time the CLI stopped waiting.
+#[must_use]
+pub fn cancelled_cycle_pending(id: &str) -> String {
+    format!(
+        "In-flight cycle {id}: disposal has not settled it yet.\nnext: foundry queue show {id}\n"
+    )
+}
+
 /// Which of the four reading groups an item belongs to.
 ///
 /// This mirrors the ordering groups the `ListWorkItems` contract documents, so
@@ -276,6 +324,9 @@ fn open_section(out: &mut String, items: &[&WorkItem], escalated: &[Campaign]) {
         let widths = Widths::of(items);
         for item in items {
             let _ = writeln!(out, "{}", item_line(item, &widths));
+            if kept_by_campaign_cancel(item) {
+                let _ = writeln!(out, "{}", kept_next_line(item));
+            }
         }
     }
     let name_width = escalated.iter().map(|c| c.name.len()).max().unwrap_or(0);
@@ -1061,6 +1112,62 @@ mod tests {
         assert!(out.contains(OPEN_HEADING));
         assert!(!out.contains(RUNNING_HEADING));
         assert!(!out.contains(QUEUED_HEADING));
+    }
+
+    /// A cycle `campaign cancel --now` kept, with the owner action it records.
+    fn kept(id: &str, state: &str) -> WorkItem {
+        let mut kept = item(id, state);
+        kept.kind = "campaign_cycle".to_string();
+        kept.reason = "campaign ship cancelled: wrong approach; in-flight work kept at \
+                       foundry-task/demo-ship-c2-abcdef"
+            .to_string();
+        kept.operator_action = Some(crate::proto::WorkItemOperatorAction {
+            command: foundry_sdk::work_item::CAMPAIGN_CANCEL_COMMAND.to_string(),
+            origin: "max-headroom".to_string(),
+            previous_state: "running".to_string(),
+            previous_reason: "running".to_string(),
+            previous_settled_at: None,
+        });
+        kept
+    }
+
+    #[test]
+    fn open_only_names_the_owners_commands_for_a_cycle_a_cancellation_kept() {
+        let out = open_only(&[kept("wi_kept", "preserved"), item("wi_other", "preserved")], &[]);
+        let lines: Vec<&str> = out.lines().collect();
+        let row = lines.iter().position(|line| line.contains("wi_kept")).unwrap();
+        assert!(lines[row].contains("in-flight work kept at"), "{out}");
+        assert_eq!(
+            lines[row + 1],
+            "            next: foundry queue resume wi_kept | foundry queue close wi_kept --reason \"...\""
+        );
+        assert!(!out.contains("resume wi_other"), "only kept work gets the hint: {out}");
+    }
+
+    #[test]
+    fn a_kept_cycle_whose_preservation_failed_points_at_show_not_resume() {
+        let out = open_only(&[kept("wi_kept", "failed")], &[]);
+        assert!(
+            out.contains("next: foundry queue show wi_kept | foundry queue close wi_kept"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn the_cancel_output_says_what_happened_to_the_in_flight_cycle() {
+        assert_eq!(
+            cancelled_cycle(&kept("wi_kept", "preserved")),
+            "In-flight cycle wi_kept kept for you, preserved: campaign ship cancelled: wrong \
+             approach; in-flight work kept at foundry-task/demo-ship-c2-abcdef\n\
+             next: foundry queue resume wi_kept | foundry queue close wi_kept --reason \"...\"\n"
+        );
+        let mut discarded = item("wi_gone", "cancelled");
+        discarded.reason = "wrong approach".to_string();
+        assert_eq!(
+            cancelled_cycle(&discarded),
+            "In-flight cycle wi_gone cancelled: wrong approach\n"
+        );
+        assert!(cancelled_cycle_pending("wi_slow").contains("next: foundry queue show wi_slow"));
     }
 
     // ── detail rendering ──────────────────────────────────────────────────────

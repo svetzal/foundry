@@ -620,6 +620,7 @@ async fn a_campaign_cancelled_while_it_forms_stays_cancelled_and_its_advance_lan
             reason: "no longer wanted".into(),
             terminate_now: false,
             discard_work: false,
+            operator_origin: String::new(),
         })),
     )
     .await

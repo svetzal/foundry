@@ -709,6 +709,68 @@ fn select_aborted_owner_in_file(
     }
 }
 
+/// The ledger item of the workflow a `--now` cancellation aborted, as
+/// Dispose Campaign Work will find it: the item on that trace whose started
+/// root is the aborted root, or, for a legacy item with no started root, the
+/// running item on that trace.
+fn aborted_work_item_id(
+    path: &Path,
+    aborted: Option<&crate::workflow_tracker::ActiveWorkflow>,
+) -> Option<String> {
+    let aborted = aborted?;
+    let store = match foundry_sdk::work_item::WorkItemStore::load(path) {
+        Ok(store) => store,
+        Err(error) => {
+            // Best-effort: the id only lets the CLI name the item; disposal
+            // reads the ledger itself and settles it regardless.
+            tracing::warn!(%error, "could not read the ledger to name the aborted cycle");
+            return None;
+        }
+    };
+    let on_trace = |item: &&WorkItem| {
+        item.project == aborted.project && item.trace_id.as_deref() == Some(&aborted.trace_id)
+    };
+    store
+        .items
+        .iter()
+        .filter(on_trace)
+        .find(|item| item.started_root.as_ref().is_some_and(|root| root.id == aborted.event_id))
+        .or_else(|| {
+            store
+                .items
+                .iter()
+                .filter(on_trace)
+                .find(|item| item.is_running() && item.started_root.is_none())
+        })
+        .map(|item| item.id.clone())
+}
+
+/// The `CampaignCancelled` payload for `campaign`, carrying the operator's
+/// flags and origin and the ids of the workflow `--now` aborted.
+fn cancelled_payload(
+    campaign: &foundry_sdk::campaign::Campaign,
+    reason: String,
+    req: &CancelCampaignRequest,
+    aborted: Option<&crate::workflow_tracker::ActiveWorkflow>,
+) -> CampaignCancelledPayload {
+    CampaignCancelledPayload {
+        terminal: CampaignTerminalPayload {
+            campaign: campaign.name.clone(),
+            project: campaign.project.clone(),
+            reason,
+            cycles_completed: campaign.cycles_completed,
+            cycles_landed: campaign.cycles_landed,
+        },
+        terminated_now: req.terminate_now,
+        discard_work: req.discard_work,
+        aborted_event_id: aborted.map(|workflow| workflow.event_id.clone()),
+        aborted_trace_id: aborted.map(|workflow| workflow.trace_id.clone()),
+        operator_origin: Some(req.operator_origin.trim())
+            .filter(|origin| !origin.is_empty())
+            .map(str::to_string),
+    }
+}
+
 /// Stop a campaign permanently, optionally killing its in-flight cycle first.
 ///
 /// Abort the target workflow before waiting for the store lock, so `--now`
@@ -726,7 +788,7 @@ pub(super) async fn cancel(
     request: Request<CancelCampaignRequest>,
 ) -> Result<Response<CancelCampaignResponse>, Status> {
     let req = request.into_inner();
-    let name = req.name;
+    let name = req.name.clone();
     let reason = req.reason.trim().to_string();
     if reason.is_empty() {
         return Err(Status::invalid_argument("reason must be non-empty"));
@@ -758,8 +820,8 @@ pub(super) async fn cancel(
         // Both submission coordinators and dispatched roots are tracked. The
         // ledger owner must identify disposal, regardless of HashMap order.
         let aborted = select_aborted_owner_in_file(&work_items_path, &aborted);
-        let aborted_event_id = aborted.as_ref().map(|workflow| workflow.event_id.clone());
-        let aborted_trace_id = aborted.as_ref().map(|workflow| workflow.trace_id.clone());
+        let aborted_work_item_id =
+            aborted_work_item_id(&work_items_path, aborted.as_ref()).unwrap_or_default();
         let (detail, event, waiting_cycles) = {
             let mut guard = lock_store_exclusive(&campaigns_path)?;
             let campaign = guard
@@ -774,6 +836,7 @@ pub(super) async fn cancel(
                     Response::new(CancelCampaignResponse {
                         campaign: Some(campaign_to_detail(campaign)),
                         event_id: String::new(),
+                        aborted_work_item_id: String::new(),
                     }),
                     Vec::new(),
                 ));
@@ -799,19 +862,12 @@ pub(super) async fn cancel(
                 }
             };
 
-            let payload = Event::serialize_payload(&CampaignCancelledPayload {
-                terminal: CampaignTerminalPayload {
-                    campaign: campaign.name.clone(),
-                    project: campaign.project.clone(),
-                    reason,
-                    cycles_completed: campaign.cycles_completed,
-                    cycles_landed: campaign.cycles_landed,
-                },
-                terminated_now: req.terminate_now,
-                discard_work: req.discard_work,
-                aborted_event_id,
-                aborted_trace_id,
-            })
+            let payload = Event::serialize_payload(&cancelled_payload(
+                campaign,
+                reason,
+                &req,
+                aborted.as_ref(),
+            ))
             .map_err(|e| {
                 Status::internal(format!("failed to serialize cancellation payload: {e}"))
             })?;
@@ -841,6 +897,7 @@ pub(super) async fn cancel(
             Response::new(CancelCampaignResponse {
                 campaign: Some(detail),
                 event_id,
+                aborted_work_item_id,
             }),
             waiting_cycles,
         ))

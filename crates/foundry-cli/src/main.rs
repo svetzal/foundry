@@ -463,11 +463,14 @@ enum CampaignCommands {
         name: String,
         #[arg(long)]
         reason: String,
-        /// Terminate the in-flight cycle immediately, killing the running agent
+        /// Terminate the in-flight cycle immediately, killing the running agent.
+        /// Its work is committed and preserved, and its work item stays
+        /// `preserved` in `foundry queue open` until you resume or close it
         #[arg(long)]
         now: bool,
-        /// Throw away the terminated cycle's uncommitted work instead of preserving it
-        /// (requires --now)
+        /// Throw away the terminated cycle's work instead of keeping it: the
+        /// cycle's work item settles `cancelled` and its worktree and branch
+        /// are removed (requires --now)
         #[arg(long)]
         discard_work: bool,
     },

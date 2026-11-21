@@ -173,6 +173,7 @@ fn request(name: &str, terminate_now: bool, discard_work: bool) -> CancelCampaig
         reason: "abandoned in favour of a different approach".to_string(),
         terminate_now,
         discard_work,
+        operator_origin: "max-headroom".to_string(),
     }
 }
 
@@ -216,6 +217,12 @@ async fn cancel_dispatches_a_traceable_root_carrying_the_disposition() {
     assert_eq!(payload.terminal.cycles_completed, 3);
     assert_eq!(payload.terminal.cycles_landed, 2);
     assert_eq!(payload.terminal.reason, "abandoned in favour of a different approach");
+    assert_eq!(
+        payload.operator_origin.as_deref(),
+        Some("max-headroom"),
+        "who cancelled is carried to disposal"
+    );
+    assert!(response.aborted_work_item_id.is_empty(), "nothing was in flight to abort");
 }
 
 #[tokio::test]
@@ -291,6 +298,7 @@ async fn cancel_rejects_empty_reason_unknown_campaign_and_completed_campaign() {
             reason: "   ".to_string(),
             terminate_now: false,
             discard_work: false,
+            operator_origin: String::new(),
         })
         .await
         .expect_err("an empty reason must be refused");

@@ -236,6 +236,7 @@ foundry campaign decide <name> --decision "Keep the current design." --add-cycle
 foundry campaign edit <name> --done-evidence <evidence.json> --reason "The grep matched a timeout class name."
 foundry campaign complete <name> --reason "Production evidence confirms the mission shipped."
 foundry campaign cancel <name> --reason "Superseded by the new architecture."
+foundry campaign cancel <name> --reason "Wrong approach." --now
 foundry campaign cancel <name> --reason "Wrong approach." --now --discard-work
 foundry campaign resume <name>
 foundry campaign resume <name> --add-cycles 2

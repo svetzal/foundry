@@ -297,6 +297,12 @@ foundry campaign cancel <name> --reason "Superseded." [--now] [--discard-work]
 foundry campaign resume <name> [--add-cycles N]
 ```
 
+`campaign cancel --now` kills the in-flight cycle but keeps its work: the
+cycle's item settles `preserved` (`failed` if preserving failed) and stays in
+`foundry queue open` until the owner runs `queue resume <id>` or
+`queue close <id>`. Only `--now --discard-work` throws the work away. The
+campaign is cancelled either way, and the command prints the cycle's item.
+
 `foundry campaign show <name>` prints the campaign; for an escalated campaign,
 an `Escalation:` block with the reason (and the task agent's question and
 choices when a task asked one); `Owner options:` with the command lines the

@@ -47,6 +47,9 @@ use super::work_ledger::{ledger_lock, load_ledger, save_ledger};
 ///   campaign's terminal reason. A graceful cancellation lets the in-flight
 ///   cycle finish; that cycle's own `work_item_settled` finds the campaign
 ///   already terminal in the campaign store and settles it then.
+/// - A cycle `campaign cancel --now` aborted and kept (see
+///   [`WorkItem::kept_by_campaign_cancel`]) is never settled here: its owner
+///   resumes or closes it.
 ///
 /// Items without a recorded campaign identity, other campaigns' items and settled
 /// items are never touched. The decision and the write happen in one pass
@@ -225,7 +228,9 @@ fn settle_campaign_cycles(
         let Some(role) = role_of(item, campaign, project) else {
             continue;
         };
-        if !item.state.is_open() {
+        // A cycle `campaign cancel --now` kept is the owner's to resume or
+        // close, not the campaign's to carry or end.
+        if !item.state.is_open() || item.kept_by_campaign_cancel() {
             continue;
         }
         let moved_past = |carried_by: u64, submitted_at: UtcDateTime, carrier_id: &str| match role {

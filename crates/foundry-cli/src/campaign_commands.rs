@@ -17,8 +17,8 @@ use foundry_sdk::time::UtcDateTime;
 use crate::daemon::{connect_daemon_required, status_to_anyhow};
 use crate::proto::{
     AddCampaignRequest, AdvanceCampaignRequest, CancelCampaignRequest, CompleteCampaignRequest,
-    DecideCampaignRequest, EditCampaignRequest, GetCampaignRequest, ListCampaignsRequest,
-    PauseCampaignRequest, ResumeCampaignRequest, WatchRequest,
+    DecideCampaignRequest, EditCampaignRequest, GetCampaignRequest, GetWorkItemRequest,
+    ListCampaignsRequest, PauseCampaignRequest, ResumeCampaignRequest, WatchRequest,
 };
 use crate::render;
 use crate::workflow_commands::WorkflowRunner;
@@ -527,19 +527,94 @@ pub async fn cancel_and_render(
 
     let mut client =
         connect_daemon_required(addr, &campaign_offline_hint(&format!("cancel {name}"))).await?;
-    let detail = client
+    // The aborted cycle's disposal settles its item after the RPC returns, so
+    // `--now` watches for that settlement. The watch opens before the cancel
+    // so the settlement cannot slip past between the two.
+    let mut settlements = if terminate_now {
+        let project = client
+            .get_campaign(GetCampaignRequest {
+                name: name.to_string(),
+            })
+            .await
+            .map_err(status_to_anyhow)?
+            .into_inner()
+            .campaign
+            .ok_or_else(|| anyhow::anyhow!("daemon returned no campaign in GetCampaignResponse"))?
+            .project;
+        let mut watch_client = crate::daemon::connect(addr).await?;
+        Some(watch_client.watch(WatchRequest { project }).await?.into_inner())
+    } else {
+        None
+    };
+    let response = client
         .cancel_campaign(CancelCampaignRequest {
             name: name.to_string(),
             reason: reason.to_string(),
             terminate_now,
             discard_work,
+            operator_origin: crate::origin::local_operator_origin(None),
         })
         .await
         .map_err(status_to_anyhow)?
-        .into_inner()
+        .into_inner();
+    let detail = response
         .campaign
         .ok_or_else(|| anyhow::anyhow!("daemon returned no campaign in CancelCampaignResponse"))?;
-    Ok(render::campaign::campaign_detail_proto(&detail))
+    let mut output = render::campaign::campaign_detail_proto(&detail);
+    let aborted = response.aborted_work_item_id;
+    if let Some(stream) = settlements.as_mut()
+        && !aborted.is_empty()
+    {
+        output.push('\n');
+        let settled =
+            tokio::time::timeout(CYCLE_SETTLEMENT_WAIT, await_settlement(stream, &aborted)).await;
+        match settled {
+            Ok(Ok(())) => {
+                let item = client
+                    .get_work_item(GetWorkItemRequest {
+                        id: aborted.clone(),
+                    })
+                    .await
+                    .map_err(status_to_anyhow)?
+                    .into_inner()
+                    .item
+                    .with_context(|| {
+                        format!("daemon returned no record for work item '{aborted}'")
+                    })?;
+                output.push_str(&render::queue::cancelled_cycle(&item));
+            }
+            Ok(Err(error)) => return Err(error),
+            Err(_elapsed) => output.push_str(&render::queue::cancelled_cycle_pending(&aborted)),
+        }
+    }
+    Ok(output)
+}
+
+/// How long `campaign cancel --now` waits for the aborted cycle's disposal to
+/// settle its item. Disposal commits and pushes the cycle's work, so it takes
+/// as long as one push; past this the CLI names the item and stops waiting.
+const CYCLE_SETTLEMENT_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Read `stream` until a lifecycle event settles work item `id`.
+async fn await_settlement(
+    stream: &mut tonic::Streaming<crate::proto::WatchResponse>,
+    id: &str,
+) -> Result<()> {
+    while let Some(event) = stream.message().await? {
+        if settles_item(&event, id) {
+            return Ok(());
+        }
+    }
+    bail!("the daemon closed the event stream before work item {id} settled")
+}
+
+/// Whether `event` is the settlement of work item `id`: the
+/// `work_item_settled` of a cycle kept open, or the `work_item_cancelled` of
+/// one discarded.
+fn settles_item(event: &crate::proto::WatchResponse, id: &str) -> bool {
+    matches!(event.event_type.as_str(), "work_item_settled" | "work_item_cancelled")
+        && serde_json::from_str::<serde_json::Value>(&event.payload_json)
+            .is_ok_and(|payload| payload["item_id"] == id)
 }
 
 /// Direct-store cancellation for when the daemon is unreachable.
@@ -1905,6 +1980,20 @@ mod tests {
             span_id: String::new(),
             parent_span_id: String::new(),
         }
+    }
+
+    #[test]
+    fn a_cancel_waits_only_for_its_own_cycles_settlement() {
+        let event = |event_type: &str, item: &str| crate::proto::WatchResponse {
+            event_type: event_type.to_string(),
+            payload_json: serde_json::json!({ "item_id": item }).to_string(),
+            ..watched(event_type, "t")
+        };
+        assert!(super::settles_item(&event("work_item_settled", "wi_kept"), "wi_kept"));
+        assert!(super::settles_item(&event("work_item_cancelled", "wi_kept"), "wi_kept"));
+        assert!(!super::settles_item(&event("work_item_settled", "wi_other"), "wi_kept"));
+        assert!(!super::settles_item(&event("work_item_disposed", "wi_kept"), "wi_kept"));
+        assert!(!super::settles_item(&event("campaign_cancelled", "wi_kept"), "wi_kept"));
     }
 
     #[test]

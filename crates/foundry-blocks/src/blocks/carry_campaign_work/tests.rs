@@ -199,6 +199,7 @@ fn cancelled(reason: &str, terminated_now: bool) -> Event {
             discard_work: false,
             aborted_event_id: None,
             aborted_trace_id: None,
+            operator_origin: None,
         })
         .unwrap(),
     )
@@ -416,6 +417,39 @@ async fn a_graceful_cancel_settles_the_in_flight_cycle_when_it_finishes() {
         "campaign transient-recovery cancelled: owner stopped",
     );
     assert_announced(&events, &[&finished], &ledger);
+}
+
+/// `campaign cancel --now` without `--discard-work` keeps the aborted cycle
+/// for its owner. Neither the campaign's terminal event nor the kept cycle's
+/// own settlement may close it, whichever reaches this block first.
+#[tokio::test]
+async fn a_cycle_kept_by_cancel_now_stays_open_through_the_terminal_sweep() {
+    let earlier = cycle("wi_1", 1, WorkItemState::Preserved, 10);
+    let mut kept = cycle("wi_2", 2, WorkItemState::Running, 20);
+    kept.settle_kept_by_campaign_cancel(
+        WorkItemState::Preserved,
+        "campaign transient-recovery cancelled: wrong approach",
+        cycle("wi_2", 2, WorkItemState::Preserved, 20).disposition,
+        "max-headroom".into(),
+        start(),
+    );
+    let mut stopped = campaign(CampaignStatus::Active);
+    assert_eq!(stopped.cancel("wrong approach", start()).unwrap(), Transition::Applied);
+    let fixture = Fixture::new(&[earlier.clone(), kept.clone()], stopped);
+
+    let events = fixture.run(&cancelled("wrong approach", true)).await;
+    let ledger = fixture.ledger();
+    assert_settled(
+        ledger.find(&earlier.id).unwrap(),
+        &earlier,
+        "carried forward by campaign transient-recovery cycle 2 (wi_2)",
+    );
+    assert_announced(&events, &[&earlier], &ledger);
+    assert_eq!(ledger.find(&kept.id), Some(&kept));
+
+    let events = fixture.run(&lifecycle(EventType::WorkItemSettled, &kept)).await;
+    assert!(events.is_empty(), "{events:?}");
+    assert_eq!(fixture.ledger().find(&kept.id), Some(&kept));
 }
 
 #[tokio::test]
