@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.63.0] - 2026-11-21
+
 ### Changed
 
 - A task whose work may land no longer pushes its `foundry-task/*` branch to
