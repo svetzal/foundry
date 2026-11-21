@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.62.0] - 2026-11-21
+
 ### Fixed
 
 - No Foundry commit stages a path under `.foundry/` any more, whatever the
