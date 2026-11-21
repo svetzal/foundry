@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.60.0] - 2026-11-21
+
 ### Added
 
 - A nightly run in which most projects fail with the same agent cause is
