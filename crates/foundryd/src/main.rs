@@ -14,6 +14,7 @@ use foundry_sdk::agent_config::AgentConfigStore;
 use foundry_sdk::sentinel::{SentinelStore, merge_default_seed_into};
 
 mod ci_watch;
+mod cron_schedule;
 mod instance_lock;
 mod legacy_event_check;
 mod orchestrator;

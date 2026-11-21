@@ -13,8 +13,9 @@
 //!
 //! 1. Read the [`SentinelStore`] (briefly — drop the lock before awaiting).
 //! 2. For each enabled sentinel, compute its next firing in the local
-//!    timezone via the standard 5-field cron expression (auto-padded to the
-//!    6-field shape the `cron` crate expects).
+//!    timezone via its cron expression ([`crate::cron_schedule`]). The local
+//!    timezone is the system one: `TZ` when set (production sets
+//!    `TZ=America/Toronto`), otherwise the host configuration.
 //! 3. Pick the soonest deadline and every sentinel due at that instant.
 //! 4. `tokio::select!` between sleeping until that deadline and a reload
 //!    `Notify`. On fire, hand the event to the configured emit callback.
@@ -26,18 +27,18 @@
 //! starts at 05:00, the next firing is the *next* 02:00 — not the missed
 //! one. This is documented in `book/src/guide/sentinels.md`.
 
-use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
 use anyhow::{Result, anyhow};
-use chrono::{DateTime, Local};
-use cron::Schedule as CronSchedule;
+use jiff::ZonedDateTime;
 use tokio::sync::Notify;
 use tracing::{info, warn};
 
 use foundry_sdk::event::{Event, mint_span_id, mint_trace_id};
 use foundry_sdk::sentinel::{Schedule as SentinelSchedule, SentinelEntry, SentinelStore};
 use foundry_sdk::work_source::WorkSource;
+
+use crate::cron_schedule::CronSchedule;
 
 /// Fire-and-forget hook for handing a freshly-built root event to whatever
 /// machinery actually runs it. In production this calls
@@ -46,11 +47,11 @@ pub type EmitFn = Arc<dyn Fn(Event) + Send + Sync + 'static>;
 
 /// Source of the current local-timezone wall-clock time. Indirected so tests
 /// can pin a deterministic "now" without touching the global clock.
-pub type ClockFn = Arc<dyn Fn() -> DateTime<Local> + Send + Sync + 'static>;
+pub type ClockFn = Arc<dyn Fn() -> ZonedDateTime + Send + Sync + 'static>;
 
-/// Default clock — returns the real `chrono::Local::now()`.
+/// Default clock: the current time in the system time zone.
 fn system_clock() -> ClockFn {
-    Arc::new(Local::now)
+    Arc::new(ZonedDateTime::now)
 }
 
 /// The scheduler. Owns shared references to the sentinel store and a reload
@@ -85,7 +86,7 @@ impl Scheduler {
         info!("scheduler started");
         loop {
             let now = (self.clock)();
-            let next = compute_next_firings(&self.store, now);
+            let next = compute_next_firings(&self.store, &now);
 
             match next {
                 None => {
@@ -93,8 +94,10 @@ impl Scheduler {
                     self.reload.notified().await;
                 }
                 Some(NextFirings { entries, fire_at }) => {
-                    let wait =
-                        (fire_at - now).to_std().unwrap_or(std::time::Duration::from_secs(0));
+                    let wait = std::time::Duration::try_from(
+                        fire_at.timestamp().duration_since(now.timestamp()),
+                    )
+                    .unwrap_or(std::time::Duration::ZERO);
                     let sentinel_names = entries
                         .iter()
                         .map(|entry| entry.name.as_str())
@@ -111,7 +114,7 @@ impl Scheduler {
                     tokio::select! {
                         () = tokio::time::sleep(wait) => {
                             let woke_at = (self.clock)();
-                            if !sleep_reached_deadline(woke_at, fire_at) {
+                            if !sleep_reached_deadline(&woke_at, &fire_at) {
                                 // TODO: Replace this defensive guard with a scheduler design that
                                 // tracks claimed scheduled instants explicitly instead of relying on
                                 // recomputing cron after a timer wake.
@@ -149,12 +152,12 @@ impl Scheduler {
 #[derive(Debug, Clone)]
 struct NextFirings {
     entries: Vec<SentinelEntry>,
-    fire_at: DateTime<Local>,
+    fire_at: ZonedDateTime,
 }
 
 fn compute_next_firings(
     store: &Arc<RwLock<SentinelStore>>,
-    now: DateTime<Local>,
+    now: &ZonedDateTime,
 ) -> Option<NextFirings> {
     let snapshot: Vec<SentinelEntry> = {
         let guard = match foundry_sdk::error::read_lock(store, "sentinel store") {
@@ -173,7 +176,7 @@ fn compute_next_firings(
 }
 
 /// Pure helper: choose every entry due at the soonest firing instant.
-fn next_firings_among(entries: &[SentinelEntry], now: DateTime<Local>) -> Option<NextFirings> {
+fn next_firings_among(entries: &[SentinelEntry], now: &ZonedDateTime) -> Option<NextFirings> {
     let mut best: Option<NextFirings> = None;
     for entry in entries {
         match next_firing_for(&entry.schedule, now) {
@@ -207,35 +210,20 @@ fn next_firings_among(entries: &[SentinelEntry], now: DateTime<Local>) -> Option
     best
 }
 
-fn sleep_reached_deadline(woke_at: DateTime<Local>, fire_at: DateTime<Local>) -> bool {
+fn sleep_reached_deadline(woke_at: &ZonedDateTime, fire_at: &ZonedDateTime) -> bool {
     woke_at >= fire_at
 }
 
 /// Pure helper: compute the next firing for a given schedule after `now`.
-fn next_firing_for(schedule: &SentinelSchedule, now: DateTime<Local>) -> Result<DateTime<Local>> {
+fn next_firing_for(schedule: &SentinelSchedule, now: &ZonedDateTime) -> Result<ZonedDateTime> {
     match schedule {
         SentinelSchedule::Cron(expr) => {
-            let canonical = expand_to_six_field(expr);
-            let parsed = CronSchedule::from_str(&canonical)
-                .map_err(|e| anyhow!("invalid cron expression '{expr}': {e}"))?;
+            let parsed: CronSchedule =
+                expr.parse().map_err(|e| anyhow!("invalid cron expression '{expr}': {e}"))?;
             parsed
-                .after(&now)
-                .next()
+                .next_after(now)
                 .ok_or_else(|| anyhow!("cron expression '{expr}' produced no future firings"))
         }
-    }
-}
-
-/// The `cron` crate expects 6 fields (`sec min hour dom month dow`); standard
-/// cron is 5 fields (`min hour dom month dow`). Prepend `"0"` for seconds
-/// when a 5-field expression is given so users can paste vanilla cron.
-fn expand_to_six_field(expr: &str) -> String {
-    let trimmed = expr.trim();
-    let field_count = trimmed.split_whitespace().count();
-    if field_count == 5 {
-        format!("0 {trimmed}")
-    } else {
-        trimmed.to_string()
     }
 }
 
@@ -264,18 +252,23 @@ fn build_event(entry: &SentinelEntry) -> Event {
 mod tests {
     use std::sync::Mutex;
 
-    use chrono::TimeZone;
     use foundry_sdk::event::EventType;
     use foundry_sdk::sentinel::{EmitSpec, Schedule, SentinelEntry, SentinelStore};
     use foundry_sdk::throttle::Throttle;
 
     use super::*;
 
-    fn at(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> DateTime<Local> {
-        Local
-            .with_ymd_and_hms(year, month, day, hour, minute, 0)
-            .single()
-            .expect("constructable local time")
+    /// A wall-clock time in the production sentinel zone. Tests pin the zone
+    /// rather than reading the host's, so they pass on any machine.
+    fn at(year: i16, month: i8, day: i8, hour: i8, minute: i8) -> ZonedDateTime {
+        jiff::civil::date(year, month, day)
+            .at(hour, minute, 0, 0)
+            .to_zoned_datetime(toronto())
+            .expect("constructable Toronto time")
+    }
+
+    fn toronto() -> jiff::tz::TimeZone {
+        jiff::tz::TimeZone::get("America/Toronto").expect("tzdb has America/Toronto")
     }
 
     fn entry(name: &str, cron: &str, enabled: bool) -> SentinelEntry {
@@ -293,46 +286,27 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // expand_to_six_field
-    // ---------------------------------------------------------------------
-
-    #[test]
-    fn expand_pads_five_field_with_leading_zero() {
-        assert_eq!(expand_to_six_field("0 2 * * *"), "0 0 2 * * *");
-    }
-
-    #[test]
-    fn expand_leaves_six_field_alone() {
-        assert_eq!(expand_to_six_field("30 0 2 * * *"), "30 0 2 * * *");
-    }
-
-    #[test]
-    fn expand_trims_whitespace_before_counting_fields() {
-        assert_eq!(expand_to_six_field("  0 2 * * *  "), "0 0 2 * * *");
-    }
-
-    // ---------------------------------------------------------------------
     // next_firing_for
     // ---------------------------------------------------------------------
 
     #[test]
     fn next_firing_for_daily_02_when_now_is_01() {
         let now = at(2026, 5, 27, 1, 0);
-        let fire = next_firing_for(&Schedule::Cron("0 2 * * *".to_string()), now).unwrap();
+        let fire = next_firing_for(&Schedule::Cron("0 2 * * *".to_string()), &now).unwrap();
         assert_eq!(fire, at(2026, 5, 27, 2, 0));
     }
 
     #[test]
     fn next_firing_for_daily_02_when_now_is_03_rolls_to_next_day() {
         let now = at(2026, 5, 27, 3, 0);
-        let fire = next_firing_for(&Schedule::Cron("0 2 * * *".to_string()), now).unwrap();
+        let fire = next_firing_for(&Schedule::Cron("0 2 * * *".to_string()), &now).unwrap();
         assert_eq!(fire, at(2026, 5, 28, 2, 0));
     }
 
     #[test]
     fn next_firing_for_accepts_six_field_expression_directly() {
         let now = at(2026, 5, 27, 1, 0);
-        let fire = next_firing_for(&Schedule::Cron("0 0 2 * * *".to_string()), now).unwrap();
+        let fire = next_firing_for(&Schedule::Cron("0 0 2 * * *".to_string()), &now).unwrap();
         assert_eq!(fire, at(2026, 5, 27, 2, 0));
     }
 
@@ -340,7 +314,7 @@ mod tests {
     fn next_firing_for_invalid_cron_returns_error() {
         let now = at(2026, 5, 27, 1, 0);
         let err =
-            next_firing_for(&Schedule::Cron("definitely not cron".to_string()), now).unwrap_err();
+            next_firing_for(&Schedule::Cron("definitely not cron".to_string()), &now).unwrap_err();
         assert!(err.to_string().contains("invalid cron"));
     }
 
@@ -351,7 +325,7 @@ mod tests {
     #[test]
     fn next_firings_among_returns_none_for_empty_input() {
         let now = at(2026, 5, 27, 1, 0);
-        assert!(next_firings_among(&[], now).is_none());
+        assert!(next_firings_among(&[], &now).is_none());
     }
 
     #[test]
@@ -359,7 +333,7 @@ mod tests {
         let now = at(2026, 5, 27, 1, 0);
         let earlier = entry("earlier", "0 2 * * *", true); // 02:00
         let later = entry("later", "0 9 * * *", true); // 09:00
-        let result = next_firings_among(&[later.clone(), earlier.clone()], now).unwrap();
+        let result = next_firings_among(&[later.clone(), earlier.clone()], &now).unwrap();
         assert_eq!(result.entries.len(), 1);
         assert_eq!(result.entries[0].name, "earlier");
         assert_eq!(result.fire_at, at(2026, 5, 27, 2, 0));
@@ -371,10 +345,34 @@ mod tests {
         let first = entry("first", "0 6 * * *", true);
         let second = entry("second", "0 */3 * * *", true);
         let later = entry("later", "0 9 * * *", true);
-        let result = next_firings_among(&[first, later, second], now).unwrap();
+        let result = next_firings_among(&[first, later, second], &now).unwrap();
         let names = result.entries.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>();
         assert_eq!(names, vec!["first", "second"]);
         assert_eq!(result.fire_at, at(2026, 5, 27, 6, 0));
+    }
+
+    #[test]
+    fn nightly_fires_at_three_daylight_time_on_the_spring_forward_day() {
+        // 2027-03-14: Toronto clocks jump from 02:00 EST to 03:00 EDT. The
+        // chrono build resolved 02:00 with the old offset and fired at the
+        // transition instant, 03:00 EDT; this build keeps that.
+        let now = at(2027, 3, 14, 1, 0);
+        let nightly = entry("nightly-maintenance", "0 2 * * *", true);
+        let result = next_firings_among(&[nightly], &now).unwrap();
+        assert_eq!(result.fire_at.to_string(), "2027-03-14T03:00:00-04:00[America/Toronto]");
+        assert_eq!(result.fire_at.timestamp().duration_since(now.timestamp()).as_mins(), 60);
+    }
+
+    #[test]
+    fn nightly_fires_once_at_two_standard_time_on_the_fall_back_day() {
+        // 2026-11-01: 01:00-01:59 repeats, 02:00 happens once, in EST. From
+        // 01:30 EDT the nightly is 90 real minutes away, not 30.
+        let now = at(2026, 11, 1, 1, 30);
+        assert_eq!(now.offset().seconds(), -4 * 3600, "01:30 resolves to its EDT occurrence");
+        let nightly = entry("nightly-maintenance", "0 2 * * *", true);
+        let result = next_firings_among(&[nightly], &now).unwrap();
+        assert_eq!(result.fire_at.to_string(), "2026-11-01T02:00:00-05:00[America/Toronto]");
+        assert_eq!(result.fire_at.timestamp().duration_since(now.timestamp()).as_mins(), 90);
     }
 
     #[test]
@@ -382,7 +380,7 @@ mod tests {
         let now = at(2026, 5, 27, 1, 0);
         let bad = entry("broken", "not a cron", true);
         let good = entry("good", "0 2 * * *", true);
-        let result = next_firings_among(&[bad, good], now).unwrap();
+        let result = next_firings_among(&[bad, good], &now).unwrap();
         assert_eq!(result.entries[0].name, "good");
     }
 
@@ -390,7 +388,7 @@ mod tests {
     fn next_firings_among_returns_none_when_all_invalid() {
         let now = at(2026, 5, 27, 1, 0);
         let bad = entry("bad", "not a cron", true);
-        assert!(next_firings_among(&[bad], now).is_none());
+        assert!(next_firings_among(&[bad], &now).is_none());
     }
 
     // ---------------------------------------------------------------------
@@ -408,7 +406,7 @@ mod tests {
         };
         let store = Arc::new(RwLock::new(store));
         let now = at(2026, 5, 27, 1, 0);
-        let result = compute_next_firings(&store, now).unwrap();
+        let result = compute_next_firings(&store, &now).unwrap();
         assert_eq!(result.entries[0].name, "enabled-later");
     }
 
@@ -420,7 +418,7 @@ mod tests {
         };
         let store = Arc::new(RwLock::new(store));
         let now = at(2026, 5, 27, 1, 0);
-        assert!(compute_next_firings(&store, now).is_none());
+        assert!(compute_next_firings(&store, &now).is_none());
     }
 
     // ---------------------------------------------------------------------
@@ -462,31 +460,32 @@ mod tests {
         (sink, captured)
     }
 
-    fn fixed_clock(t: DateTime<Local>) -> ClockFn {
-        Arc::new(move || t)
+    fn fixed_clock(t: ZonedDateTime) -> ClockFn {
+        Arc::new(move || t.clone())
     }
 
-    fn mutable_clock(t: DateTime<Local>) -> (ClockFn, Arc<Mutex<DateTime<Local>>>) {
+    fn mutable_clock(t: ZonedDateTime) -> (ClockFn, Arc<Mutex<ZonedDateTime>>) {
         let current = Arc::new(Mutex::new(t));
         let clock_current = Arc::clone(&current);
-        let clock: ClockFn = Arc::new(move || *clock_current.lock().expect("clock lock poisoned"));
+        let clock: ClockFn =
+            Arc::new(move || clock_current.lock().expect("clock lock poisoned").clone());
         (clock, current)
     }
 
-    fn set_clock(clock: &Arc<Mutex<DateTime<Local>>>, t: DateTime<Local>) {
+    fn set_clock(clock: &Arc<Mutex<ZonedDateTime>>, t: ZonedDateTime) {
         *clock.lock().expect("clock lock poisoned") = t;
     }
 
     #[test]
     fn sleep_reached_deadline_rejects_early_wake() {
-        assert!(!sleep_reached_deadline(at(2026, 5, 27, 1, 59), at(2026, 5, 27, 2, 0)));
+        assert!(!sleep_reached_deadline(&at(2026, 5, 27, 1, 59), &at(2026, 5, 27, 2, 0)));
     }
 
     #[test]
     fn sleep_reached_deadline_accepts_boundary_or_later_wake() {
         let fire_at = at(2026, 5, 27, 2, 0);
-        assert!(sleep_reached_deadline(fire_at, fire_at));
-        assert!(sleep_reached_deadline(at(2026, 5, 27, 2, 1), fire_at));
+        assert!(sleep_reached_deadline(&fire_at, &fire_at));
+        assert!(sleep_reached_deadline(&at(2026, 5, 27, 2, 1), &fire_at));
     }
 
     #[tokio::test(start_paused = true)]

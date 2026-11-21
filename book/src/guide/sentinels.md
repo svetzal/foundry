@@ -122,7 +122,7 @@ is overridable via `FOUNDRY_SENTINELS_PATH`.
 
 ## Schedule format
 
-Slice 1 supports a single schedule kind, `cron`, taking a standard 5-field
+Slice 1 supports a single schedule kind, `cron`, taking a 5-field
 expression evaluated in **local time**:
 
 ```
@@ -135,20 +135,43 @@ Examples:
 |---|---|
 | `0 2 * * *` | Every day at 02:00 local |
 | `*/30 * * * *` | Every 30 minutes |
-| `0 9 * * 1` | Every Monday at 09:00 local |
-| `0 17 * * 1-5` | 17:00 on weekdays |
+| `0 9 * * 1` | Every **Sunday** at 09:00 local |
+| `0 17 * * 2-6` | 17:00 Monday to Friday |
 
-Six-field expressions (`second minute hour dom month dow`) are also accepted
-verbatim; five-field expressions are auto-padded with a leading `0` for
-seconds. The schedule shape is an externally-tagged enum
-(`{"cron": "..."}`) so future kinds (`interval`, `event_silence`) can be
-added without breaking the existing wire format.
+Each field takes `*`, a number, a range (`1-5`), a list (`1,15`) or a step
+(`*/15`, `10-50/10`, `5/15`, which runs from 5 to the field maximum).
+Day-of-month and day-of-week also take `?`, which is the same as `*`.
+Months take names (`jan`, `january`) and day-of-week takes day names
+(`sun`, `mon`, ...). Upper and lower case are the same.
+
+Two rules differ from the cron in most Unix systems. They are kept from the
+`cron` crate that Foundry used before 0.60, so existing sentinels fire as
+they always did:
+
+- **Day-of-week runs 1 to 7, with 1 = Sunday and 7 = Saturday.** 0 is not
+  accepted. Use names (`mon-fri`) to prevent confusion.
+- **Day-of-month and day-of-week must match together.** `0 9 1 * 2` fires only
+  on a 1st of the month that is a Monday.
+
+Six-field expressions (`second minute hour dom month dow`) are also accepted.
+Five-field expressions have second `0`. Seven-field expressions (with a year)
+and shorthands such as `@daily` are not accepted. The schedule shape is an
+externally-tagged enum (`{"cron": "..."}`) so future kinds (`interval`,
+`event_silence`) can be added without breaking the existing wire format.
 
 ## Defaults you should know about
 
 - **Time zone is local.** A cron expression of `0 2 * * *` means 02:00
-  wherever the daemon is running, not 02:00 UTC. This matches how the
-  launchd plist behaved.
+  wherever the daemon is running, not 02:00 UTC. The daemon reads the zone
+  from `TZ` when it is set, otherwise from the host configuration. The
+  production daemon on mojility-ops-01 runs on a UTC host with
+  `TZ=America/Toronto` in its service environment, so its nightly fires at
+  02:00 Toronto time.
+- **Daylight saving time.** On the spring-forward day, the first second of
+  the skipped hour fires at the moment of the change: in Toronto, `0 2 * * *`
+  fires at 03:00 EDT. Later times inside the skipped hour (`30 2 * * *`) do
+  not fire that day. On the fall-back day, a time in the repeated hour fires
+  once, at its second (standard-time) occurrence.
 - **Catch-up policy is "skip missed firings."** If the daemon was down at
   02:00 and starts at 05:00, the next firing is the *next* 02:00. Sentinels
   intentionally never play catch-up on miss — workflows like maintenance
