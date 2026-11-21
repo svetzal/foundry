@@ -279,6 +279,7 @@ async fn main() -> Result<()> {
     spawn_scheduler(&ctx, &sentinels, &scheduler_reload);
     let (pacing, pacing_wake) = spawn_pacing(&ctx);
     spawn_trunk_ci_watcher(&ctx);
+    spawn_evidence_pruner();
 
     let service = service::FoundryService::new(
         ctx,
@@ -689,6 +690,47 @@ fn spawn_trunk_ci_watcher(ctx: &service::RuntimeContext) {
         )
         .run(),
     );
+}
+
+/// Prune the evidence store at start-up and every
+/// [`EVIDENCE_PRUNE_INTERVAL`](foundry_blocks::evidence_retention::EVIDENCE_PRUNE_INTERVAL),
+/// deleting trace directories older than `FOUNDRY_EVIDENCE_RETENTION_DAYS`
+/// that no ledger work still holds (see
+/// [`foundry_blocks::evidence_retention`]). Off when the variable is `0`.
+fn spawn_evidence_pruner() {
+    use foundry_blocks::evidence_retention::{
+        EVIDENCE_PRUNE_INTERVAL, prune_evidence_store, retention_from_env,
+    };
+    let Some(max_age) = retention_from_env() else {
+        tracing::info!("evidence retention is off; the evidence store is never pruned");
+        return;
+    };
+    let root = foundry_sdk::paths::evidence_dir();
+    let ledger = foundry_sdk::paths::work_items_path();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(EVIDENCE_PRUNE_INTERVAL);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            let (root, ledger) = (root.clone(), ledger.clone());
+            let pruned = tokio::task::spawn_blocking(move || {
+                prune_evidence_store(&root, &ledger, max_age, std::time::SystemTime::now())
+            })
+            .await;
+            match pruned {
+                Ok(Ok(report)) if report.removed > 0 => tracing::info!(
+                    removed = report.removed,
+                    bytes = report.bytes,
+                    "pruned expired evidence"
+                ),
+                Ok(Ok(_)) => {}
+                // Best-effort: the next tick retries; nothing was deleted
+                // when the ledger could not be read.
+                Ok(Err(error)) => tracing::warn!(%error, "evidence prune skipped"),
+                Err(error) => tracing::warn!(%error, "evidence prune task failed"),
+            }
+        }
+    });
 }
 
 fn spawn_scheduler(

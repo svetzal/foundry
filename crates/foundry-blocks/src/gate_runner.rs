@@ -8,6 +8,7 @@ use crate::gateway::ShellGateway;
 mod logs;
 pub mod output;
 
+pub(crate) use logs::tree_bytes;
 use logs::{CommandCapture, GateLogWriter, RunRole};
 pub use logs::{
     GATE_LOG_MAX_AGE, GATE_LOG_MAX_TOTAL_BYTES, GATE_LOG_STREAM_CAP_BYTES, RetentionPolicy,

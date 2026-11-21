@@ -382,7 +382,11 @@ worktree, `.foundry/` is Foundry scratch: nothing under it lands, except a
 deletion of a file HEAD tracks there. Finalize copies every `.foundry` file
 that did not land (new, gitignored, or an edited tracked file) to
 `~/.foundry/evidence/<trace>/<attempt>/worktree/` before cleanup and records
-the directory in the result's `uncommitted_artifacts` field. So a brief that
+the directory in the result's `uncommitted_artifacts` field. Build output
+(`target`, `coverage-target`, `_build`, `deps`, `node_modules` and similar
+directories) and files over 64 MiB are listed in `worktree-skipped.json`
+beside it instead of copied, and the daemon deletes evidence after
+`FOUNDRY_EVIDENCE_RETENTION_DAYS` (default 30). So a brief that
 wants something in the repository names a normal project path such as `docs/`
 or the test tree, and never asks repository files to cite `.foundry/` paths.
 

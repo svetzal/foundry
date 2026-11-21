@@ -233,6 +233,40 @@ maintenance summary lists low filesystems in a **Low disk** section at the
 top, and the ops digest treats low disk as a P0 anomaly (`host_disk_low`).
 Set either limit to `0` to turn the check off.
 
+### Evidence retention
+
+Finalize Task keeps each task attempt's proof and unlanded `.foundry` files in
+the evidence store, `~/.foundry/evidence/<trace-id>/<attempt>/`. Build output
+under `.foundry` is recorded there, not copied (see
+[What lands from a task](workflow-formations.md#what-lands-from-a-task)).
+
+`foundryd` deletes old evidence. At start-up and then every six hours, it
+deletes each trace directory that has had no new write for
+`FOUNDRY_EVIDENCE_RETENTION_DAYS` days (default `30`). A trace's last write is
+the newest modification time of the trace directory and its attempt
+directories, so a new attempt resets the age. Set the variable to `0` to keep
+evidence forever.
+
+The prune does not delete:
+
+- `evidence/gate-logs/`. Failed-gate logs have their own retention: 14 days
+  and at most 1 GiB in total (see
+  [Iteration Workflow](iteration-workflow.md)).
+- The trace of any work-ledger item that is queued, held, running, or still
+  finishing its cleanup. A resumed task uses its original trace, so its old
+  evidence stays while the resumption is in flight.
+- Anything when the work-item ledger cannot be read. The daemon logs a warning
+  and tries again at the next prune.
+- Files, symbolic links, and anything outside the evidence root.
+
+A task result's `proof_evidence` and `uncommitted_artifacts` paths do not
+exist after their evidence is deleted. The work item, its preserved branch or
+bundle, and the trace stay.
+
+To put the whole Foundry home, including the evidence store and the task
+worktrees, on a larger disk, set `FOUNDRY_HOME` (see
+[Getting Started](getting-started.md#where-foundry-keeps-its-state)).
+
 ### Routing Logic
 
 `Route Project Workflow` reads the `actions` flags forwarded in the

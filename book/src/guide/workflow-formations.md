@@ -215,7 +215,8 @@ each such directory with its file count and bytes, and each oversized file
 with its size, and gives the totals. Cleanup removes these files as before.
 Before this rule, gates that build under `.foundry/` (a coverage
 `CARGO_TARGET_DIR`, an integration checkout) put tens of gigabytes into the
-evidence store.
+evidence store. The daemon deletes evidence after 30 days by default; see
+[Evidence retention](maintenance-workflow.md#evidence-retention).
 
 So a task puts anything the project must keep in a normal project path, for
 example `docs/` or the test tree. Evidence under `.foundry/` lives in the

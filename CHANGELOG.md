@@ -24,6 +24,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
   honour it, and `scripts/build-linux-release.sh` points it at its temporary
   gate state so release gates never write into the production home.
   `systemd/README.md` describes how to move an existing home.
+- `foundryd` prunes the evidence store. At start-up and every six hours it
+  deletes each `~/.foundry/evidence/<trace>/` directory with no write for
+  `FOUNDRY_EVIDENCE_RETENTION_DAYS` days (default 30; `0` keeps evidence
+  forever). It never deletes `evidence/gate-logs/`, which keeps its own 14-day
+  and 1 GiB policy, nor the trace of ledger work that is queued, held, running
+  or still cleaning up, and it deletes nothing when the ledger is unreadable.
+  Until now nothing expired evidence: mojility-ops-01 held 2,893 trace
+  directories, 1,338 of them older than 30 days. The first prune after
+  upgrading deletes the backlog.
 
 ### Fixed
 

@@ -337,7 +337,7 @@ pub(crate) fn prune_gate_logs(
 }
 
 /// Total size of the files under `path`, without following symlinks.
-fn tree_bytes(path: &Path) -> std::io::Result<u64> {
+pub(crate) fn tree_bytes(path: &Path) -> std::io::Result<u64> {
     let mut total = 0;
     for entry in std::fs::read_dir(path)? {
         let entry = entry?;

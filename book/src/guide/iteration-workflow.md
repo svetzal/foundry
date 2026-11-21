@@ -117,7 +117,10 @@ Foundry prunes this directory after each write. It deletes run directories
 older than 14 days. Then, if the directory is still larger than 1 GiB, it
 deletes the oldest run directories until the total is 1 GiB or less. The prune
 only removes directories inside `evidence/gate-logs/` and never touches other
-evidence. If a log cannot be written, Foundry logs a warning and the gate
+evidence. The daemon's evidence retention (see
+[Evidence retention](maintenance-workflow.md#evidence-retention)) leaves
+`evidence/gate-logs/` alone, so this policy is the only one that applies to
+gate logs. If a log cannot be written, Foundry logs a warning and the gate
 result is unchanged, with an empty `logs` field.
 
 ### 3. Charter Validation
