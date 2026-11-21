@@ -25,6 +25,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Removed
 
+- chrono is gone from Foundry's dependency tree. foundry-cli now uses
+  cmx-core 0.5, which moved to jiff, so RUSTSEC-2026-0543 no longer applies
+  even transitively.
 - Unused dependencies: `pastey` and the `tonic-build` and `semver` workspace
   entries. `prost-types` is now a test-only dependency of `foundryd`, and the
   CLI no longer depends on it.
