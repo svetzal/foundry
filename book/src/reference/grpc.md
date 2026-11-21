@@ -1078,11 +1078,12 @@ returned by `ListWorkItemEvents`.
 | Field         | Type            | Description                                                                  |
 | ------------- | --------------- | ---------------------------------------------------------------------------- |
 | `id`          | string          | The event's own id                                                           |
-| `event_type`  | string          | `work_item_submitted`, `work_item_started`, `work_item_settled`, `work_item_cancelled`, `work_item_held`, or `work_item_released` |
+| `event_type`  | string          | `work_item_submitted`, `work_item_started`, `work_item_settled`, `work_item_cancelled`, `work_item_held`, `work_item_released`, or `work_item_disposed` |
 | `occurred_at` | string          | ISO 8601 timestamp the event occurred                                        |
 | `state`       | string          | The item's state as of this event (same vocabulary as `WorkItem.state`)      |
 | `reason`      | string          | Why it was in that state, in one line                                        |
 | `trace_id`    | optional string | The workflow trace the event was emitted on; absent when it carries none     |
+| `disposal`    | optional string | What disposal removed and left, for a landed or cancelled settlement, cancellation or disposal; absent otherwise |
 
 ### `Campaign`
 

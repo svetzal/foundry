@@ -218,9 +218,9 @@ no agent is. On every start `foundryd` settles each item still `running` as
 long-dead work as running is worse than reporting it as failed, and a failed
 item is visible in `foundry queue open` where you can decide what to do with it.
 
-## The six lifecycle events
+## The seven lifecycle events
 
-The ledger emits six events. They are the owner-specified exception to
+The ledger emits seven events. They are the owner-specified exception to
 Foundry's `*Started`/`*Completed` pairing rule.
 
 | Event | Meaning |
@@ -229,6 +229,7 @@ Foundry's `*Started`/`*Completed` pairing rule.
 | `work_item_started` | An agent started on a ledger item |
 | `work_item_settled` | A ledger item reached a settled state, with its disposition |
 | `work_item_cancelled` | An operator, or the item's own campaign, stopped a ledger item |
+| `work_item_disposed` | Foundry removed, or failed to remove, a settled item's worktree and task branches; the disposition records what was left |
 | `work_item_held` | An operator took a queued item out of the scheduler's hands |
 | `work_item_released` | An operator returned a held or dependency-blocked item to the queue, or the scheduler returned a dependency-blocked item whose dependencies landed after all |
 
@@ -462,8 +463,12 @@ writes. They record this CLI's hostname and optional `--origin` in
 `operator_action`, separately from the original submission origin. The action
 retains the previous state, reason and settlement timestamp. Submission
 identity, objective, trace and known disposition remain intact, including
-preserved refs and worktree-removal observations. No agent starts, running
-workflow stops, or preserved work is disposed of by either command.
+preserved refs and worktree-removal observations. No agent starts and no
+running workflow stops. After the cancellation, Foundry removes the item's
+worktree and its `foundry-task/*` branches, locally and on origin, unless
+another open or waiting item still owns or starts from them. Recover the work
+first if you still need it. See
+[Disposal when an item settles](work-reconciler.md#disposal-when-an-item-settles).
 
 The daemon reloads the ledger under its shared write gate and saves by atomic
 replacement before emitting `work_item_cancelled` to Watch and the durable

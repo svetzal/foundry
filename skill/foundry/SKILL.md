@@ -957,37 +957,26 @@ one blocked on a dependency before it ran, is not checked. Content containment
 changes no ref, index or worktree; it writes the merged tree as unreferenced
 loose objects, which garbage collection removes. It needs Git 2.38 or later.
 
-Once an item settles landed, Foundry deletes only its recorded task branch
-locally and its recorded preservation branch locally and on origin, best-effort.
-Each deletion requires fresh ancestry, patch-equivalence or content-containment
-proof against the registered trunk and refuses branches checked out in any worktree. A changed
-ref fails the guarded deletion. The origin deletion pushes with `--no-verify`:
-it carries no code, so the project's own pre-push hook (which may run the whole
-gate suite) does not run. Hooks on the remote still apply. Unowned refs, bundles and refs also owned by
-unlanded items in any registered project sharing the repository are retained.
-Ownership compares exact refs across repository slugs and shared Git common
-directories, including separate clones and linked worktrees. The disposition
-and settlement event retain ref names, observed commits and per-ref deletion
-results; deletion failure leaves
-the item landed. Preservation evidence for unlanded work is never deleted.
-
-A campaign forms each cycle from the previous cycle's preserved ref, and the
-earlier cycle settles `cancelled` as carried forward. When a later cycle of the
-same campaign lands, Foundry also examines the refs of every carried cycle it
-has not examined before, with the same guarded deletion. A carried cycle whose
-work the registered trunk contains loses its branch; one whose work trunk does
-not contain keeps it, and the reconciler reports it as an orphan branch. A
-cycle an owner closed or cancelled is never examined this way: its branch stays
-until a person removes it. The cycle stays `cancelled`; only its cleanup
-evidence changes.
-
-The Settle Work Item summary in the run's trace names the outcome: how many
-refs were deleted, and each retained ref with the first line of its reason. A
-retained ref is a warning there, never a failure of the run.
-Cleanup decides eligibility under the ledger write gate, releases it for all
-Git operations, then reloads under the gate to record outcomes. Concurrent
-ledger updates are retained; a changed state or ref ownership is never
-overwritten by stale cleanup evidence.
+When a work item settles, Foundry disposes of what it no longer needs. A
+landed item loses its worktree and its `foundry-task/*` branches, locally and
+on origin; each branch needs fresh proof that the registered trunk contains it.
+A cancelled item (`queue cancel`, `queue close`, a campaign carry or
+cancellation), and an item a later landing superseded through `resumes` or
+`continues`, loses the same things with no trunk proof. A preserved, open or
+waiting item keeps everything. A ref that another open or waiting item owns or
+starts from (`base_ref`) is kept until that item settles, then it goes. Only
+`refs/heads/foundry-task/*` branches and worktrees under the Foundry worktrees
+root are touched. Deletion refuses a branch a worktree has checked out and uses
+a lease on the observed commit; the origin deletion pushes with `--no-verify`.
+Ownership compares exact refs across every registered project sharing the
+repository. Disposal never fails a settlement: a missing origin or an auth
+failure is a warning, recorded on the item as what was left. A landing records
+the outcome on `work_item_settled`; a cancellation, or a ref a later settlement
+released, gets `work_item_disposed` (Dispose Cancelled Work block), and
+`foundry queue show` prints it on a second line. Disposal decides under the
+ledger write gate, releases it for Git, then reloads under the gate to record;
+a concurrent state or ref change wins over the stale result. The reconciler
+sweeps aged orphans that disposal missed (see Work reconciliation).
 
 This check runs only after actual task landing. Failed, blocked, preserved and
 no-landing task results do not trigger it. It checks only open items with a
@@ -1018,15 +1007,21 @@ landing-triggered check.
 
 `foundry queue reconcile` requires the daemon and prints that invocation's
 report; `--offline` is rejected. `foundry queue reconcile --prune-branches`
-also deletes each orphan `foundry-task/*` branch (no open or running owner),
+also deletes each orphan `foundry-task/*` branch (no open, waiting or running owner),
 local or on origin, that origin's registered branch is proved to contain, and
 reports it as `pruned_branch`. Run it without the flag first: the plain report
-lists the same orphans with their proof. The scheduled run never prunes. The canonical `work-reconciler` sentinel uses
+lists the same orphans with their proof. The scheduled run never prunes.
+Every run, scheduled or not, sweeps aged orphans: a Foundry worktree or
+`foundry-task/*` branch that no open or waiting item owns or starts from, and
+that nothing changed for `FOUNDRY_ORPHAN_SWEEP_DAYS` (default 7, `0` off), is
+removed with no trunk proof and reported as `swept_worktree` or
+`swept_branch`. A run that cannot account for a running item sweeps nothing.
+The canonical `work-reconciler` sentinel uses
 `30 */3 * * *` and pairs `work_reconcile_started` with `work_reconcile_completed`.
 Inventory reports exact IDs, paths, branch refs and registered-trunk status.
 Conservative supersession may settle open work with a preservation ref without a task landing;
-concurrent owner changes win, and preservation evidence is retained. Landed
-items receive the guarded branch cleanup described above; no agent is invoked. Errors surface as INTERNAL, and anomaly findings
+concurrent owner changes win, and preservation evidence is retained. Settled
+items receive the disposal described above; no agent is invoked. Errors surface as INTERNAL, and anomaly findings
 force ops observation below its normal volume threshold. Reports use
 `FOUNDRY_RECONCILE_DIR` (default `~/.foundry/reconcile`).
 

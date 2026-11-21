@@ -61,8 +61,9 @@ foundry queue close wi_0123456789abcdef01234567 \
   --reason "The replacement parser passed the acceptance cases on trunk"
 ```
 
-Closing records her reason and retains preserved work. It does not merge a
-branch or prove that the original task landed.
+Closing records her reason. Foundry then deletes the preserved branch, because
+no open item needs it. Closing does not merge a branch or prove that the
+original task landed.
 
 ## Leave with a smaller set of decisions
 

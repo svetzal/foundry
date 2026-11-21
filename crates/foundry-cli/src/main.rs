@@ -530,7 +530,7 @@ enum QueueCommands {
         #[arg(long)]
         origin: Option<String>,
     },
-    /// Close an open obligation without disposing of preserved work
+    /// Close an open obligation; Foundry then removes its worktree and task branches
     Close {
         id: String,
         /// Why the owner is discharging this obligation (must be nonblank)

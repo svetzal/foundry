@@ -248,8 +248,8 @@ that trace, and a `--now` cancellation settles it `cancelled` (see
 
 ## Work-Item Ledger
 
-The six events of the work-item ledger. They report the same durable record at
-different points in its life, so all six share one payload shape; the event type
+The seven events of the work-item ledger. They report the same durable record at
+different points in its life, so all seven share one payload shape; the event type
 says which point, and `state` says where the item stands.
 
 | Type                  | Description                                                    |
@@ -258,6 +258,7 @@ says which point, and `state` says where the item stands.
 | `work_item_started`   | An agent started on a ledger item                              |
 | `work_item_settled`   | A ledger item reached a settled state, with its disposition     |
 | `work_item_cancelled` | An operator stopped a ledger item                              |
+| `work_item_disposed`  | Foundry removed, or failed to remove, a settled item's worktree and task branches |
 | `work_item_held`      | An operator took a queued item out of the scheduler's hands    |
 | `work_item_released`  | An operator returned a held or dependency-blocked item to the queue |
 
@@ -266,6 +267,10 @@ says which point, and `state` says where the item stands.
 that may still hold an obligation. `work_item_cancelled` is emitted by
 `foundry queue close` and `foundry queue cancel` on the exact item's trace,
 and by `foundry campaign cancel --now` on the aborted cycle's trace.
+`work_item_disposed` follows a cancellation, and a settlement that released a
+ref another settled item owned. Its `disposition` records each removed and each
+left worktree and branch (see
+[Work reconciler](../guide/work-reconciler.md#disposal-when-an-item-settles)).
 
 **Shared payload**
 

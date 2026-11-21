@@ -188,7 +188,7 @@ Rules:
 - **Noun form for compound prefixes** — use `ProjectIterationCompleted` (noun), not `ProjectIterateCompleted` (verb).
 - **Payload boolean results use `success`** — not `passed`, `ok`, or other variants. The one exception is the `passed` field on individual gate results (where "passed" is domain-specific to gates).
 
-The work-item ledger's six event types are the owner-specified exception to
+The work-item ledger's seven event types are the owner-specified exception to
 the `*Started`/`*Completed` pairing rule:
 
 | Event | Meaning |
@@ -197,6 +197,7 @@ the `*Started`/`*Completed` pairing rule:
 | `work_item_started` | An agent started on a ledger item (for paced work, the scheduler emits it) |
 | `work_item_settled` | A ledger item reached a settled state, with its disposition |
 | `work_item_cancelled` | An operator, or the item's own campaign, stopped a ledger item |
+| `work_item_disposed` | Foundry removed, or failed to remove, a settled item's worktree and task branches; the disposition records what was left |
 | `work_item_held` | An operator took a queued item out of the scheduler's hands |
 | `work_item_released` | An operator returned a held or dependency-blocked item to the queue, or the scheduler returned a dependency-blocked item whose dependencies have all landed |
 
@@ -225,7 +226,7 @@ state that may still hold an obligation (`preserved`, `needs_decision`,
 | `foundry queue [show <id>\|open] [--source <kind>:<ref>]` | Read the work-item ledger: what is running, queued, open (needs a person, followed by every escalated campaign as its own row) and the newest 20 settled items; `--source` lists one dispatcher's items (`campaign:<name>`, `sentinel:<name>`, `operator:<host>`, `work_item:<parent id>`); `--json` and `--offline` supported. Read-only |
 | `foundry queue reconcile [--prune-branches]` | Run the canonical reconciler now through the daemon and print this invocation’s digest; no offline fallback. `--prune-branches` deletes orphan `foundry-task/*` branches origin's registered branch contains |
 | `foundry queue resume <id> [--origin <text>] [--after <id>]... [--not-before <when>]` | Resume preserved work through a linked, queued continuation; daemon required |
-| `foundry queue close <id> --reason <text> [--origin <text>]` | Discharge preserved/needs_decision/failed items via the daemon; retain preserved work |
+| `foundry queue close <id> --reason <text> [--origin <text>]` | Discharge preserved/needs_decision/failed items via the daemon; Foundry then disposes of their worktree and task branches |
 | `foundry queue cancel <id> [--origin <text>]` | Cancel submitted/queued/held items via the daemon |
 | `foundry queue hold <id> [--origin <text>]` | Take a queued item out of the scheduler's hands until released |
 | `foundry queue release <id> [--origin <text>]` | Return a held item, or one in needs_decision over a dependency, to the queue |
@@ -516,7 +517,7 @@ the settled group alone.
 | `foundry queue reconcile [--prune-branches]` | Yes | `ReconcileWork`: run now and print this invocation’s digest; rejects `--offline`; failures surface as INTERNAL; `prune_branches` deletes contained orphan branches |
 | `foundry queue open` | Yes (or `--offline`) | Renders `ListWorkItems`, open group only, then one `campaign <name> … escalated <when> <reason>` row per escalated campaign with `next: foundry campaign show <name> (<controls>)`. Escalations are campaign state, never ledger items: they come from `ListCampaigns` (offline: the campaign store plus the event-log fallback). Every escalated campaign is listed, also one with an open cycle item, and its row names that item (`(open cycle <id>)`) |
 | `foundry queue resume <id> [--origin <text>] [--after <id>]... [--not-before <when>]` | Yes | `ResumeWorkItem`: resume preserved work through a new task linked by exact `resumes` id, or an open `follow_up` through a new task from trunk that `continues` it, recorded `queued` for the scheduler; an unknown `--after` id or unparsable `--not-before` is INVALID_ARGUMENT; rejects `--offline` |
-| `foundry queue close <id> --reason <text> [--origin <text>]` | Yes | `CloseWorkItem`: settle preserved/needs_decision/failed cancelled; nonblank reason; retains prior evidence and disposition; rejects `--offline` |
+| `foundry queue close <id> --reason <text> [--origin <text>]` | Yes | `CloseWorkItem`: settle preserved/needs_decision/failed cancelled; nonblank reason; retains prior evidence and disposition; Dispose Cancelled Work then removes unheld refs and worktree; rejects `--offline` |
 | `foundry queue cancel <id> [--origin <text>]` | Yes | `CancelWorkItem`: settle submitted/queued/held cancelled with `cancelled by operator`; rejects `--offline` |
 | `foundry queue hold <id> [--origin <text>]` | Yes | `HoldWorkItem`: queued → held, reason `held by operator`; emits `work_item_held`; rejects `--offline` |
 | `foundry queue release <id> [--origin <text>]` | Yes | `ReleaseWorkItem`: held or dependency-blocked needs_decision → queued; refuses a `follow_up` and any item holding no root; drops settled dependencies; reason is the scheduler's verdict; emits `work_item_released`; rejects `--offline` |
@@ -1038,6 +1039,7 @@ Every `~/.foundry` default below is under `FOUNDRY_HOME` when that is set.
 | `FOUNDRY_MIN_FREE_DISK_GB` | `15` | A filesystem is low when its free space is under this many GB **and** under `FOUNDRY_MIN_FREE_DISK_PERCENT`. Tasks and maintenance refuse to start on a low filesystem ("insufficient disk"); the summary and the ops digest report it. `0` turns the check off. |
 | `FOUNDRY_MIN_FREE_DISK_PERCENT` | `10` | The percentage half of the low-disk test above. |
 | `FOUNDRY_SCRATCH_DIR` | set per run | Foundry sets it for each agent session to that run's scratch directory (`~/.foundry/evidence/<trace>/<attempt>/`). `foundry capture` writes logs to its `logs/` directory when no `--log-dir` is given. Do not set it yourself. |
+| `FOUNDRY_ORPHAN_SWEEP_DAYS` | `7` | Each work reconcile run removes Foundry worktrees and `foundry-task/*` branches (local, origin, stale tracking refs) that no open or waiting item owns or starts from and that nothing changed for this many days. No trunk proof. Skipped in a run that cannot account for a running item. Unparseable means the default; `0` turns the sweep off. |
 | `FOUNDRY_EVIDENCE_RETENTION_DAYS` | `30` | `foundryd` deletes evidence trace directories (`~/.foundry/evidence/<trace>/`) with no write for this many days, at start-up and every 6 hours. It never deletes `evidence/gate-logs/` (own policy: 14 days, 1 GiB) or a trace that ledger work still holds (queued, held, running, cleanup unfinished), and deletes nothing when the ledger is unreadable. Unparseable means the default; `0` turns pruning off. |
 | `FOUNDRY_GRPC_MAX_MESSAGE_MIB` | `64` | Largest gRPC message, in MiB, that `foundryd` and the `foundry` CLI send or accept (tonic's own default is 4 MiB). A whole-ledger `ListWorkItems` grows with the ledger. Set the same value on the daemon and the CLI host. Unparseable or `0` means the default. |
 | `FOUNDRY_MAJOR_TASKS_PER_PROJECT` | `2` | Most major-upgrade tasks the nightly majors lane dispatches for one project. Overflow is reported in the summary with its `foundry task` command. |
@@ -1056,18 +1058,23 @@ anomaly path. See
 `book/src/guide/work-reconciler.md`. `queue reconcile` requires the daemon;
 inspection, fetch, ledger and digest-write failures surface as gRPC INTERNAL.
 
-Once an item settles landed, Foundry deletes only its recorded task branch
-locally and its recorded preservation branch locally and on origin, best-effort.
-Each deletion requires fresh ancestry, patch-equivalence or content-containment
-proof against the registered trunk and refuses branches checked out in any worktree. A changed
-ref fails the guarded deletion. Unowned refs, bundles and refs also owned by
-unlanded items in any registered project sharing the repository are retained.
-Ownership compares exact refs across repository slugs and shared Git common
-directories, including separate clones and linked worktrees. The disposition
-and settlement event retain ref names, observed commits and per-ref deletion
-results; deletion failure leaves
-the item landed. Preservation evidence for unlanded work is never deleted.
-Cleanup decides eligibility under the ledger write gate, releases it for all
-Git operations, then reloads under the gate to record outcomes. Concurrent
-ledger updates are retained; a changed state or ref ownership is never
-overwritten by stale cleanup evidence.
+When a work item settles, Foundry disposes of what it no longer needs. A
+landed item loses its worktree and its `foundry-task/*` branches, locally and
+on origin; each branch needs fresh proof that the registered trunk contains it.
+A cancelled item (`queue cancel`, `queue close`, a campaign carry or
+cancellation), and an item a later landing superseded through `resumes` or
+`continues`, loses the same things with no trunk proof. A preserved, open or
+waiting item keeps everything. A ref that another open or waiting item owns or
+starts from (`base_ref`) is kept until that item settles, then it goes. Only
+`refs/heads/foundry-task/*` branches and worktrees under the Foundry worktrees
+root are touched. Deletion refuses a branch a worktree has checked out and uses
+a lease on the observed commit; the origin deletion pushes with `--no-verify`.
+Ownership compares exact refs across every registered project sharing the
+repository. Disposal never fails a settlement: a missing origin or an auth
+failure is a warning, recorded on the item as what was left. A landing records
+the outcome on `work_item_settled`; a cancellation, or a ref a later settlement
+released, gets `work_item_disposed` (Dispose Cancelled Work block), and
+`foundry queue show` prints it on a second line. Disposal decides under the
+ledger write gate, releases it for Git, then reloads under the gate to record;
+a concurrent state or ref change wins over the stale result. The reconciler
+sweeps aged orphans that disposal missed (see Work reconciliation).
