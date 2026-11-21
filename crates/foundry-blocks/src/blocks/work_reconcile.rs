@@ -57,10 +57,12 @@ impl ReconcileWork {
             {
                 Ok(settled) => {
                     for mut item in settled {
-                        super::work_branch_cleanup::cleanup(
+                        super::work_disposal::dispose(
                             &self.ledger,
                             Some(&self.registry),
+                            &self.worktrees,
                             &mut item,
+                            super::work_disposal::Disposal::Landed,
                         )
                         .await;
                         report.settled_ids.push(item.id.clone());
@@ -357,7 +359,7 @@ impl ReconcileWork {
             if on_origin {
                 let remote = reference.starts_with("refs/remotes/origin/");
                 let name = format!("refs/heads/{branch}");
-                match super::work_branch_cleanup::prune(project, &name, remote).await {
+                match super::work_disposal::prune(project, &name, remote, true).await {
                     Ok(()) => {
                         finding(report, &project.name, "pruned_branch", reference, &detail);
                         continue;

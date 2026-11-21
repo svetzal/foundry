@@ -407,6 +407,7 @@ fn control_event(kind: &EventType) -> bool {
             | EventType::WorkItemCancelled
             | EventType::WorkItemHeld
             | EventType::WorkItemReleased
+            | EventType::WorkItemDisposed
             | EventType::PacingPaused
             | EventType::PacingResumed
             | EventType::TrunkCiChecked

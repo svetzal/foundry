@@ -461,13 +461,18 @@ pub const EVENTS_HEADING: &str = "Events:";
 pub const NO_EVENTS_LINE: &str = "  (no events)";
 
 /// One `work_item_*` event as a single line: when, what, the state it left the
-/// item in, the event id and why.
+/// item in, the event id and why. An event that records disposal adds a
+/// second, indented line naming what was removed and what was left.
 #[must_use]
 pub fn event_line(event: &WorkItemEvent) -> String {
-    format!(
+    let line = format!(
         "  {}  {:<19}  {:<14}  {}  {}",
         event.occurred_at, event.event_type, event.state, event.id, event.reason
-    )
+    );
+    match &event.disposal {
+        Some(disposal) => format!("{line}\n  {:<19}  {disposal}", ""),
+        None => line,
+    }
 }
 
 /// An item's events under their heading, one line each in the order they
@@ -501,6 +506,8 @@ struct JsonEvent<'a> {
     reason: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     trace_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    disposal: Option<&'a str>,
 }
 
 impl<'a> From<&'a WorkItemEvent> for JsonEvent<'a> {
@@ -512,6 +519,7 @@ impl<'a> From<&'a WorkItemEvent> for JsonEvent<'a> {
             state: &event.state,
             reason: &event.reason,
             trace_id: event.trace_id.as_deref(),
+            disposal: event.disposal.as_deref(),
         }
     }
 }
@@ -1324,7 +1332,27 @@ mod tests {
             state: state.to_string(),
             reason: format!("{state} because"),
             trace_id: Some("b".repeat(32)),
+            disposal: None,
         }
+    }
+
+    #[test]
+    fn an_event_that_records_disposal_names_it_on_a_second_line() {
+        let mut disposed = event("evt_4", "work_item_disposed", "cancelled", 4);
+        disposed.disposal =
+            Some("removed worktree /w/p/abc, origin refs/heads/foundry-task/p-abc".into());
+        let line = event_line(&disposed);
+        let lines: Vec<&str> = line.lines().collect();
+        assert_eq!(lines.len(), 2, "{line}");
+        assert!(lines[0].contains("work_item_disposed"));
+        assert_eq!(
+            lines[1].trim(),
+            "removed worktree /w/p/abc, origin refs/heads/foundry-task/p-abc"
+        );
+        assert_eq!(
+            event_line(&event("evt_1", "work_item_settled", "landed", 1)).lines().count(),
+            1
+        );
     }
 
     fn three_events() -> Vec<WorkItemEvent> {

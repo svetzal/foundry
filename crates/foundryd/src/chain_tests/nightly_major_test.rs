@@ -120,7 +120,7 @@ impl Nightly {
         let dir = tempfile::tempdir().unwrap();
         let checkout = task_project(dir.path());
         let mut parent = preserved_parent(&checkout);
-        assert!(git_ok(Some(&checkout), &["push", "origin", "preserved-work"]));
+        assert!(git_ok(Some(&checkout), &["push", "origin", "foundry-task/preserved-work"]));
         parent.objective =
             objective("test-project", &major("x")) + " Keep the original owner's evidence.";
         assert!(git_ok(Some(&checkout), &["checkout", "-b", "unrelated-preserved-work"]));
@@ -135,7 +135,7 @@ impl Nightly {
         WorkItemStore { version: 1, items }.save(&ledger).unwrap();
         let expected = Command::new("git")
             .current_dir(&checkout)
-            .args(["rev-parse", "preserved-work"])
+            .args(["rev-parse", "foundry-task/preserved-work"])
             .output()
             .unwrap();
         let agent = Arc::new(NightlyAgent {
@@ -166,7 +166,7 @@ impl Nightly {
             ),
             (
                 EventType::TaskRunCompleted,
-                serde_json::json!({"project": parent.project, "success": false, "landed": false, "summary": "prior remainder", "verdict": "remainder", "gaps": [], "preservation_ref": "preserved-work"}),
+                serde_json::json!({"project": parent.project, "success": false, "landed": false, "summary": "prior remainder", "verdict": "remainder", "gaps": [], "preservation_ref": "foundry-task/preserved-work"}),
             ),
         ] {
             writer
@@ -440,7 +440,7 @@ async fn nightly_real_plan_resumes_exact_parent_and_runs_fresh_task_sequentially
             .collect();
         assert_eq!(roots.len(), 2);
         assert_eq!(roots[0].payload["admitted_work_item_id"], child.id);
-        assert_eq!(roots[0].payload["base_ref"], "preserved-work");
+        assert_eq!(roots[0].payload["base_ref"], "foundry-task/preserved-work");
         assert_eq!(roots[0].payload["prompt"], f.parent.objective);
         assert_eq!(roots[0].trace_id, child.trace_id);
         assert!(roots[1].payload.get("base_ref").is_none());
@@ -795,7 +795,7 @@ async fn nightly_child_landing_respects_owner_cancellation_and_retains_parent_ev
     f.start_scheduler();
     let observed = f.observe_until_terminals(1).await;
     let store = WorkItemStore::load(&ledger).unwrap();
-    assert_eq!(store.find(&f.parent.id), Some(&cancelled));
+    super::assert_released_after_successor_settled(store.find(&f.parent.id).unwrap(), &cancelled);
     assert_eq!(store.find(&child_id).unwrap().state, WorkItemState::Landed);
     for unrelated in &f.unrelated {
         assert_eq!(store.find(&unrelated.id), Some(unrelated));

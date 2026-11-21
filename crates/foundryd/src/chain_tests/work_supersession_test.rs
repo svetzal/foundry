@@ -49,11 +49,14 @@ fn supersession_fixture(
     let checkout = task_project(dir);
     let mut preserved = preserved_parent(&checkout);
     preserved.resumes = Some("wi_prior_parent".into());
-    let preserved_hash = hash(&checkout, "preserved-work");
+    let preserved_hash = hash(&checkout, "foundry-task/preserved-work");
     if proof == "ancestry" {
-        assert!(git_ok(Some(&checkout), &["merge", "--ff-only", "preserved-work"]));
+        assert!(git_ok(Some(&checkout), &["merge", "--ff-only", "foundry-task/preserved-work"]));
     } else {
-        assert!(git_ok(Some(&checkout), &["cherry-pick", "--no-commit", "preserved-work"]));
+        assert!(git_ok(
+            Some(&checkout),
+            &["cherry-pick", "--no-commit", "foundry-task/preserved-work"]
+        ));
         assert!(git_ok(Some(&checkout), &["commit", "-m", "equivalent patch, distinct commit"]));
         assert_ne!(hash(&checkout, "HEAD"), preserved_hash);
     }
@@ -326,7 +329,7 @@ fn unresolved_evidence(checkout: &Path, dir: &Path, fault: &str, preserved: &mut
                 "create",
                 bundle.to_str().unwrap(),
                 "main",
-                "preserved-work"
+                "foundry-task/preserved-work"
             ]
         ));
         preserved.disposition.as_mut().unwrap().preservation_ref =
@@ -344,7 +347,7 @@ fn unresolved_evidence(checkout: &Path, dir: &Path, fault: &str, preserved: &mut
             &[
                 "push",
                 "origin",
-                "remote-diverged:refs/heads/preserved-work"
+                "remote-diverged:refs/heads/foundry-task/preserved-work"
             ]
         ));
         assert!(git_ok(Some(checkout), &["checkout", "main"]));
@@ -368,7 +371,7 @@ async fn supersession_git_failures_no_landing_and_failed_save_are_not_proof() {
         let dir = tempfile::tempdir().unwrap();
         let checkout = task_project(dir.path());
         let mut preserved = preserved_parent(&checkout);
-        assert!(git_ok(Some(&checkout), &["merge", "--ff-only", "preserved-work"]));
+        assert!(git_ok(Some(&checkout), &["merge", "--ff-only", "foundry-task/preserved-work"]));
         let commit = hash(&checkout, "main");
         unresolved_evidence(&checkout, dir.path(), fault, &mut preserved);
         let mut running = preserved.clone();
@@ -462,11 +465,14 @@ async fn landing_settles_needs_decision_and_failed_items_whose_work_reached_trun
         // A run that blocked before committing preserves its base unchanged.
         assert!(git_ok(Some(&checkout), &["branch", "no-commits", "main"]));
         let parent = preserved_parent(&checkout);
-        assert!(git_ok(Some(&checkout), &["checkout", "preserved-work"]));
+        assert!(git_ok(Some(&checkout), &["checkout", "foundry-task/preserved-work"]));
         commit_files(&checkout, &[("extra.txt", "second half")], "second preserved commit");
         assert!(git_ok(Some(&checkout), &["checkout", "main"]));
         if shape == "ancestry" {
-            assert!(git_ok(Some(&checkout), &["merge", "--ff-only", "preserved-work"]));
+            assert!(git_ok(
+                Some(&checkout),
+                &["merge", "--ff-only", "foundry-task/preserved-work"]
+            ));
         } else {
             commit_files(
                 &checkout,
@@ -889,13 +895,18 @@ async fn scheduled_reconciliation_proves_registered_trunk_and_preserves_history(
                     .findings
                     .iter()
                     .filter(|f| f.category == "orphan_branch"
-                        && f.identity != "refs/heads/foundry-task/unlanded")
+                        && f.identity != "refs/heads/foundry-task/unlanded"
+                        && f.identity != "refs/heads/foundry-task/preserved-work")
                     .all(|f| {
                         f.detail.contains("trunk=integration-trunk; ancestor of registered trunk")
                     })
             );
             assert_eq!(report.orphan_worktrees, 1);
-            assert_eq!(report.orphan_branches, 4);
+            // A bundle preserves the work outside the branch, so no open item
+            // owns the fixture's local preserved branch.
+            let bundled = source == "bundle";
+            assert_eq!(has("orphan_branch", "refs/heads/foundry-task/preserved-work"), bundled);
+            assert_eq!(report.orphan_branches, 4 + usize::from(bundled));
             let digest = std::fs::read_to_string(report.digest_path.as_ref().unwrap()).unwrap();
             assert_eq!(digest, report.markdown);
             assert!(digest.contains(&preserved.id));

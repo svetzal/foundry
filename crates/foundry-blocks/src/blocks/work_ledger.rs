@@ -351,6 +351,8 @@ fn settle_failed_in_ledger(path: &Path, trigger: &Event, reason: &str) -> Option
 pub struct SettleWorkItem {
     store_path: PathBuf,
     registry: Option<Arc<RwLock<Registry>>>,
+    /// The Foundry worktrees root. Disposal removes only worktrees under it.
+    worktrees: PathBuf,
 }
 
 impl SettleWorkItem {
@@ -360,16 +362,26 @@ impl SettleWorkItem {
         Self {
             store_path,
             registry: None,
+            worktrees: foundry_sdk::paths::worktrees_dir(),
         }
     }
 
-    /// Enable landing-triggered supersession against each project's registered trunk.
+    /// Enable landing-triggered supersession against each project's
+    /// registered trunk, and disposal of what settled items no longer need.
     #[must_use]
     pub fn with_registry(store_path: PathBuf, registry: Arc<RwLock<Registry>>) -> Self {
         Self {
             store_path,
             registry: Some(registry),
+            worktrees: foundry_sdk::paths::worktrees_dir(),
         }
+    }
+
+    /// Dispose of worktrees under `worktrees` rather than the configured root.
+    #[must_use]
+    pub fn with_worktrees(mut self, worktrees: PathBuf) -> Self {
+        self.worktrees = worktrees;
+        self
     }
 
     async fn verify_supersession(
@@ -655,29 +667,47 @@ impl TaskBlock for SettleWorkItem {
             let mut settled = self.settle(&trigger, &result, &verified);
             let mut cleanup = None;
             if let Some(settlement) = &mut settled {
-                // A follow-up owns no branch, so it has nothing to clean up.
-                for item in
-                    std::iter::once(&mut settlement.child).chain(settlement.discharged.iter_mut())
-                {
-                    super::work_branch_cleanup::cleanup(
+                // A follow-up owns no branch, so it has nothing to dispose of.
+                if let Some(disposal) = super::work_disposal::Disposal::of(&settlement.child) {
+                    super::work_disposal::dispose(
                         &self.store_path,
                         self.registry.as_ref(),
-                        item,
+                        &self.worktrees,
+                        &mut settlement.child,
+                        disposal,
                     )
                     .await;
                 }
-                let carried = super::work_branch_cleanup::cleanup_carried(
-                    &self.store_path,
-                    self.registry.as_ref(),
-                    &settlement.child,
-                )
-                .await;
+                // A landing that discharged an item through its lineage carried
+                // that item's work to trunk: what the item kept is not needed.
+                for item in &mut settlement.discharged {
+                    super::work_disposal::dispose(
+                        &self.store_path,
+                        self.registry.as_ref(),
+                        &self.worktrees,
+                        item,
+                        super::work_disposal::Disposal::Discarded,
+                    )
+                    .await;
+                }
+                let mut released = Vec::new();
+                for item in std::iter::once(&settlement.child).chain(&settlement.discharged) {
+                    released.extend(
+                        super::work_disposal::dispose_released(
+                            &self.store_path,
+                            self.registry.as_ref(),
+                            &self.worktrees,
+                            item,
+                        )
+                        .await,
+                    );
+                }
                 let examined: Vec<_> = std::iter::once(&settlement.child)
                     .chain(&settlement.discharged)
-                    .chain(&carried)
+                    .chain(&released)
                     .cloned()
                     .collect();
-                cleanup = super::work_branch_cleanup::describe(&examined);
+                cleanup = super::work_disposal::describe(&examined);
             }
             let events =
                 settled.as_ref().map_or_else(Vec::new, |settlement| settlement.events(&trigger));

@@ -599,6 +599,7 @@ fn event_to_proto(record: &WorkItemEventRecord) -> ProtoWorkItemEvent {
         state: record.payload.state.tag().to_string(),
         reason: record.payload.reason.clone(),
         trace_id: record.trace_id.clone(),
+        disposal: record.disposal_summary(),
     }
 }
 

@@ -907,8 +907,26 @@ async fn resume_service_tracked(
     (client, server, events, tracker)
 }
 
+/// `after` is `before`, an item an owner cancelled while a successor started
+/// from its preserved branch, once that successor settled: every field is
+/// unchanged except the disposal evidence, which shows each of its refs
+/// deleted.
+pub(super) fn assert_released_after_successor_settled(after: &WorkItem, before: &WorkItem) {
+    let without_cleanup = |item: &WorkItem| {
+        let mut item = item.clone();
+        if let Some(d) = item.disposition.as_mut() {
+            d.branch_cleanup.clear();
+        }
+        item
+    };
+    assert_eq!(without_cleanup(after), without_cleanup(before));
+    let cleanup = &after.disposition.as_ref().unwrap().branch_cleanup;
+    assert!(!cleanup.is_empty(), "the released refs were examined");
+    assert!(cleanup.iter().all(|e| e.deleted), "{cleanup:?}");
+}
+
 fn preserved_parent(checkout: &Path) -> WorkItem {
-    assert!(git_ok(Some(checkout), &["checkout", "-b", "preserved-work"]));
+    assert!(git_ok(Some(checkout), &["checkout", "-b", "foundry-task/preserved-work"]));
     std::fs::write(checkout.join("preserved.txt"), "preserved change").unwrap();
     assert!(git_ok(Some(checkout), &["add", "preserved.txt"]));
     assert!(git_ok(Some(checkout), &["commit", "-m", "preserved work"]));
@@ -931,7 +949,7 @@ fn preserved_parent(checkout: &Path) -> WorkItem {
         task_branch: None,
         branch_cleanup: Vec::new(),
         verdict: Some("remainder".to_string()),
-        preservation_ref: Some("preserved-work".to_string()),
+        preservation_ref: Some("foundry-task/preserved-work".to_string()),
         landed_commit: None,
         worktree: Some("prior-worktree".to_string()),
         worktree_removed: Some(true),
@@ -988,7 +1006,7 @@ fn assert_resume_branch_cleanup(
                 "ls-remote",
                 "--heads",
                 "origin",
-                "refs/heads/preserved-work",
+                "refs/heads/foundry-task/preserved-work",
             ])
             .output()
             .unwrap();
@@ -1252,7 +1270,10 @@ async fn resume_nonlanding_results_and_pre_agent_failure_keep_parent_open() {
         let checkout = task_project(dir.path());
         let parent = preserved_parent(&checkout);
         if mode == "no-deliverable" {
-            assert!(git_ok(Some(&checkout), &["merge", "--ff-only", "preserved-work"]));
+            assert!(git_ok(
+                Some(&checkout),
+                &["merge", "--ff-only", "foundry-task/preserved-work"]
+            ));
         } else if mode == "dirty-trunk" {
             std::fs::write(checkout.join("dirty.txt"), "owner work").unwrap();
         } else if mode == "no-charter" {
@@ -1460,7 +1481,7 @@ async fn resume_owner_cancel_before_landing_and_unrelated_settlement_preserve_ex
     assert_eq!(event.payload["state"], "landed");
     assert!(event.payload["disposition"]["landed_commit"].as_str().is_some());
     let store = WorkItemStore::load(&ledger).unwrap();
-    assert_eq!(store.find(&parent.id), Some(&cancelled));
+    assert_released_after_successor_settled(store.find(&parent.id).unwrap(), &cancelled);
     assert_eq!(store.find(&unrelated), Some(&sibling));
     assert_eq!(store.find(&child.id).unwrap().resumes.as_ref(), Some(&parent.id));
     let log = std::fs::read(&log_path).unwrap();
@@ -1485,16 +1506,16 @@ fn preservation_source(checkout: &Path, dir: &Path, source: &str) -> String {
                 "bundle",
                 "create",
                 bundle.to_str().unwrap(),
-                "preserved-work"
+                "foundry-task/preserved-work"
             ]
         ));
         format!("bundle:{}", bundle.display())
     } else {
         if source == "remote" {
-            assert!(git_ok(Some(checkout), &["push", "origin", "preserved-work"]));
-            assert!(git_ok(Some(checkout), &["branch", "-D", "preserved-work"]));
+            assert!(git_ok(Some(checkout), &["push", "origin", "foundry-task/preserved-work"]));
+            assert!(git_ok(Some(checkout), &["branch", "-D", "foundry-task/preserved-work"]));
         }
-        "preserved-work".to_string()
+        "foundry-task/preserved-work".to_string()
     }
 }
 

@@ -434,6 +434,12 @@ pub enum EventType {
     /// An operator returned a held item, or one waiting on a decision about
     /// a dependency, to the queue.
     WorkItemReleased,
+    /// Foundry removed what a settled ledger item no longer needs: its
+    /// worktree, its local task branch and its origin task branch. The
+    /// disposition records what was removed and what was left. Emitted after
+    /// a cancellation; a landing records the same evidence on its
+    /// `WorkItemSettled`.
+    WorkItemDisposed,
     /// An operator paused one or more pacing lanes: nothing in them starts
     /// until a `PacingResumed`. Running items are untouched.
     PacingPaused,
@@ -693,6 +699,7 @@ impl EventType {
             | EventType::WorkItemCancelled
             | EventType::WorkItemHeld
             | EventType::WorkItemReleased
+            | EventType::WorkItemDisposed
             | EventType::PacingPaused
             | EventType::PacingResumed
             | EventType::TrunkCiChecked
@@ -830,6 +837,7 @@ mod tests {
             (EventType::WorkItemCancelled, "work_item_cancelled"),
             (EventType::WorkItemHeld, "work_item_held"),
             (EventType::WorkItemReleased, "work_item_released"),
+            (EventType::WorkItemDisposed, "work_item_disposed"),
             (EventType::PacingPaused, "pacing_paused"),
             (EventType::PacingResumed, "pacing_resumed"),
             (EventType::TrunkCiChecked, "trunk_ci_checked"),
@@ -931,6 +939,7 @@ mod tests {
             (EventType::WorkItemCancelled, "work_item_cancelled"),
             (EventType::WorkItemHeld, "work_item_held"),
             (EventType::WorkItemReleased, "work_item_released"),
+            (EventType::WorkItemDisposed, "work_item_disposed"),
             (EventType::PacingPaused, "pacing_paused"),
             (EventType::PacingResumed, "pacing_resumed"),
             (EventType::TrunkCiChecked, "trunk_ci_checked"),
@@ -1424,6 +1433,7 @@ mod tests {
         assert!(!EventType::WorkItemCancelled.is_span_opener());
         assert!(!EventType::WorkItemHeld.is_span_opener());
         assert!(!EventType::WorkItemReleased.is_span_opener());
+        assert!(!EventType::WorkItemDisposed.is_span_opener());
         assert!(!EventType::PacingPaused.is_span_opener());
         assert!(!EventType::PacingResumed.is_span_opener());
         assert!(!EventType::TrunkCiChecked.is_span_opener());

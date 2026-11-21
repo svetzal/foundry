@@ -739,6 +739,42 @@ async fn commit_and_preserve_if_needed(
     })
 }
 
+/// The result of landing-eligible work whose landing was blocked.
+///
+/// The work is preserved now, from the worktree that is still in place, after
+/// [`land_with_rebase`] restored the reviewed head. The reviewer's verdict
+/// stands; the run still did not deliver, so it is not a success until
+/// reconciled. When preservation fails, the local task branch still holds the
+/// work and the worktree stays, so nothing is lost.
+async fn blocked_landing(
+    shell: &dyn ShellGateway,
+    checkout: &Path,
+    worktree: &Path,
+    (project, branch): (&str, &str),
+    (reason, detail): (LandBlocked, &str),
+    verdict: TaskVerdict,
+    context: LoopContext,
+) -> TaskRunCompletedPayload {
+    let summary = blocked_summary(&verdict, reason, detail);
+    let preservation_ref = match preserve(shell, worktree, project, branch).await {
+        Ok(reference) => reference,
+        Err(error) => {
+            return runner_error(
+                project,
+                format!("{summary}; preserving the blocked work failed: {error}"),
+                context,
+            );
+        }
+    };
+    // FinalizeTask owns the task workspace it is finalizing.
+    remove_workspace(shell, checkout, worktree).await;
+    let mut result =
+        run_completed(project, false, summary, Some(preservation_ref), verdict, context);
+    result.success = false;
+    result.land_blocked = Some(reason);
+    result
+}
+
 impl SimulatedSuccess for FinalizeTask {
     type Outcome = TaskRunCompletedPayload;
 
@@ -863,39 +899,17 @@ impl TaskBlock for FinalizeTask {
                 arrivals = landing.arrivals;
                 drift = landing.drift;
                 if let Some((reason, detail)) = landing.blocked {
-                    let preservation_ref =
-                        match preserve(&*shell, &worktree, &project, branch).await {
-                            Ok(reference) => Some(reference),
-                            Err(error) => {
-                                // The local task branch still holds the work;
-                                // the worktree stays so nothing is lost.
-                                let mut result = runner_error(
-                                    &project,
-                                    format!(
-                                        "{}; preserving the blocked work failed: {error}",
-                                        blocked_summary(&verdict, reason, &detail)
-                                    ),
-                                    context,
-                                );
-                                result.trunk_arrivals = arrivals;
-                                result.proof_evidence = proof_evidence;
-                                return finish(result);
-                            }
-                        };
-                    // FinalizeTask owns the task workspace it is finalizing.
-                    remove_workspace(&*shell, checkout, &worktree).await;
-                    let mut result = run_completed(
-                        &project,
-                        false,
-                        blocked_summary(&verdict, reason, &detail),
-                        preservation_ref,
+                    let branch = branch.to_owned();
+                    let mut result = blocked_landing(
+                        &*shell,
+                        checkout,
+                        &worktree,
+                        (&project, &branch),
+                        (reason, &detail),
                         verdict,
                         context,
-                    );
-                    // The reviewer's verdict stands; the run still did not
-                    // deliver, so it is not a success until reconciled.
-                    result.success = false;
-                    result.land_blocked = Some(reason);
+                    )
+                    .await;
                     result.trunk_arrivals = arrivals;
                     result.proof_evidence = proof_evidence;
                     return finish(result);

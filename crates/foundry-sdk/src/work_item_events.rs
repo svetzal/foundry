@@ -51,6 +51,28 @@ pub struct WorkItemEventRecord {
     pub payload: WorkItemEventPayload,
 }
 
+impl WorkItemEventRecord {
+    /// What this event says disposal removed and left. Only a landed or
+    /// cancelled item is disposed of, so only its `work_item_settled`,
+    /// `work_item_cancelled` or `work_item_disposed` carries one. `None` for
+    /// every other event, and when nothing was recorded.
+    #[must_use]
+    pub fn disposal_summary(&self) -> Option<String> {
+        let records = matches!(
+            self.event_type,
+            EventType::WorkItemSettled | EventType::WorkItemCancelled | EventType::WorkItemDisposed
+        );
+        let terminal = matches!(
+            self.payload.state,
+            crate::work_item::WorkItemState::Landed | crate::work_item::WorkItemState::Cancelled
+        );
+        if !(records && terminal) {
+            return None;
+        }
+        self.payload.disposition.as_ref()?.disposal_summary()
+    }
+}
+
 /// A fault reading the event log that must not be reported as "no events".
 #[derive(Debug, thiserror::Error)]
 #[error("could not read the event log at {path}: {source}")]
@@ -62,7 +84,7 @@ pub struct EventLogReadError {
     pub source: std::io::Error,
 }
 
-/// Whether `event_type` is one of the six work-item lifecycle events.
+/// Whether `event_type` is one of the work-item lifecycle events.
 #[must_use]
 pub fn is_work_item_event(event_type: &EventType) -> bool {
     matches!(
@@ -73,6 +95,7 @@ pub fn is_work_item_event(event_type: &EventType) -> bool {
             | EventType::WorkItemCancelled
             | EventType::WorkItemHeld
             | EventType::WorkItemReleased
+            | EventType::WorkItemDisposed
     )
 }
 
@@ -236,6 +259,48 @@ mod tests {
     }
 
     #[test]
+    fn only_a_landed_or_cancelled_settlement_or_disposal_reports_disposal() {
+        let record = |event_type: EventType, state: WorkItemState| {
+            let mut subject = item("wi_a");
+            subject.state = state;
+            subject.disposition = Some(crate::work_item::WorkDisposition {
+                worktree: Some("/w/alpha/abc".into()),
+                worktree_removed: Some(true),
+                ..crate::work_item::WorkDisposition::default()
+            });
+            WorkItemEventRecord {
+                event_id: "evt_a".into(),
+                event_type,
+                occurred_at: at(1, 1),
+                trace_id: None,
+                payload: WorkItemEventPayload::from_item(&subject),
+            }
+        };
+        let removed = Some("removed worktree /w/alpha/abc".to_string());
+        for event_type in [
+            EventType::WorkItemSettled,
+            EventType::WorkItemCancelled,
+            EventType::WorkItemDisposed,
+        ] {
+            assert_eq!(
+                record(event_type.clone(), WorkItemState::Cancelled).disposal_summary(),
+                removed
+            );
+            assert_eq!(
+                record(event_type.clone(), WorkItemState::Landed).disposal_summary(),
+                removed
+            );
+            // A preserved item keeps its work; the worktree finalize removed
+            // is not a disposal.
+            assert_eq!(record(event_type, WorkItemState::Preserved).disposal_summary(), None);
+        }
+        assert_eq!(
+            record(EventType::WorkItemStarted, WorkItemState::Landed).disposal_summary(),
+            None
+        );
+    }
+
+    #[test]
     fn a_missing_events_directory_is_an_empty_history() {
         let dir = tempfile::tempdir().expect("tempdir");
         let records = read_work_item_events(&dir.path().join("absent"), "wi_a").expect("no fault");
@@ -361,6 +426,7 @@ mod tests {
         assert!(is_work_item_event(&EventType::WorkItemCancelled));
         assert!(is_work_item_event(&EventType::WorkItemHeld));
         assert!(is_work_item_event(&EventType::WorkItemReleased));
+        assert!(is_work_item_event(&EventType::WorkItemDisposed));
         assert!(!is_work_item_event(&EventType::PacingPaused));
         assert!(!is_work_item_event(&EventType::TaskRunCompleted));
     }

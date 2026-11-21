@@ -15,6 +15,32 @@ project adheres to [Semantic Versioning](https://semver.org/).
   2026-11-21). Foundry pushes the task branch only when the work stays off
   trunk: a verdict that cannot land, or a landing that is blocked. A landed
   item now records no preservation ref.
+- Foundry now cleans up after a work item settles (Stacey, 2026-11-21). A
+  landed item loses its worktree and its `foundry-task/*` branches, locally
+  and on origin; each branch still needs fresh proof that trunk contains it.
+  A cancelled item (`queue cancel`, `queue close`, a campaign carry or
+  cancellation) loses the same things without trunk proof. An item that a
+  later landing superseded through `resumes` or `continues` is disposed of
+  like a cancelled one. An open or waiting item keeps everything. A ref that
+  another open or waiting item still owns or starts from (`base_ref`) is kept
+  until that item settles, and then it goes. This replaces the rule that a
+  carried campaign cycle kept its branch unless trunk contained it, and that
+  an owner-closed item kept its branch.
+- Only `refs/heads/foundry-task/*` branches and worktrees under the Foundry
+  worktrees root are disposed of. Disposal never fails a settlement. A failure
+  (for example a missing origin or an authentication failure) is logged and
+  recorded on the item as what was left.
+
+### Added
+
+- `work_item_disposed`, a work-item lifecycle event. The new Dispose Cancelled
+  Work block emits it after a cancellation, with the disposition that records
+  what was removed and what was left. A landing records the same evidence on
+  its `work_item_settled`.
+- `foundry queue show` prints a second line under a landed or cancelled
+  item's settlement, cancellation or disposal event that names what disposal
+  removed and what it left. The `WorkItemEvent` message has a new `disposal`
+  field, and `--json` events carry it.
 
 ## [0.62.0] - 2026-11-21
 

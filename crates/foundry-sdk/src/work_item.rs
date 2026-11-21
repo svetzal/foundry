@@ -240,6 +240,49 @@ pub struct WorkDisposition {
     pub worktree_removed: Option<bool>,
 }
 
+impl WorkDisposition {
+    /// One line naming what disposal removed and what it left, or `None`
+    /// when nothing about the worktree or the branches was recorded.
+    ///
+    /// `queue show` prints it beside each event that carries the disposition.
+    #[must_use]
+    pub fn disposal_summary(&self) -> Option<String> {
+        let mut removed = Vec::new();
+        let mut kept = Vec::new();
+        match (self.worktree.as_deref(), self.worktree_removed) {
+            (Some(path), Some(true)) => removed.push(format!("worktree {path}")),
+            (Some(path), Some(false)) => kept.push(format!("worktree {path}")),
+            _ => {}
+        }
+        for cleanup in &self.branch_cleanup {
+            let place = if cleanup.remote { "origin" } else { "local" };
+            let name = format!("{place} {}", cleanup.reference);
+            if cleanup.deleted {
+                removed.push(name);
+            } else {
+                let reason = cleanup
+                    .error
+                    .as_deref()
+                    .and_then(|reason| reason.lines().next())
+                    .unwrap_or("unknown");
+                let reason: String = reason.chars().take(160).collect();
+                kept.push(format!("{name} ({reason})"));
+            }
+        }
+        if removed.is_empty() && kept.is_empty() {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if !removed.is_empty() {
+            parts.push(format!("removed {}", removed.join(", ")));
+        }
+        if !kept.is_empty() {
+            parts.push(format!("left {}", kept.join(", ")));
+        }
+        Some(parts.join("; "))
+    }
+}
+
 /// An owner action, separate from the item's original submission and settlement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkItemOperatorAction {
@@ -1509,6 +1552,41 @@ mod tests {
     }
 
     // --- store -------------------------------------------------------------
+
+    #[test]
+    fn disposal_summary_names_what_was_removed_and_what_was_left() {
+        let mut disposition = WorkDisposition {
+            worktree: Some("/w/p/abc".into()),
+            worktree_removed: Some(true),
+            branch_cleanup: vec![
+                BranchCleanup {
+                    reference: "refs/heads/foundry-task/p-abc".into(),
+                    commit: Some("c1".into()),
+                    remote: false,
+                    deleted: true,
+                    error: None,
+                },
+                BranchCleanup {
+                    reference: "refs/heads/foundry-task/p-abc".into(),
+                    commit: None,
+                    remote: true,
+                    deleted: false,
+                    error: Some("could not read from remote\nmore".into()),
+                },
+            ],
+            ..WorkDisposition::default()
+        };
+        assert_eq!(
+            disposition.disposal_summary().as_deref(),
+            Some(
+                "removed worktree /w/p/abc, local refs/heads/foundry-task/p-abc; \
+                 left origin refs/heads/foundry-task/p-abc (could not read from remote)"
+            )
+        );
+        disposition.branch_cleanup.clear();
+        disposition.worktree_removed = None;
+        assert_eq!(disposition.disposal_summary(), None);
+    }
 
     #[test]
     fn a_store_round_trips_through_the_file() {

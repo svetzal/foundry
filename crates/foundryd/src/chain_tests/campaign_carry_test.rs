@@ -159,6 +159,11 @@ async fn a_dispatched_campaign_cycle_carries_the_campaigns_earlier_open_cycles()
     );
     let mut engine = task_engine(agent.clone(), registry.clone(), &store_path);
     engine.register(carry_block(&store_path, &campaigns));
+    engine.register(Box::new(foundry_blocks::blocks::DisposeCancelledWork::new(
+        registry.clone(),
+        store_path.clone(),
+        dir.path().join("worktrees"),
+    )));
     let engine = Arc::new(engine);
     let root = task_dispatch(
         "test-project",
@@ -179,11 +184,10 @@ async fn a_dispatched_campaign_cycle_carries_the_campaigns_earlier_open_cycles()
     for before in &carried {
         let after = store.find(&before.id).unwrap();
         assert_cancelled_with(after, before, &reason);
-        // Cycle 12 landed, so cleanup examined each cycle it carried. These
-        // refs were never pushed, so nothing proves them on trunk: each stays.
+        // A carried cycle is cancelled, so disposal examined its refs. These
+        // were never created, so nothing was removed and nothing was left.
         let cleanup = &after.disposition.as_ref().unwrap().branch_cleanup;
-        assert_eq!(cleanup.len(), 2, "{} local and origin ref examined", before.id);
-        assert!(cleanup.iter().all(|e| !e.deleted && e.error.is_some()), "{}", before.id);
+        assert!(cleanup.is_empty(), "{}: {cleanup:?}", before.id);
         // Durable admission does not route `work_item_submitted` to blocks;
         // the scheduler's `work_item_started` for cycle 12 is what carries.
         let logged = logged_events(&dir.path().join("events"));

@@ -1332,6 +1332,10 @@ message WorkItemEvent {
     string reason = 5;
     // The workflow trace the event was emitted on. Absent when it carries none.
     optional string trace_id = 6;
+    // What disposal removed and what it left (worktree, local and origin
+    // task branches), in one line. Present only on a work_item_settled,
+    // work_item_cancelled or work_item_disposed event that records it.
+    optional string disposal = 7;
 }
 
 // List one work item's `work_item_*` events from the durable event log

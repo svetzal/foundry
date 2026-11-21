@@ -928,6 +928,11 @@ fn register_campaign_blocks(
         foundry_sdk::paths::work_items_path(),
         foundry_sdk::paths::campaigns_path(),
     )));
+    engine.register(Box::new(foundry_blocks::blocks::DisposeCancelledWork::new(
+        registry.clone(),
+        foundry_sdk::paths::work_items_path(),
+        foundry_sdk::paths::worktrees_dir(),
+    )));
     engine.register(Box::new(foundry_blocks::blocks::AdvanceCampaign::new(
         agent.clone(),
         shell.clone(),
