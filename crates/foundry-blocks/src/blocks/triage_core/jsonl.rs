@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use foundry_sdk::event::Event;
 use foundry_sdk::time::UtcDateTime;
@@ -68,23 +68,6 @@ fn read_jsonl_file(path: &Path, since: UtcDateTime, out: &mut Vec<Event>) {
             }
         }
     }
-}
-
-/// Return the paths for the current and prior month JSONL files.
-///
-/// Exposed for callers that want to know which files will be read before
-/// calling `read_events_jsonl`.
-#[allow(dead_code)]
-pub fn month_paths(events_dir: &Path) -> Vec<PathBuf> {
-    let now = UtcDateTime::now();
-    let mut paths = Vec::new();
-
-    let prior = now.date().first_of_month().yesterday().ok();
-    if let Some(d) = prior {
-        paths.push(events_dir.join(format!("{}.jsonl", d.strftime("%Y-%m"))));
-    }
-    paths.push(events_dir.join(format!("{}.jsonl", now.format("%Y-%m"))));
-    paths
 }
 
 #[cfg(test)]
