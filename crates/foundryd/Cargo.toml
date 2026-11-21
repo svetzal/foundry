@@ -29,9 +29,7 @@ fs2 = { workspace = true }
 async-stream = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-chrono = { workspace = true }
 jiff = { workspace = true }
-cron = { workspace = true }
 pastey = { workspace = true }
 uuid = { workspace = true }
 
