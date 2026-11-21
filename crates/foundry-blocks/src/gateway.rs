@@ -680,7 +680,6 @@ mod claude_agent_gateway_streaming_tests {
     use super::*;
     use crate::agent_stream::{AgentStreamOutcome, AgentStreamRunner, StreamRun, StreamedLine};
     use foundry_sdk::event::EventType;
-    use std::path::PathBuf;
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -754,7 +753,7 @@ mod claude_agent_gateway_streaming_tests {
         let request = AgentRequest {
             prompt: "say hi".to_string(),
             project: "demo-project".to_string(),
-            working_dir: PathBuf::from("/tmp"),
+            working_dir: test_support::tmp_dir("foundry-request"),
             access: AgentAccess::Full,
             tier: ModelTier::Balanced,
             effort: ReasoningEffort::Medium,
@@ -827,7 +826,7 @@ mod claude_agent_gateway_streaming_tests {
         let request = AgentRequest {
             prompt: "fail please".to_string(),
             project: String::new(),
-            working_dir: PathBuf::from("/tmp"),
+            working_dir: test_support::tmp_dir("foundry-request"),
             access: AgentAccess::Full,
             tier: ModelTier::Balanced,
             effort: ReasoningEffort::Medium,
@@ -876,7 +875,7 @@ mod claude_agent_gateway_streaming_tests {
         let request = AgentRequest {
             prompt: "fail please".to_string(),
             project: "demo-project".to_string(),
-            working_dir: PathBuf::from("/tmp"),
+            working_dir: test_support::tmp_dir("foundry-request"),
             access: AgentAccess::Full,
             tier: ModelTier::Balanced,
             effort: ReasoningEffort::Medium,
@@ -943,7 +942,7 @@ mod claude_agent_gateway_streaming_tests {
         let request = AgentRequest {
             prompt: "maintain".to_string(),
             project: "demo-project".to_string(),
-            working_dir: PathBuf::from("/tmp"),
+            working_dir: test_support::tmp_dir("foundry-request"),
             access: AgentAccess::Full,
             tier: ModelTier::Balanced,
             effort: ReasoningEffort::Medium,
@@ -997,7 +996,7 @@ mod claude_agent_gateway_streaming_tests {
         let request = AgentRequest {
             prompt: "maintain".to_string(),
             project: "demo-project".to_string(),
-            working_dir: PathBuf::from("/tmp"),
+            working_dir: test_support::tmp_dir("foundry-request"),
             access: AgentAccess::Full,
             tier: ModelTier::Balanced,
             effort: ReasoningEffort::Medium,
@@ -1042,7 +1041,7 @@ mod claude_agent_gateway_streaming_tests {
         let request = AgentRequest {
             prompt: "work".to_string(),
             project: "demo-project".to_string(),
-            working_dir: PathBuf::from("/tmp"),
+            working_dir: test_support::tmp_dir("foundry-request"),
             access: AgentAccess::Full,
             tier: ModelTier::Balanced,
             effort: ReasoningEffort::Medium,
@@ -1124,7 +1123,7 @@ mod claude_agent_gateway_streaming_tests {
         let request = AgentRequest {
             prompt: "x".to_string(),
             project: String::new(),
-            working_dir: PathBuf::from("/tmp"),
+            working_dir: test_support::tmp_dir("foundry-request"),
             access: AgentAccess::ReadOnly,
             tier: ModelTier::Deep,
             effort: ReasoningEffort::High,
@@ -1174,7 +1173,6 @@ mod claude_json_recovery_tests {
     use super::fakes::FakeShellGateway;
     use super::*;
     use crate::agent_stream::{AgentStreamOutcome, AgentStreamRunner, StreamRun, StreamedLine};
-    use std::path::PathBuf;
     use std::pin::Pin;
     use std::time::Duration;
     use tokio::sync::broadcast;
@@ -1260,7 +1258,7 @@ mod claude_json_recovery_tests {
         AgentRequest {
             prompt: "review this".to_string(),
             project: "demo-project".to_string(),
-            working_dir: PathBuf::from("/tmp"),
+            working_dir: test_support::tmp_dir("foundry-request"),
             access: AgentAccess::ReadOnly,
             tier: ModelTier::Deep,
             effort: ReasoningEffort::High,
@@ -1494,14 +1492,13 @@ mod claude_json_recovery_tests {
 #[cfg(test)]
 mod claude_foreground_tests {
     use super::*;
-    use std::path::PathBuf;
     use std::time::Duration;
 
     fn request(access: AgentAccess, timeout: Duration) -> AgentRequest {
         AgentRequest {
             prompt: "release it".to_string(),
             project: "demo-project".to_string(),
-            working_dir: PathBuf::from("/tmp"),
+            working_dir: test_support::tmp_dir("foundry-request"),
             access,
             tier: ModelTier::Balanced,
             effort: ReasoningEffort::Medium,
