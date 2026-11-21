@@ -310,7 +310,7 @@ fn recovery_fixture(home: &Path) {
             "recovery_runner",
             RecoveryKind::RunnerUnavailable,
             "Runner transport unavailable",
-            chrono::Utc::now(),
+            foundry_sdk::time::UtcDateTime::now(),
         )
         .unwrap();
     store
@@ -319,7 +319,7 @@ fn recovery_fixture(home: &Path) {
             "recovery_evidence",
             RecoveryKind::MissingEvidence,
             "Current integration proof is missing",
-            chrono::Utc::now(),
+            foundry_sdk::time::UtcDateTime::now(),
         )
         .unwrap();
     store.save(&home.join("campaigns.json")).unwrap();

@@ -14,7 +14,6 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use chrono::Utc;
 use foundry_blocks::trace_writer::TraceWriter;
 use foundry_engine::engine::Engine;
 use foundry_engine::event_writer::EventWriter;
@@ -24,6 +23,7 @@ use foundry_sdk::payload::work_item::WorkItemEventPayload;
 use foundry_sdk::registry::Registry;
 use foundry_sdk::sentinel::SentinelStore;
 use foundry_sdk::throttle::Throttle;
+use foundry_sdk::time::UtcDateTime;
 use foundry_sdk::work_item::{
     WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkItemStore, WorkLane,
 };
@@ -61,7 +61,7 @@ fn queued(id: &str, project: &str, reason: &str) -> WorkItem {
             trace_id: Some("a".repeat(32)),
         },
         root(project),
-        Utc::now(),
+        UtcDateTime::now(),
     );
     item.id = id.to_string();
     item.reason = reason.to_string();
@@ -70,7 +70,7 @@ fn queued(id: &str, project: &str, reason: &str) -> WorkItem {
 
 fn running(id: &str, project: &str) -> WorkItem {
     let mut item = queued(id, project, "running");
-    item.start(Utc::now());
+    item.start(UtcDateTime::now());
     item
 }
 
@@ -373,7 +373,7 @@ async fn pacing_drain_prints_each_item_as_it_settles_then_exits_zero() {
     // a race between a hand-written ledger and a slower `queue close`.
     let mut store = WorkItemStore::load(&daemon.ledger).unwrap();
     let item = store.find_mut("wi_run").unwrap();
-    item.settle_cancelled("drained", None, Utc::now());
+    item.settle_cancelled("drained", None, UtcDateTime::now());
     let payload = Event::serialize_payload(&WorkItemEventPayload::from_item(item)).unwrap();
     let settled =
         Event::new(EventType::WorkItemSettled, item.project.clone(), Throttle::Full, payload);

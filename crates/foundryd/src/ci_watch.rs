@@ -38,7 +38,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use foundry_sdk::time::UtcDateTime;
 use tokio::sync::broadcast;
 
 use foundry_blocks::gateway::TrunkCiGateway;
@@ -76,7 +76,7 @@ pub struct CiTickOutcome {
     /// The campaigns asked to advance again.
     pub advanced: Vec<String>,
     /// The earliest grace or limit deadline of a watch still pending.
-    pub next_deadline: Option<DateTime<Utc>>,
+    pub next_deadline: Option<UtcDateTime>,
 }
 
 /// One pending watch read from the ledger.
@@ -91,7 +91,7 @@ struct Applied {
     results: Vec<TrunkCiApplied>,
     /// `(campaign, stood-down advance item)` to ask to advance again.
     awaiting: Vec<(String, String)>,
-    next_deadline: Option<DateTime<Utc>>,
+    next_deadline: Option<UtcDateTime>,
 }
 
 /// The trunk CI watcher. `run` consumes it and loops forever.
@@ -121,7 +121,7 @@ impl TrunkCiWatcher {
             work_items_path,
             gateway,
             advance,
-            clock: Arc::new(Utc::now),
+            clock: Arc::new(UtcDateTime::now),
             prodded: Mutex::new(HashSet::new()),
         }
     }
@@ -143,7 +143,7 @@ impl TrunkCiWatcher {
             let now = (self.clock)();
             let wait = outcome
                 .next_deadline
-                .and_then(|at| (at - now).to_std().ok())
+                .and_then(|at| std::time::Duration::try_from(at - now).ok())
                 .map_or(POLL, |until| until.min(POLL));
             tokio::select! {
                 () = tokio::time::sleep(wait) => {}
@@ -221,7 +221,10 @@ impl TrunkCiWatcher {
     }
 
     async fn announce(&self, event: Event) {
-        self.ctx.engine.process(event).await;
+        // Boxed so each announce in `tick` holds a pointer, not the engine's
+        // whole processing future; `tick` stays under clippy's large-future
+        // limit.
+        Box::pin(self.ctx.engine.process(event)).await;
     }
 
     /// Ask GitHub about `watch` and conclude it, fetching a red run's
@@ -324,7 +327,7 @@ fn pending_watches(path: &std::path::Path) -> Vec<Pending> {
 fn apply(
     path: &std::path::Path,
     conclusions: Vec<(String, String, TrunkCiConclusion)>,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
 ) -> Applied {
     let Ok(_guard) = ledger_write_gate().lock() else {
         // Best-effort: as in `pending_watches`.
@@ -428,18 +431,18 @@ fn lifecycle_event(event_type: EventType, item: &WorkItem) -> Event {
 mod tests {
     use std::sync::RwLock;
 
-    use chrono::TimeZone as _;
     use foundry_blocks::gateway::trunk_ci::FakeTrunkCiGateway;
     use foundry_engine::engine::Engine;
     use foundry_sdk::registry::Registry;
+    use foundry_sdk::time::UtcDateTime;
     use foundry_sdk::trunk_ci::{TrunkCiState, awaiting_reason};
     use foundry_sdk::work_item::{WorkItemKind, WorkItemSpec, WorkLane};
 
     use super::*;
 
-    fn at(minutes: i64) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 10, 20, 12, 0, 0).single().expect("valid date")
-            + chrono::Duration::minutes(minutes)
+    fn at(minutes: i64) -> UtcDateTime {
+        UtcDateTime::from_ymd_hms(2026, 10, 20, 12, 0, 0).expect("valid date")
+            + foundry_sdk::time::SignedDuration::from_mins(minutes)
     }
 
     /// A task of `project` that landed as `commit`, watched from minute 0.
@@ -494,7 +497,7 @@ mod tests {
         gateway: Arc<FakeTrunkCiGateway>,
         advanced: Arc<Mutex<Vec<String>>>,
         events: broadcast::Receiver<Event>,
-        clock: Arc<Mutex<DateTime<Utc>>>,
+        clock: Arc<Mutex<UtcDateTime>>,
     }
 
     impl Harness {

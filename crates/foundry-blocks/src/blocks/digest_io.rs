@@ -11,7 +11,6 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use chrono::Local;
 use foundry_sdk::event::EventType;
 use foundry_sdk::task_block::TaskBlockResult;
 use foundry_sdk::throttle::Throttle;
@@ -56,7 +55,7 @@ pub(crate) fn render_agent_body_digest(title: &str, summary_line: &str, body: &s
 
 /// Return the today-date string and the corresponding `{dir}/{YYYY-MM-DD}.md` path.
 pub(crate) fn today_dated_path(dir: &Path) -> (String, PathBuf) {
-    let date = Local::now().format("%Y-%m-%d").to_string();
+    let date = foundry_sdk::time::local_today().to_string();
     let path = dir.join(format!("{date}.md"));
     (date, path)
 }

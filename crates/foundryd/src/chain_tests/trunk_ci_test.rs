@@ -10,7 +10,6 @@
 //! watch it reads: nothing here sleeps, reads GitHub or waits on real time.
 use super::*;
 
-use chrono::{DateTime, Utc};
 use foundry_blocks::gateway::trunk_ci::FakeTrunkCiGateway;
 use foundry_sdk::campaign::{Campaign, CampaignStatus, CampaignStore};
 use foundry_sdk::gateway::fakes::FakeAgentGateway;
@@ -18,6 +17,7 @@ use foundry_sdk::payload::{
     CampaignAdvanceRequestedPayload, LoopContext, TaskRunCompletedPayload, TaskVerdict,
 };
 use foundry_sdk::task_block::{TaskBlock, TaskBlockResult};
+use foundry_sdk::time::UtcDateTime;
 use foundry_sdk::trunk_ci::{TrunkCiState, TrunkCiWatch};
 use foundry_sdk::work_item::{FollowUpObligation, WorkItemSpec};
 
@@ -38,7 +38,7 @@ struct Fixture {
     github: Arc<FakeTrunkCiGateway>,
     advanced: Arc<Mutex<Vec<String>>>,
     /// What the watcher reads as "now".
-    now: Arc<Mutex<DateTime<Utc>>>,
+    now: Arc<Mutex<UtcDateTime>>,
 }
 
 impl Fixture {
@@ -63,7 +63,7 @@ impl Fixture {
             engine: Arc::new(engine),
             github: FakeTrunkCiGateway::new(),
             advanced: Arc::new(Mutex::new(Vec::new())),
-            now: Arc::new(Mutex::new(Utc::now())),
+            now: Arc::new(Mutex::new(UtcDateTime::now())),
         }
     }
 
@@ -86,7 +86,7 @@ impl Fixture {
     /// Pin the watcher's clock `minutes` after `item`'s watch began.
     fn watch_age(&self, item: &str, minutes: i64) {
         let begun = self.item(item).ci.expect("a watch").requested_at;
-        *self.now.lock().unwrap() = begun + chrono::Duration::minutes(minutes);
+        *self.now.lock().unwrap() = begun + foundry_sdk::time::SignedDuration::from_mins(minutes);
     }
 
     fn ledger(&self) -> WorkItemStore {
@@ -203,7 +203,7 @@ fn running(id: &str, cycle: Option<u64>) -> WorkItem {
             origin: "trunk CI test".into(),
             trace_id: Some(mint_trace_id()),
         },
-        Utc::now(),
+        UtcDateTime::now(),
     );
     item.id = id.into();
     item
@@ -438,7 +438,7 @@ async fn a_campaign_waits_for_pending_trunk_ci_and_forms_from_its_recorded_resul
     let mut advance = running("wi_advance", None);
     advance.kind = WorkItemKind::Workflow;
     advance.started_root = Some(automatic_advance(&landed).await);
-    advance.settle_landed(stood_down.payload["reason"].as_str().unwrap(), Utc::now());
+    advance.settle_landed(stood_down.payload["reason"].as_str().unwrap(), UtcDateTime::now());
     f.add(advance);
 
     f.github.set_runs("c1c1c1c1c1", vec![run(5, "completed", "success")]);

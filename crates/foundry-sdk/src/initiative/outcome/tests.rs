@@ -47,7 +47,7 @@ fn result(store: &CampaignStore) -> IntegrationGateResult {
         exit_code: Some(0),
         report: "Both trunks worked".into(),
         artifacts: vec!["evidence/result.json".into()],
-        recorded_at: Utc::now(),
+        recorded_at: UtcDateTime::now(),
     }
 }
 
@@ -72,12 +72,14 @@ fn done_needs_current_gates_reviews_and_explicit_owner_confirmation() {
     assert!(!store.find_initiative("test").unwrap().status.is_terminal());
     assert!(store.find_initiative("test").unwrap().completion_confirmation.is_none());
     assert!(store.begin_steering("test", "again").is_err());
-    assert!(store.record_et_close("test", "et:goal:x", Utc::now()).is_err());
+    assert!(store.record_et_close("test", "et:goal:x", UtcDateTime::now()).is_err());
     store
-        .confirm_completion("test", "I observed the result", &snapshot, Utc::now())
+        .confirm_completion("test", "I observed the result", &snapshot, UtcDateTime::now())
         .unwrap();
     let confirmation = store.find_initiative("test").unwrap().completion_confirmation.clone();
-    store.confirm_completion("test", "retry", &snapshot, Utc::now()).unwrap();
+    store
+        .confirm_completion("test", "retry", &snapshot, UtcDateTime::now())
+        .unwrap();
     assert_eq!(store.find_initiative("test").unwrap().completion_confirmation, confirmation);
 }
 
@@ -242,10 +244,14 @@ fn completion_intent_and_receipts_survive_restart_without_double_closing() {
             intent_ref: "et:interaction:ship".into(),
             evidence: vec!["proof.json".into()],
         });
-    store.confirm_completion("test", "Observed", &evidence, Utc::now()).unwrap();
+    store
+        .confirm_completion("test", "Observed", &evidence, UtcDateTime::now())
+        .unwrap();
     store.set_completion_intent("test", "original intent").unwrap();
     assert!(store.set_completion_intent("test", "replacement intent").is_err());
-    store.record_et_close("test", "et:interaction:ship", Utc::now()).unwrap();
+    store
+        .record_et_close("test", "et:interaction:ship", UtcDateTime::now())
+        .unwrap();
     store.record_completion_error("test", "goal close failed").unwrap();
     let mut restarted: CampaignStore =
         serde_json::from_value(serde_json::to_value(&store).unwrap()).unwrap();
@@ -260,7 +266,9 @@ fn completion_intent_and_receipts_survive_restart_without_double_closing() {
             .as_deref(),
         Some("goal close failed")
     );
-    restarted.record_et_close("test", "et:interaction:ship", Utc::now()).unwrap();
+    restarted
+        .record_et_close("test", "et:interaction:ship", UtcDateTime::now())
+        .unwrap();
     let initiative = restarted.find_initiative("test").unwrap();
     assert_eq!(initiative.completion_receipts.len(), 1);
     let confirmation = initiative.completion_confirmation.as_ref().unwrap();
@@ -364,15 +372,17 @@ fn owner_reconsideration_starts_a_new_completion_generation_and_retains_history(
             intent_ref: "et:goal:x".into(),
             evidence: vec!["proof.json".into()],
         });
-    store.confirm_completion("test", "Observed first", &first, Utc::now()).unwrap();
-    store.record_et_close("test", "et:goal:x", Utc::now()).unwrap();
+    store
+        .confirm_completion("test", "Observed first", &first, UtcDateTime::now())
+        .unwrap();
+    store.record_et_close("test", "et:goal:x", UtcDateTime::now()).unwrap();
     store
         .decide_initiative_with_budget(
             "test",
             "Reconsider with current evidence",
             &[],
             0,
-            Utc::now(),
+            UtcDateTime::now(),
         )
         .unwrap();
     let view = store.initiative_view("test").unwrap();
@@ -385,16 +395,16 @@ fn owner_reconsideration_starts_a_new_completion_generation_and_retains_history(
     let current = snapshot(&store);
     store.propose_completion("test", "second", current.clone(), reviews()).unwrap();
     store
-        .confirm_completion("test", "Observed second", &current, Utc::now())
+        .confirm_completion("test", "Observed second", &current, UtcDateTime::now())
         .unwrap();
-    store.record_et_close("test", "et:goal:x", Utc::now()).unwrap();
-    store.record_et_close("test", "et:goal:x", Utc::now()).unwrap();
+    store.record_et_close("test", "et:goal:x", UtcDateTime::now()).unwrap();
+    store.record_et_close("test", "et:goal:x", UtcDateTime::now()).unwrap();
     let receipts = &store.find_initiative("test").unwrap().completion_receipts;
     assert_eq!(receipts.len(), 2);
     assert_eq!(receipts[0].proposal_id, "first");
     assert_eq!(receipts[1].proposal_id, "second");
     let old: EtCloseReceipt = serde_json::from_value(
-        serde_json::json!({"intent_ref":"et:goal:old","completed_at":Utc::now()}),
+        serde_json::json!({"intent_ref":"et:goal:old","completed_at":UtcDateTime::now()}),
     )
     .unwrap();
     assert!(

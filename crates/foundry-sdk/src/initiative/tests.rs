@@ -32,7 +32,7 @@ pub(super) fn store() -> CampaignStore {
 fn completion_stops_exhausted_members_and_preserves_terminal_members() {
     for terminal_status in [CampaignStatus::Completed, CampaignStatus::Cancelled] {
         let mut store = store();
-        let at = chrono::Utc::now();
+        let at = crate::time::UtcDateTime::now();
         let member = store.find_mut("one").unwrap();
         member.status = CampaignStatus::Escalated;
         member.cycles_completed = member.budget.max_cycles;
@@ -112,7 +112,7 @@ fn explicit_answer_fans_out_and_closes_only_selected_members() {
             "One first",
             &["one".into()],
             &question_ids(&store, "sample"),
-            chrono::Utc::now(),
+            crate::time::UtcDateTime::now(),
         )
         .unwrap();
     assert_eq!(store.find("one").unwrap().owner_decisions.len(), 1);
@@ -128,7 +128,7 @@ fn explicit_answer_fans_out_and_closes_only_selected_members() {
             "Proceed",
             &[],
             &question_ids(&store, "sample"),
-            chrono::Utc::now(),
+            crate::time::UtcDateTime::now(),
         )
         .unwrap();
     assert!(
@@ -200,7 +200,7 @@ fn question_deduplication_and_budget_are_enforced() {
             "Proceed",
             &[],
             &question_ids(&store, "sample"),
-            chrono::Utc::now(),
+            crate::time::UtcDateTime::now(),
         )
         .unwrap();
     assert!(store.enforce_can_advance("one", &["one".into(), "two".into()]).is_ok());
@@ -227,7 +227,7 @@ fn concurrent_decision_and_campaign_write_preserve_both_and_reads_never_tear() {
         let mut guard = CampaignStore::lock_exclusive(&path).unwrap();
         guard
             .store
-            .decide_initiative("sample", "Continue", &[], chrono::Utc::now())
+            .decide_initiative("sample", "Continue", &[], crate::time::UtcDateTime::now())
             .unwrap();
         guard.save().unwrap();
         assert_eq!(CampaignStore::load(&path).unwrap().initiatives.len(), 1);
@@ -300,7 +300,7 @@ fn initiative_view_coalesces_live_escalations_without_mutating_the_store() {
         campaign.status = CampaignStatus::Escalated;
         campaign.open_escalation = Some(crate::campaign::CampaignEscalation {
             reason: "Choose the order".into(),
-            escalated_at: chrono::Utc::now(),
+            escalated_at: crate::time::UtcDateTime::now(),
             cycles_completed: 0,
             cycles_landed: 0,
             question: Some("Which first?".into()),
@@ -324,7 +324,12 @@ fn initiative_view_coalesces_live_escalations_without_mutating_the_store() {
 fn repeated_member_selectors_record_the_decision_once() {
     let mut store = store();
     let decision = store
-        .decide_initiative("sample", "Proceed", &["one".into(), "one".into()], chrono::Utc::now())
+        .decide_initiative(
+            "sample",
+            "Proceed",
+            &["one".into(), "one".into()],
+            crate::time::UtcDateTime::now(),
+        )
         .unwrap();
     assert_eq!(decision.members, ["one"]);
     assert_eq!(store.find("one").unwrap().owner_decisions.len(), 1);
@@ -335,7 +340,11 @@ fn cancellation_retains_its_reason_on_members_and_clears_pending_continuations()
     let mut store = store();
     assert_eq!(
         store
-            .cancel_initiative("sample", "Owner stopped the outcome", chrono::Utc::now())
+            .cancel_initiative(
+                "sample",
+                "Owner stopped the outcome",
+                crate::time::UtcDateTime::now()
+            )
             .unwrap(),
         Transition::Applied
     );
@@ -382,7 +391,7 @@ fn member_questions_respect_the_budget_without_losing_deferred_escalations() {
         campaign.status = CampaignStatus::Escalated;
         campaign.open_escalation = Some(crate::campaign::CampaignEscalation {
             reason: format!("Question for {name}"),
-            escalated_at: chrono::Utc::now(),
+            escalated_at: crate::time::UtcDateTime::now(),
             cycles_completed: 0,
             cycles_landed: 0,
             question: None,
@@ -420,8 +429,8 @@ fn manual_questions_survive_member_refresh_and_progress_sets_active_status() {
 #[test]
 fn shared_question_keeps_its_original_age_after_one_member_is_answered_and_restart() {
     let mut store = store();
-    let oldest = Utc::now() - chrono::Duration::days(3);
-    for (name, at) in [("one", oldest), ("two", oldest + chrono::Duration::days(1))] {
+    let oldest = UtcDateTime::now() - crate::time::days(3);
+    for (name, at) in [("one", oldest), ("two", oldest + crate::time::days(1))] {
         let campaign = store.find_mut(name).unwrap();
         campaign.status = CampaignStatus::Escalated;
         campaign.open_escalation = Some(crate::campaign::CampaignEscalation {
@@ -442,7 +451,7 @@ fn shared_question_keeps_its_original_age_after_one_member_is_answered_and_resta
             "Use v1",
             &["one".into()],
             &question_ids(&store, "sample"),
-            Utc::now(),
+            UtcDateTime::now(),
         )
         .unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -509,7 +518,7 @@ fn required_task_question_waits_for_a_slot_and_still_blocks_its_member() {
             "One may proceed",
             &["one".into()],
             &question_ids(&store, "sample")[..1],
-            Utc::now(),
+            UtcDateTime::now(),
         )
         .unwrap();
     let view = store.initiative_view("sample").unwrap();
@@ -526,8 +535,8 @@ fn required_task_question_waits_for_a_slot_and_still_blocks_its_member() {
 #[test]
 fn partial_answer_preserves_oldest_member_age_even_before_the_first_saved_refresh() {
     let mut store = store();
-    let oldest = Utc::now() - chrono::Duration::days(3);
-    for (name, age) in [("one", oldest), ("two", oldest + chrono::Duration::days(1))] {
+    let oldest = UtcDateTime::now() - crate::time::days(3);
+    for (name, age) in [("one", oldest), ("two", oldest + crate::time::days(1))] {
         let campaign = store.find_mut(name).unwrap();
         campaign.status = CampaignStatus::Escalated;
         campaign.open_escalation = Some(crate::campaign::CampaignEscalation {
@@ -546,7 +555,7 @@ fn partial_answer_preserves_oldest_member_age_even_before_the_first_saved_refres
             "One uses v1",
             &["one".into()],
             &question_ids(&store, "sample"),
-            Utc::now(),
+            UtcDateTime::now(),
         )
         .unwrap();
     assert_eq!(store.initiative_view("sample").unwrap().open_questions[0].opened_at, oldest);
@@ -557,7 +566,7 @@ fn fully_answered_question_reappears_with_a_new_age() {
     let mut store = store();
     store.record_question("sample", "Which API?", &[]).unwrap();
     store.find_initiative_mut("sample").unwrap().open_questions[0].opened_at =
-        Utc::now() - chrono::Duration::days(3);
+        UtcDateTime::now() - crate::time::days(3);
     let original = store.initiative_view("sample").unwrap().open_questions[0].clone();
     store
         .decide_initiative_answering(
@@ -565,12 +574,12 @@ fn fully_answered_question_reappears_with_a_new_age() {
             "Use v1",
             &[],
             &question_ids(&store, "sample"),
-            Utc::now(),
+            UtcDateTime::now(),
         )
         .unwrap();
     let reopened = store.record_question("sample", "Which API?", &[]).unwrap();
     assert_eq!(reopened.id, original.id);
-    assert!(reopened.opened_at > original.opened_at + chrono::Duration::days(2));
+    assert!(reopened.opened_at > original.opened_at + crate::time::days(2));
 }
 
 #[test]
@@ -585,7 +594,7 @@ fn decision_fans_out_only_to_members_that_can_still_act() {
                 "Proceed",
                 &[],
                 &question_ids(&store, "sample"),
-                chrono::Utc::now(),
+                crate::time::UtcDateTime::now(),
             )
             .unwrap();
 
@@ -606,7 +615,7 @@ fn naming_a_terminal_member_refuses_the_whole_decision() {
         vec!["one".to_string(), "two".to_string()],
     ] {
         let refused = store
-            .decide_initiative("sample", "Proceed", &named, chrono::Utc::now())
+            .decide_initiative("sample", "Proceed", &named, crate::time::UtcDateTime::now())
             .unwrap_err();
         assert_eq!(
             refused,
@@ -617,7 +626,13 @@ fn naming_a_terminal_member_refuses_the_whole_decision() {
         );
         assert!(
             store
-                .decide_initiative_with_budget("sample", "Proceed", &named, 2, chrono::Utc::now())
+                .decide_initiative_with_budget(
+                    "sample",
+                    "Proceed",
+                    &named,
+                    2,
+                    crate::time::UtcDateTime::now()
+                )
                 .is_err()
         );
         assert_eq!(serde_json::to_string(&store).unwrap(), before, "nothing is recorded");
@@ -632,7 +647,13 @@ fn a_decision_with_no_member_left_to_act_records_on_the_initiative_only() {
     let budgets: Vec<_> = store.campaigns.iter().map(|c| c.budget.max_cycles).collect();
 
     let record = store
-        .decide_initiative_with_budget("sample", "Keep the v1 shim", &[], 3, chrono::Utc::now())
+        .decide_initiative_with_budget(
+            "sample",
+            "Keep the v1 shim",
+            &[],
+            3,
+            crate::time::UtcDateTime::now(),
+        )
         .unwrap();
 
     assert!(record.members.is_empty(), "{:?}", record.members);
@@ -665,7 +686,12 @@ fn policy_decision_preserves_unrelated_questions_even_for_the_same_member() {
         .unwrap();
     let before = store.initiative_view("sample").unwrap();
     store
-        .decide_initiative("sample", "Keep the public API stable", &["one".into()], Utc::now())
+        .decide_initiative(
+            "sample",
+            "Keep the public API stable",
+            &["one".into()],
+            UtcDateTime::now(),
+        )
         .unwrap();
     let policy = store.initiative_view("sample").unwrap();
     assert_eq!(policy.open_questions, before.open_questions);
@@ -677,7 +703,7 @@ fn policy_decision_preserves_unrelated_questions_even_for_the_same_member() {
             "Use retry v2",
             &[],
             &[deferred.id.clone(), deferred.id],
-            Utc::now(),
+            UtcDateTime::now(),
         )
         .unwrap();
     let answered = store.initiative_view("sample").unwrap();
@@ -691,7 +717,7 @@ fn policy_decision_preserves_unrelated_questions_even_for_the_same_member() {
 fn answering_a_manual_question_never_clears_a_different_member_escalation() {
     let mut store = store();
     let manual = store.record_question("sample", "Which retry policy?", &["one".into()]).unwrap();
-    let at = Utc::now();
+    let at = UtcDateTime::now();
     let member = store.find_mut("one").unwrap();
     member.status = CampaignStatus::Escalated;
     member.open_escalation = Some(crate::campaign::CampaignEscalation {
@@ -731,7 +757,7 @@ fn answering_a_manual_question_never_clears_a_different_member_escalation() {
 fn answering_escalation_keeps_other_questions_blocking_without_recreating_it() {
     let mut store = store();
     let manual = store.record_question("sample", "Which retry policy?", &["one".into()]).unwrap();
-    let at = Utc::now();
+    let at = UtcDateTime::now();
     let member = store.find_mut("one").unwrap();
     member.status = CampaignStatus::Escalated;
     member.open_escalation = Some(crate::campaign::CampaignEscalation {
@@ -790,7 +816,7 @@ fn invalid_answer_targets_leave_budget_policy_and_campaigns_unchanged() {
                     &members,
                     &ids,
                     4,
-                    Utc::now()
+                    UtcDateTime::now()
                 )
                 .is_err()
         );
@@ -803,7 +829,7 @@ fn status_notes_are_durable_context_without_authority_or_side_effects() {
     let mut store = store();
     store.record_question("sample", "Which API?", &["one".into()]).unwrap();
     store.find_mut("one").unwrap().status = CampaignStatus::Escalated;
-    let at = Utc::now();
+    let at = UtcDateTime::now();
     let before = serde_json::to_value(&store).unwrap();
     assert!(store.record_initiative_status("sample", " ", at).is_err());
     assert_eq!(serde_json::to_value(&store).unwrap(), before);

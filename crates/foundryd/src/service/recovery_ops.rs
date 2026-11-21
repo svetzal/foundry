@@ -1,6 +1,6 @@
 //! Persist operational recheck evidence without creating owner authority.
 use crate::proto;
-use chrono::Utc;
+use foundry_sdk::time::UtcDateTime;
 use foundry_sdk::{
     campaign::{CampaignStatus, CampaignStore},
     event::{Event, EventType},
@@ -36,7 +36,12 @@ pub(super) fn campaign(path: &Path, request: &proto::RecoverRequest) -> Result<R
         CampaignStore::lock_exclusive(path).map_err(|error| Status::internal(error.to_string()))?;
     guard
         .store
-        .recover_campaign(&request.name, &request.recovery_id, &request.evidence, Utc::now())
+        .recover_campaign(
+            &request.name,
+            &request.recovery_id,
+            &request.evidence,
+            UtcDateTime::now(),
+        )
         .map_err(super::initiative_ops::error)?;
     let campaign = guard
         .store
@@ -103,7 +108,12 @@ pub(super) fn initiative(path: &Path, request: &proto::RecoverRequest) -> Result
         CampaignStore::lock_exclusive(path).map_err(|error| Status::internal(error.to_string()))?;
     guard
         .store
-        .recover_initiative(&request.name, &request.recovery_id, &request.evidence, Utc::now())
+        .recover_initiative(
+            &request.name,
+            &request.recovery_id,
+            &request.evidence,
+            UtcDateTime::now(),
+        )
         .map_err(super::initiative_ops::error)?;
     let initiative = guard
         .store

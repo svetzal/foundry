@@ -140,7 +140,7 @@ pub(crate) fn sanitize_gate_name(name: &str) -> String {
 
 /// The run directory name: a UTC timestamp first, so lexical order is
 /// chronological, then a uuid so concurrent runs never collide.
-pub(crate) fn run_dir_name(now: chrono::DateTime<chrono::Utc>, id: uuid::Uuid) -> String {
+pub(crate) fn run_dir_name(now: foundry_sdk::time::UtcDateTime, id: uuid::Uuid) -> String {
     format!("{}-{id}", now.format("%Y%m%dT%H%M%SZ"))
 }
 
@@ -270,7 +270,9 @@ impl<'a> GateLogWriter<'a> {
         if let Some(dir) = &self.run_dir {
             return Ok(dir.clone());
         }
-        let dir = self.root.join(run_dir_name(chrono::Utc::now(), uuid::Uuid::new_v4()));
+        let dir = self
+            .root
+            .join(run_dir_name(foundry_sdk::time::UtcDateTime::now(), uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir)?;
         self.run_dir = Some(dir.clone());
         Ok(dir)
@@ -398,12 +400,15 @@ mod tests {
 
     #[test]
     fn run_directory_names_sort_chronologically() {
-        use chrono::TimeZone as _;
         let id = uuid::Uuid::nil();
-        let earlier =
-            run_dir_name(chrono::Utc.with_ymd_and_hms(2026, 9, 30, 23, 0, 0).unwrap(), id);
-        let later =
-            run_dir_name(chrono::Utc.with_ymd_and_hms(2026, 10, 16, 22, 15, 0).unwrap(), id);
+        let earlier = run_dir_name(
+            foundry_sdk::time::UtcDateTime::from_ymd_hms(2026, 9, 30, 23, 0, 0).unwrap(),
+            id,
+        );
+        let later = run_dir_name(
+            foundry_sdk::time::UtcDateTime::from_ymd_hms(2026, 10, 16, 22, 15, 0).unwrap(),
+            id,
+        );
         assert!(later.starts_with("20261016T221500Z-"));
         assert!(earlier < later);
     }

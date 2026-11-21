@@ -52,7 +52,7 @@ impl TaskBlock for ScanDependencies {
                 &audit_result,
                 &entry.audit_exceptions,
                 &allowlist,
-                chrono::Local::now().date_naive(),
+                foundry_sdk::time::local_today(),
             );
             let notes = format!(
                 "{}{}",

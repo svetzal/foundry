@@ -978,9 +978,8 @@ mod tests {
 
     #[test]
     fn campaign_detail_renders_owner_decision() {
-        let decided_at = chrono::DateTime::parse_from_rfc3339("2026-07-18T12:00:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
+        let decided_at =
+            foundry_sdk::time::UtcDateTime::parse_from_rfc3339("2026-07-18T12:00:00Z").unwrap();
         let campaign = Campaign {
             owner_decisions: vec![OwnerDecision {
                 done_evidence_amendment: None,

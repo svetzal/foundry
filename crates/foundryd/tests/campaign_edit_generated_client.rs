@@ -188,7 +188,7 @@ async fn edit_replaces_evidence_records_the_amendment_reactivates_and_probes_tru
         "Done evidence amended: the grep matched SocketTimeoutException"
     );
     assert_eq!(record.authorized_by, "owner");
-    assert!(chrono::DateTime::parse_from_rfc3339(&record.decided_at).is_ok());
+    assert!(foundry_sdk::time::UtcDateTime::parse_from_rfc3339(&record.decided_at).is_ok());
     let amendment = record.done_evidence_amendment.as_ref().expect("amendment");
     assert_eq!(amendment.previous.len(), 1);
     assert_eq!(amendment.previous[0].command, "! rg -n Timeout src");

@@ -8,16 +8,16 @@
 //! clock), and that task's landing settles the follow-up through lineage.
 use super::*;
 
-use chrono::{DateTime, TimeZone as _, Utc};
 use foundry_sdk::payload::{LoopContext, TaskRunCompletedPayload, TaskVerdict};
+use foundry_sdk::time::UtcDateTime;
 use foundry_sdk::work_item::{FollowUp, FollowUpObligation, WorkItemSpec};
 
 use crate::pacing::PacingScheduler;
 
 const PROJECT: &str = "test-project";
 
-fn at(second: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 10, 20, 12, 0, second).single().expect("valid date")
+fn at(second: u32) -> UtcDateTime {
+    UtcDateTime::from_ymd_hms(2026, 10, 20, 12, 0, second).expect("valid date")
 }
 
 /// A standalone task (or, with `campaign`, a campaign cycle) running now.

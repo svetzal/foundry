@@ -895,7 +895,7 @@ enum ProviderOutage {
     Redispatch {
         objective: String,
         reason: String,
-        not_before: Option<chrono::DateTime<chrono::Utc>>,
+        not_before: Option<foundry_sdk::time::UtcDateTime>,
     },
     /// The re-dispatches ran out: record a `runner_unavailable` recovery.
     Exhausted { detail: String },
@@ -929,7 +929,7 @@ fn provider_outage(
     campaign: &Campaign,
     result: &TaskRunCompletedPayload,
     rechecked: bool,
-    now: chrono::DateTime<chrono::Utc>,
+    now: foundry_sdk::time::UtcDateTime,
 ) -> Option<ProviderOutage> {
     if !result.provider_unavailable() {
         return None;
@@ -974,7 +974,9 @@ fn provider_outage(
                 repeats + 1,
                 PROVIDER_REDISPATCH_DELAYS.len()
             ),
-            not_before: chrono::Duration::from_std(*pause).ok().map(|pause| now + pause),
+            not_before: foundry_sdk::time::SignedDuration::try_from(*pause)
+                .ok()
+                .map(|pause| now + pause),
         },
         None => ProviderOutage::Exhausted {
             detail: format!(
@@ -995,7 +997,7 @@ fn provider_redispatch(
     let request = &execution.request;
     let result = request.run_result.as_ref()?;
     let rechecked = recovery_rechecked_for_run(campaign, request);
-    match provider_outage(campaign, result, rechecked, chrono::Utc::now())? {
+    match provider_outage(campaign, result, rechecked, foundry_sdk::time::UtcDateTime::now())? {
         ProviderOutage::Redispatch {
             objective,
             reason,
@@ -1451,7 +1453,12 @@ fn update_run_and_forced_outcome(
                 // The provider refused the session: the cycle is repeated
                 // after a pause, and the budget check below does not apply to
                 // a cycle that did no work.
-                let detail = match provider_outage(campaign, result, false, chrono::Utc::now()) {
+                let detail = match provider_outage(
+                    campaign,
+                    result,
+                    false,
+                    foundry_sdk::time::UtcDateTime::now(),
+                ) {
                     Some(ProviderOutage::Redispatch { .. }) => return None,
                     Some(ProviderOutage::Exhausted { detail }) => detail,
                     None => detail.clone(),
@@ -1699,7 +1706,7 @@ fn record_recovery_outcome(
             ),
             kind,
             detail,
-            recorded_at: chrono::Utc::now(),
+            recorded_at: foundry_sdk::time::UtcDateTime::now(),
             resolution: None,
         });
     }
@@ -1765,7 +1772,7 @@ fn apply_advance_outcome(
                     .map_or((None, Vec::new()), |(finding, options)| (Some(finding), options));
                 campaign.open_escalation = Some(CampaignEscalation {
                     reason: reason.clone(),
-                    escalated_at: chrono::Utc::now(),
+                    escalated_at: foundry_sdk::time::UtcDateTime::now(),
                     cycles_completed: campaign.cycles_completed,
                     cycles_landed: campaign.cycles_landed,
                     question,
@@ -1828,7 +1835,7 @@ fn apply_advance_outcome(
 struct Redispatch {
     objective: String,
     reason: String,
-    not_before: Option<chrono::DateTime<chrono::Utc>>,
+    not_before: Option<foundry_sdk::time::UtcDateTime>,
 }
 
 /// Dispatch the cycle's objective again, under the cycle number it already
@@ -2980,7 +2987,7 @@ mod tests {
             done_evidence_amendment: None,
             decision: "prefer the smaller slice".to_string(),
             authorized_by: "owner".to_string(),
-            decided_at: chrono::Utc::now(),
+            decided_at: foundry_sdk::time::UtcDateTime::now(),
         });
         assert_eq!(recheck(&formed_from, &decided), Recheck::Changed);
     }
@@ -3125,16 +3132,16 @@ mod tests {
                     origin: "test".to_string(),
                     trace_id: None,
                 },
-                chrono::Utc::now(),
+                foundry_sdk::time::UtcDateTime::now(),
             );
             item.id = id.to_string();
-            item.settle_landed("landed", chrono::Utc::now());
+            item.settle_landed("landed", foundry_sdk::time::UtcDateTime::now());
             item.ci = Some(TrunkCiWatch::pending(
                 "o/r",
                 "main",
                 commit,
-                chrono::DateTime::from_timestamp(1_790_000_000, 0).unwrap()
-                    + chrono::Duration::minutes(minutes),
+                foundry_sdk::time::UtcDateTime::from_timestamp(1_790_000_000, 0).unwrap()
+                    + foundry_sdk::time::SignedDuration::from_mins(minutes),
             ));
             item
         };
@@ -3152,7 +3159,7 @@ mod tests {
                     log_tail: None,
                     detail: None,
                 },
-                chrono::Utc::now(),
+                foundry_sdk::time::UtcDateTime::now(),
             )
             .opened
             .unwrap();
@@ -3959,9 +3966,10 @@ mod tests {
                     decision: "Prefer the generated gRPC client path; do not add raw JSON shims."
                         .to_string(),
                     authorized_by: "owner".to_string(),
-                    decided_at: chrono::DateTime::parse_from_rfc3339("2026-07-18T12:00:00Z")
-                        .unwrap()
-                        .with_timezone(&chrono::Utc),
+                    decided_at: foundry_sdk::time::UtcDateTime::parse_from_rfc3339(
+                        "2026-07-18T12:00:00Z",
+                    )
+                    .unwrap(),
                 }],
                 pending_run_result: None,
                 objective_history: vec![],
@@ -4729,10 +4737,10 @@ mod tests {
             id: "recovery_failed-run_unique".into(),
             kind: RecoveryKind::RunnerUnavailable,
             detail: "runner unavailable".into(),
-            recorded_at: chrono::Utc::now(),
+            recorded_at: foundry_sdk::time::UtcDateTime::now(),
             resolution: Some(RecoveryResolution {
                 evidence: vec!["runner probe passed".into()],
-                resolved_at: chrono::Utc::now(),
+                resolved_at: foundry_sdk::time::UtcDateTime::now(),
             }),
         });
         assert!(
@@ -4859,7 +4867,7 @@ mod tests {
             campaign
                 .record_owner_decision(
                     "Do not remove the v1 endpoint.".to_string(),
-                    chrono::Utc::now(),
+                    foundry_sdk::time::UtcDateTime::now(),
                     0,
                 )
                 .unwrap();
@@ -5172,12 +5180,12 @@ mod tests {
         let agent = FakeAgentGateway::success();
         let block =
             advance_block(agent.clone(), FakeShellGateway::success(), registry, store_path.clone());
-        let before = chrono::Utc::now();
+        let before = foundry_sdk::time::UtcDateTime::now();
 
         let result =
             block.execute(&automatic_advance_trigger(provider_refused_run())).await.unwrap();
 
-        let after = chrono::Utc::now();
+        let after = foundry_sdk::time::UtcDateTime::now();
         assert!(result.success, "{}", result.summary);
         assert!(agent.invocations().is_empty(), "formation must not be asked");
         assert_eq!(
@@ -5191,9 +5199,9 @@ mod tests {
         assert_eq!(dispatch.payload["prompt"], "Implement the parser behind the public API");
         assert_eq!(dispatch.payload["campaign_cycle"], 2);
         assert_eq!(dispatch.payload["base_ref"], "foundry-task/preserved");
-        let not_before: chrono::DateTime<chrono::Utc> =
+        let not_before: foundry_sdk::time::UtcDateTime =
             serde_json::from_value(dispatch.payload["not_before"].clone()).unwrap();
-        let pause = chrono::Duration::minutes(5);
+        let pause = foundry_sdk::time::SignedDuration::from_mins(5);
         assert!(not_before >= before + pause && not_before <= after + pause, "{not_before}");
         let reason = result.events[0].payload["reason"].as_str().unwrap_or_default().to_string();
         assert!(
@@ -5243,7 +5251,7 @@ mod tests {
                 "c",
                 &id,
                 &["codex capacity restored".to_string()],
-                chrono::Utc::now(),
+                foundry_sdk::time::UtcDateTime::now(),
             )
             .unwrap();
         store.save(&store_path).unwrap();
@@ -5383,7 +5391,7 @@ mod tests {
     /// Cycle 2's work item as the ledger settles it from [`preserved_run`].
     fn preserved_cycle_item() -> foundry_sdk::work_item::WorkItem {
         use foundry_sdk::work_item::{WorkItem, WorkItemKind, WorkItemSpec, WorkLane};
-        let at = chrono::Utc::now();
+        let at = foundry_sdk::time::UtcDateTime::now();
         let mut item = WorkItem::dispatched(
             WorkItemSpec {
                 project: "p".to_string(),
@@ -5409,7 +5417,11 @@ mod tests {
             previous_reason: item.reason.clone(),
             previous_settled_at: item.settled_at,
         });
-        item.settle_cancelled(reason, item.disposition.clone(), chrono::Utc::now());
+        item.settle_cancelled(
+            reason,
+            item.disposition.clone(),
+            foundry_sdk::time::UtcDateTime::now(),
+        );
     }
 
     /// A campaign whose cycle 2 preserved its work and which now waits for
@@ -5509,7 +5521,7 @@ mod tests {
     async fn a_preserved_item_superseded_on_trunk_no_longer_carries_forward() {
         let dir = tempfile::tempdir().unwrap();
         let (store_path, registry, item_id) = campaign_awaiting_owner_advance(dir.path(), |item| {
-            item.settle_landed("superseded by 9f3c2e1", chrono::Utc::now());
+            item.settle_landed("superseded by 9f3c2e1", foundry_sdk::time::UtcDateTime::now());
         });
         let agent = advance_decision_agent();
         let shell = FakeShellGateway::success();
@@ -5594,7 +5606,7 @@ mod tests {
         assert_eq!(settled.item_id, closed.id);
         assert_eq!(settled.describe(), "settled cancelled by an owner close: reconciled by hand");
         let mut superseded = preserved;
-        superseded.settle_landed("superseded by 9f3c2e1", chrono::Utc::now());
+        superseded.settle_landed("superseded by 9f3c2e1", foundry_sdk::time::UtcDateTime::now());
         assert_eq!(
             settled_base(&ledger_of(vec![superseded]), "c", "p", PRESERVED_REF)
                 .map(|settled| settled.describe()),
@@ -5625,7 +5637,7 @@ mod tests {
     fn the_latest_item_for_a_ref_decides_whether_it_is_settled() {
         let mut older = preserved_cycle_item();
         close_by_owner(&mut older, "reconciled by hand");
-        older.submitted_at -= chrono::Duration::hours(1);
+        older.submitted_at -= foundry_sdk::time::SignedDuration::from_hours(1);
         let newer = preserved_cycle_item();
         assert_eq!(
             settled_base(&ledger_of(vec![older.clone(), newer.clone()]), "c", "p", PRESERVED_REF),

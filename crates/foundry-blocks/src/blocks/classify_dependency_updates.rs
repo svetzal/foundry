@@ -142,13 +142,11 @@ fn phase_of(trigger: &Event) -> Option<ClassificationPhase> {
 /// The latest supply-chain scan's findings for `project`, if a scan in the
 /// last [`ADVISORY_MAX_AGE_DAYS`] days covered it.
 pub(crate) fn latest_advisories(events_dir: &Path, project: &str) -> Advisories {
-    let since = chrono::Utc::now() - chrono::Duration::days(ADVISORY_MAX_AGE_DAYS);
-    let now = chrono::Utc::now();
-    let months = [
-        since.format("%Y-%m").to_string(),
-        now.format("%Y-%m").to_string(),
-    ];
-    let mut latest: Option<(chrono::DateTime<chrono::Utc>, SupplyChainScannedPayload)> = None;
+    let since =
+        foundry_sdk::time::UtcDateTime::now() - foundry_sdk::time::days(ADVISORY_MAX_AGE_DAYS);
+    let now = foundry_sdk::time::UtcDateTime::now();
+    let months = [since.format("%Y-%m"), now.format("%Y-%m")];
+    let mut latest: Option<(foundry_sdk::time::UtcDateTime, SupplyChainScannedPayload)> = None;
     for month in months.iter().collect::<std::collections::BTreeSet<_>>() {
         let path = events_dir.join(format!("{month}.jsonl"));
         let text = match std::fs::read_to_string(&path) {
@@ -257,7 +255,7 @@ impl TaskBlock for ClassifyDependencyUpdates {
                     source: Some(format!("advisory lookup failed: {e}")),
                 },
             };
-            let today = chrono::Utc::now().date_naive();
+            let today = foundry_sdk::time::UtcDateTime::now().date();
             let classification = dependency_updates::classify(
                 &root,
                 &entry.stack,
@@ -503,7 +501,7 @@ mod tests {
     fn write_scan(
         dir: &std::path::Path,
         project: &str,
-        occurred: chrono::DateTime<chrono::Utc>,
+        occurred: foundry_sdk::time::UtcDateTime,
         fix: &str,
     ) {
         let payload = SupplyChainScannedPayload {
@@ -538,9 +536,19 @@ mod tests {
     #[test]
     fn the_newest_recent_scan_supplies_advisories() {
         let dir = tempfile::tempdir().unwrap();
-        let now = chrono::Utc::now();
-        write_scan(dir.path(), "my-project", now - chrono::Duration::hours(30), "1.0.150");
-        write_scan(dir.path(), "my-project", now - chrono::Duration::hours(20), "1.0.200");
+        let now = foundry_sdk::time::UtcDateTime::now();
+        write_scan(
+            dir.path(),
+            "my-project",
+            now - foundry_sdk::time::SignedDuration::from_hours(30),
+            "1.0.150",
+        );
+        write_scan(
+            dir.path(),
+            "my-project",
+            now - foundry_sdk::time::SignedDuration::from_hours(20),
+            "1.0.200",
+        );
         let a = latest_advisories(dir.path(), "my-project");
         assert_eq!(a.findings.len(), 1);
         assert_eq!(a.findings[0].fix_version.as_deref(), Some("1.0.200"));
@@ -554,7 +562,13 @@ mod tests {
         assert!(a.findings.is_empty(), "expected `a.findings` to be empty: {:?}", a.findings);
         assert!(a.source.unwrap().contains("no supply-chain scan"));
 
-        write_scan(dir.path(), "other", chrono::Utc::now() - chrono::Duration::hours(2), "1.0.0");
+        write_scan(
+            dir.path(),
+            "other",
+            foundry_sdk::time::UtcDateTime::now()
+                - foundry_sdk::time::SignedDuration::from_hours(2),
+            "1.0.0",
+        );
         let a = latest_advisories(dir.path(), "my-project");
         assert!(a.source.unwrap().contains("did not cover this project"));
     }
@@ -566,7 +580,8 @@ mod tests {
         write_scan(
             events.path(),
             "my-project",
-            chrono::Utc::now() - chrono::Duration::hours(3),
+            foundry_sdk::time::UtcDateTime::now()
+                - foundry_sdk::time::SignedDuration::from_hours(3),
             "1.0.228",
         );
         let b = block(dir.path(), Some(UpdatePolicy::Patch), events.path());

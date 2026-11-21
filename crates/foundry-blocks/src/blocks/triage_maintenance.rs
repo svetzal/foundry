@@ -10,10 +10,10 @@
 
 use std::path::PathBuf;
 
-use chrono::Duration;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{MaintenanceSummaryRequestedPayload, MaintenanceTriageCompletedPayload};
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::time::SignedDuration;
 use foundry_sdk::triage::Decision;
 
 use super::{emit_result, triage_core};
@@ -69,7 +69,7 @@ fn triage(
     project: &str,
     throttle: foundry_sdk::throttle::Throttle,
     payload: &MaintenanceSummaryRequestedPayload,
-    trigger_occurred_at: chrono::DateTime<chrono::Utc>,
+    trigger_occurred_at: foundry_sdk::time::UtcDateTime,
     events_dir: &std::path::Path,
     streak_lookback_days: u32,
 ) -> anyhow::Result<TaskBlockResult> {
@@ -77,13 +77,13 @@ fn triage(
     // The maintenance run started roughly `total_duration_ms + 60s margin` before
     // the summary was requested.
     let total_duration_ms = payload.total_duration_ms;
-    let margin = Duration::seconds(60);
-    let run_duration = Duration::milliseconds(i64::try_from(total_duration_ms).unwrap_or(0));
+    let margin = SignedDuration::from_secs(60);
+    let run_duration = SignedDuration::from_millis(i64::try_from(total_duration_ms).unwrap_or(0));
     let window_start = trigger_occurred_at - run_duration - margin;
     let window_end = trigger_occurred_at;
 
     // Read JSONL events covering the run window.
-    let since = window_start - Duration::minutes(5); // small buffer for clock skew
+    let since = window_start - SignedDuration::from_mins(5); // small buffer for clock skew
     let all_events = triage_core::read_events_jsonl(events_dir, since);
 
     // Extract raw failures from the window.
@@ -247,8 +247,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         // Write a JSONL file with a preflight failure inside the run window.
-        let now = chrono::Utc::now();
-        let month = now.format("%Y-%m").to_string();
+        let now = foundry_sdk::time::UtcDateTime::now();
+        let month = now.format("%Y-%m");
         let path = dir.path().join(format!("{month}.jsonl"));
         let mut f = std::fs::File::create(&path).unwrap();
 

@@ -406,7 +406,7 @@ fn settle_owner_stop(
         previous_reason: item.reason.clone(),
         previous_settled_at: item.settled_at,
     });
-    item.settle_cancelled(reason, item.disposition.clone(), chrono::Utc::now());
+    item.settle_cancelled(reason, item.disposition.clone(), foundry_sdk::time::UtcDateTime::now());
     let item = item.clone();
     store
         .save(path)
@@ -605,7 +605,7 @@ pub(super) fn cancel_waiting_campaign_cycles(
         .lock()
         .map_err(|_| Status::internal("work-item ledger write gate poisoned"))?;
     let mut store = load_store(path)?;
-    let now = chrono::Utc::now();
+    let now = foundry_sdk::time::UtcDateTime::now();
     let mut cancelled = Vec::new();
     for item in store.items.iter_mut().filter(|item| {
         item.state.is_waiting()
@@ -644,7 +644,7 @@ pub(super) fn cancel_waiting_initiative(
         .lock()
         .map_err(|_| Status::internal("work-item ledger write gate poisoned"))?;
     let mut store = load_store(path)?;
-    let now = chrono::Utc::now();
+    let now = foundry_sdk::time::UtcDateTime::now();
     let mut cancelled = Vec::new();
     for item in &mut store.items {
         let source_matches = item.source.as_ref().is_some_and(|source| {
@@ -737,7 +737,7 @@ pub(super) enum ResumeSource {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ScheduleHints {
     pub(super) depends_on: Vec<String>,
-    pub(super) not_before: Option<chrono::DateTime<chrono::Utc>>,
+    pub(super) not_before: Option<foundry_sdk::time::UtcDateTime>,
 }
 
 impl ScheduleHints {
@@ -759,14 +759,10 @@ impl ScheduleHints {
 }
 
 /// Parse an RFC 3339 `not_before`, naming the input on failure.
-pub(super) fn parse_not_before(text: &str) -> Result<chrono::DateTime<chrono::Utc>, Status> {
-    chrono::DateTime::parse_from_rfc3339(text.trim())
-        .map(|at| at.with_timezone(&chrono::Utc))
-        .map_err(|error| {
-            Status::invalid_argument(format!(
-                "not_before '{text}' is not an RFC 3339 time: {error}"
-            ))
-        })
+pub(super) fn parse_not_before(text: &str) -> Result<foundry_sdk::time::UtcDateTime, Status> {
+    foundry_sdk::time::UtcDateTime::parse_from_rfc3339(text.trim()).map_err(|error| {
+        Status::invalid_argument(format!("not_before '{text}' is not an RFC 3339 time: {error}"))
+    })
 }
 
 /// Every id in `depends_on` must name a ledger item: a dependency that does
@@ -1115,7 +1111,7 @@ fn staged_rejection(child: &WorkItem) -> WorkItem {
     rejected.state = WorkItemState::Failed;
     rejected.reason = "resume admission incomplete; execution not dispatched".to_string();
     rejected.started_at = None;
-    rejected.settled_at = Some(chrono::Utc::now());
+    rejected.settled_at = Some(foundry_sdk::time::UtcDateTime::now());
     rejected.pending_root = None;
     rejected
 }
@@ -1173,7 +1169,7 @@ fn follow_up_child(parent: &WorkItem, operator_origin: Option<String>) -> WorkIt
             origin: parent.origin.clone(),
             trace_id: Some(foundry_sdk::event::mint_trace_id()),
         },
-        chrono::Utc::now(),
+        foundry_sdk::time::UtcDateTime::now(),
     )
     .with_source(Some(WorkSource::work_item(parent.id.clone())));
     child.queue();
@@ -1214,7 +1210,7 @@ fn resume_child(parent: &WorkItem, base: &str, operator_origin: Option<String>) 
             },
             trace_id: Some(foundry_sdk::event::mint_trace_id()),
         },
-        chrono::Utc::now(),
+        foundry_sdk::time::UtcDateTime::now(),
     )
     .with_source(Some(WorkSource::work_item(parent.id.clone())));
     child.queue();
@@ -1293,7 +1289,7 @@ fn validate_preservation(repo: &str, base: &str) -> Result<(), Status> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{DateTime, Utc};
+    use foundry_sdk::time::UtcDateTime;
 
     use super::{order_group, parse_source_filter, parse_state_filter, selected};
     use foundry_sdk::work_item::{
@@ -1385,7 +1381,7 @@ mod tests {
             &"Original formation evidence. ".repeat(40),
             vec![],
         );
-        older.recorded_at -= chrono::Duration::seconds(1);
+        older.recorded_at -= foundry_sdk::time::SignedDuration::from_secs(1);
         let older_id = older.id.clone();
         guard.store.add_finding(older).unwrap();
         assert_eq!(
@@ -1415,8 +1411,8 @@ mod tests {
         assert_eq!(child.source, Some(WorkSource::initiative("shared", 1)));
     }
 
-    fn at(seconds: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(seconds, 0).expect("in-range timestamp")
+    fn at(seconds: i64) -> UtcDateTime {
+        UtcDateTime::from_timestamp(seconds, 0).expect("in-range timestamp")
     }
 
     fn item(id: &str, project: &str, state: WorkItemState) -> WorkItem {
@@ -1778,9 +1774,9 @@ mod tests {
 
 #[cfg(test)]
 mod owner_stop_tests {
-    use chrono::Utc;
     use foundry_sdk::campaign::CampaignStore;
     use foundry_sdk::initiative::{MemberReservation, ReservationKind};
+    use foundry_sdk::time::UtcDateTime;
     use foundry_sdk::work_item::{
         WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkItemStore, WorkLane,
     };
@@ -1808,7 +1804,7 @@ mod owner_stop_tests {
                 serde_json::json!({"campaign":"one","initiative":"shared",
                     "steering_action_id":"evt_steer"}),
             ),
-            Utc::now(),
+            UtcDateTime::now(),
         );
         let id = item.id.clone();
         WorkItemStore {
@@ -1908,7 +1904,7 @@ mod owner_stop_tests {
                 origin: "cli".into(),
                 trace_id: None,
             },
-            Utc::now(),
+            UtcDateTime::now(),
         );
         item.queue();
         let id = item.id.clone();
@@ -1945,9 +1941,9 @@ mod owner_stop_tests {
                 origin: "cli".into(),
                 trace_id: None,
             },
-            Utc::now(),
+            UtcDateTime::now(),
         );
-        parent.settle_landed("landed", Utc::now());
+        parent.settle_landed("landed", UtcDateTime::now());
         let follow_up = foundry_sdk::work_item::FollowUp {
             of: parent.id.clone(),
             commit: None,
@@ -1955,7 +1951,7 @@ mod owner_stop_tests {
                 gaps: vec!["Document it.".into()],
             },
         }
-        .into_item(&parent, Utc::now());
+        .into_item(&parent, UtcDateTime::now());
         let id = follow_up.id.clone();
         WorkItemStore {
             items: vec![parent, follow_up.clone()],
@@ -1990,7 +1986,7 @@ mod owner_stop_tests {
         let dir = tempfile::tempdir().unwrap();
         let (ledger, campaigns, id) = seeded(dir.path());
         let mut store = WorkItemStore::load(&ledger).unwrap();
-        store.items[0].settle_failed("workflow failed", Utc::now());
+        store.items[0].settle_failed("workflow failed", UtcDateTime::now());
         store.save(&ledger).unwrap();
         let before = std::fs::read(&campaigns).unwrap();
 

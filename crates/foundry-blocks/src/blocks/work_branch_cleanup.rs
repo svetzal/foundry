@@ -483,9 +483,9 @@ mod tests {
                 origin: "test".into(),
                 trace_id: None,
             },
-            chrono::Utc::now(),
+            foundry_sdk::time::UtcDateTime::now(),
         );
-        item.settle_landed("landed", chrono::Utc::now());
+        item.settle_landed("landed", foundry_sdk::time::UtcDateTime::now());
         item.disposition = Some(WorkDisposition {
             task_branch: Some("foundry-task/owned".into()),
             branch_cleanup: Vec::new(),
@@ -752,7 +752,7 @@ mod tests {
                 origin: "test".into(),
                 trace_id: None,
             },
-            chrono::Utc::now(),
+            foundry_sdk::time::UtcDateTime::now(),
         )
         .with_source(Some(WorkSource::campaign(campaign, 1)));
         item.id = id.into();

@@ -165,7 +165,7 @@ async fn settled_standalone_task_keeps_member_capacity_until_cleanup_finishes() 
             origin: "initiative".into(),
             trace_id: None,
         },
-        chrono::Utc::now(),
+        foundry_sdk::time::UtcDateTime::now(),
     );
     item.id = "wi_contract".into();
     item.started_root = Some(Event::new(
@@ -174,7 +174,7 @@ async fn settled_standalone_task_keeps_member_capacity_until_cleanup_finishes() 
         Throttle::Full,
         serde_json::json!({"workflow":"task"}),
     ));
-    item.settle_landed("task landed; cleanup pending", chrono::Utc::now());
+    item.settle_landed("task landed; cleanup pending", foundry_sdk::time::UtcDateTime::now());
     ledger.upsert(item);
     ledger.save(&ledger_path_beside(&path)).unwrap();
     let agent = FakeAgentGateway::success_with(

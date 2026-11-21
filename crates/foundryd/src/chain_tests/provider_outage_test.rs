@@ -185,7 +185,7 @@ fn assert_redispatched_without_anyone_acting(
     cycle: &CampaignCycle,
     advanced: &foundry_sdk::task_block::TaskBlockResult,
     formed: usize,
-    before: chrono::DateTime<chrono::Utc>,
+    before: foundry_sdk::time::UtcDateTime,
 ) {
     assert!(advanced.success, "{}", advanced.summary);
     assert_eq!(formed, 0, "the repeat is not formed");
@@ -193,9 +193,12 @@ fn assert_redispatched_without_anyone_acting(
     assert_eq!(dispatch.payload["prompt"], OBJECTIVE);
     assert_eq!(dispatch.payload["campaign_cycle"], 2);
     assert_eq!(dispatch.payload["base_ref"], cycle.completed().payload["preservation_ref"]);
-    let not_before: chrono::DateTime<chrono::Utc> =
+    let not_before: foundry_sdk::time::UtcDateTime =
         serde_json::from_value(dispatch.payload["not_before"].clone()).unwrap();
-    assert!(not_before >= before + chrono::Duration::minutes(5), "{not_before}");
+    assert!(
+        not_before >= before + foundry_sdk::time::SignedDuration::from_mins(5),
+        "{not_before}"
+    );
     assert!(
         advanced
             .events
@@ -259,7 +262,7 @@ async fn a_campaign_cycle_the_provider_keeps_refusing_is_repeated_without_anyone
     );
     assert!(!everything.contains("\"defect\""));
 
-    let before = chrono::Utc::now();
+    let before = foundry_sdk::time::UtcDateTime::now();
     let (advanced, formed) = cycle.advance().await;
 
     assert_redispatched_without_anyone_acting(&cycle, &advanced, formed, before);
@@ -284,7 +287,7 @@ async fn an_unclassified_capacity_refusal_is_repeated_like_a_classified_one() {
         assert_eq!(completed.payload["failure_kind"], "provider_unavailable");
         assert!(!serde_json::to_string(&cycle.events).unwrap().contains("proof.json"));
 
-        let before = chrono::Utc::now();
+        let before = foundry_sdk::time::UtcDateTime::now();
         let (advanced, formed) = cycle.advance().await;
 
         assert_redispatched_without_anyone_acting(&cycle, &advanced, formed, before);

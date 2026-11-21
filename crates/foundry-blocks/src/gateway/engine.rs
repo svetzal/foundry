@@ -146,7 +146,7 @@ fn ended_payload(
         session_id: session.session_id.to_string(),
         status: session.status.to_string(),
         exit_code: session.exit_code,
-        ended_at: chrono::Utc::now().to_rfc3339(),
+        ended_at: foundry_sdk::time::UtcDateTime::now().to_rfc3339(),
         bytes_written: session.bytes_written,
         error: session.error,
         failure: session.failure.unwrap_or_default(),

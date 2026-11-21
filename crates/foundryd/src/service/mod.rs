@@ -233,7 +233,7 @@ pub(crate) fn track_workflow(event: &Event, tracker: &WorkflowTracker) {
         event_type: event.event_type.to_string(),
         project: event.project.clone(),
         trace_id: event.trace_id.clone().unwrap_or_default(),
-        started_at: chrono::Utc::now(),
+        started_at: foundry_sdk::time::UtcDateTime::now(),
         campaign,
         initiative: event.payload_str("initiative").map(str::to_owned),
     });
@@ -795,7 +795,7 @@ impl Foundry for FoundryService {
         request: Request<EditCampaignRequest>,
     ) -> Result<Response<EditCampaignResponse>, Status> {
         let request = request.into_inner();
-        let now = chrono::Utc::now();
+        let now = foundry_sdk::time::UtcDateTime::now();
         let (detail, target) = self
             .campaign_operation(move |path, ctx| {
                 campaign_ops::edit(path, &ctx.registry, request, now)
@@ -2352,8 +2352,8 @@ mod tests {
         FoundryService::new(ctx, stores)
     }
 
-    fn work_item_at(seconds: i64) -> chrono::DateTime<chrono::Utc> {
-        chrono::DateTime::from_timestamp(seconds, 0).expect("in-range timestamp")
+    fn work_item_at(seconds: i64) -> foundry_sdk::time::UtcDateTime {
+        foundry_sdk::time::UtcDateTime::from_timestamp(seconds, 0).expect("in-range timestamp")
     }
 
     /// One ledger record with every field set explicitly, so a test can choose

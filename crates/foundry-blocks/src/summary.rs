@@ -1,11 +1,11 @@
 use std::fmt::Write as _;
 
-use chrono::{DateTime, Utc};
 use foundry_sdk::payload::{
     Ecosystem, HeldUpdate, LapsedHold, MajorUpgrade, MajorUpgradeStatus, PlannedUpdate, StaleHold,
     UnclassifiedScope, UpdateClass,
 };
 use foundry_sdk::registry::UpdatePolicy;
+use foundry_sdk::time::UtcDateTime;
 
 use crate::wln;
 
@@ -138,7 +138,7 @@ pub(crate) struct MajorsSummary {
 /// Aggregate results for a full maintenance run.
 #[derive(Debug, Clone)]
 pub(crate) struct MaintenanceRunSummary {
-    pub(crate) run_at: DateTime<Utc>,
+    pub(crate) run_at: UtcDateTime,
     pub(crate) total_duration_secs: Option<u64>,
     pub(crate) projects: Vec<ProjectResult>,
     pub(crate) release_audits: Vec<ReleaseAuditEntry>,
@@ -772,10 +772,10 @@ pub(crate) fn render(summary: &MaintenanceRunSummary) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+    use foundry_sdk::time::UtcDateTime;
 
-    fn fixed_time() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 3, 21, 2, 0, 0).unwrap()
+    fn fixed_time() -> UtcDateTime {
+        UtcDateTime::from_ymd_hms(2026, 3, 21, 2, 0, 0).unwrap()
     }
 
     #[test]

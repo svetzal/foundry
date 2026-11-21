@@ -1,0 +1,117 @@
+{
+  "events": [
+    {
+      "id": "evt_db06ca8e78e09ed4cb6a26eb",
+      "event_type": "project_run_started",
+      "project": "synthetic-714",
+      "occurred_at": "2026-09-26T17:29:19.123456789Z",
+      "recorded_at": "2026-09-27T18:30:47.123456789Z",
+      "throttle": "full",
+      "trace_id": "69f92f196ce265a9f3b2fc098c4d228f",
+      "span_id": "f925dc0320670ca4",
+      "parent_span_id": "c4e1795dccf60ba0",
+      "causation_id": "evt_a59743ed03792db24676f82f",
+      "gather_id": "gth_855e91ed04d41b89955d16f6e36048cb",
+      "source": {
+        "kind": "sentinel",
+        "ref": "synthetic-715"
+      },
+      "payload": {
+        "admitted_work_item_id": "wi_921ef513a6635c064584dd36"
+      }
+    },
+    {
+      "id": "evt_2900822558c013937d890aaf",
+      "event_type": "project_validation_completed",
+      "project": "synthetic-716",
+      "occurred_at": "2026-09-28T19:32:29.123456789Z",
+      "recorded_at": "2026-09-29T20:34:25.123456789Z",
+      "throttle": "full",
+      "trace_id": "69f92f196ce265a9f3b2fc098c4d228f",
+      "span_id": "f925dc0320670ca4",
+      "parent_span_id": "c4e1795dccf60ba0",
+      "causation_id": "evt_db06ca8e78e09ed4cb6a26eb",
+      "gather_id": "gth_855e91ed04d41b89955d16f6e36048cb",
+      "source": {
+        "kind": "sentinel",
+        "ref": "synthetic-717"
+      },
+      "payload": {
+        "actions": {
+          "audit": false,
+          "iterate": false,
+          "maintain": true,
+          "push": true,
+          "release": true
+        },
+        "fast_forwarded": 0,
+        "has_gates": true,
+        "project": "synthetic-718",
+        "status": "ok"
+      }
+    }
+  ],
+  "block_executions": [
+    {
+      "block_name": "synthetic-719",
+      "trigger_event_id": "evt_db06ca8e78e09ed4cb6a26eb",
+      "success": true,
+      "summary": "synthetic-720",
+      "emitted_event_ids": [
+        "evt_2900822558c013937d890aaf"
+      ],
+      "duration_ms": 827,
+      "raw_output": null,
+      "exit_code": null,
+      "trigger_payload": {
+        "admitted_work_item_id": "wi_921ef513a6635c064584dd36"
+      },
+      "emitted_payloads": [
+        {
+          "actions": {
+            "audit": false,
+            "iterate": false,
+            "maintain": true,
+            "push": true,
+            "release": true
+          },
+          "fast_forwarded": 0,
+          "has_gates": true,
+          "project": "synthetic-721",
+          "status": "ok"
+        }
+      ],
+      "audit_artifacts": [],
+      "span_id": "b260547323b6d1be",
+      "parent_span_id": "f925dc0320670ca4"
+    },
+    {
+      "block_name": "synthetic-722",
+      "trigger_event_id": "evt_2900822558c013937d890aaf",
+      "success": true,
+      "summary": "synthetic-723",
+      "emitted_event_ids": [],
+      "duration_ms": 437,
+      "raw_output": null,
+      "exit_code": null,
+      "trigger_payload": {
+        "actions": {
+          "audit": false,
+          "iterate": false,
+          "maintain": true,
+          "push": true,
+          "release": true
+        },
+        "fast_forwarded": 0,
+        "has_gates": true,
+        "project": "synthetic-724",
+        "status": "ok"
+      },
+      "emitted_payloads": [],
+      "audit_artifacts": [],
+      "span_id": "733fa02b02ec4e16",
+      "parent_span_id": "f925dc0320670ca4"
+    }
+  ],
+  "total_duration_ms": 118533
+}

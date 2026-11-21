@@ -5,13 +5,13 @@
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use foundry_blocks::trace_writer::TraceWriter;
 use foundry_engine::engine::Engine;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::registry::Registry;
 use foundry_sdk::sentinel::SentinelStore;
 use foundry_sdk::throttle::Throttle;
+use foundry_sdk::time::UtcDateTime;
 use foundry_sdk::trace::{BlockExecution, ProcessResult};
 use foundryd::{
     proto::{
@@ -29,10 +29,8 @@ use tokio::sync::{Notify, broadcast};
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
-fn parse_utc(timestamp: &str) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(timestamp)
-        .expect("valid timestamp")
-        .with_timezone(&Utc)
+fn parse_utc(timestamp: &str) -> UtcDateTime {
+    UtcDateTime::parse_from_rfc3339(timestamp).expect("valid timestamp")
 }
 
 struct EventFixture<'a> {
@@ -376,7 +374,7 @@ async fn generated_client_history_filters_project_and_preserves_order() {
 
     let response = client
         .history(HistoryRequest {
-            date: Utc::now().format("%Y-%m-%d").to_string(),
+            date: UtcDateTime::now().format("%Y-%m-%d"),
             project: "alpha".to_string(),
             recent_days: 7,
         })

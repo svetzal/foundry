@@ -1,6 +1,6 @@
 //! Outcome evidence and explicit, resumable owner confirmation.
 
-use chrono::{DateTime, Utc};
+use crate::time::UtcDateTime;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -53,7 +53,7 @@ pub struct IntegrationGateResult {
     pub exit_code: Option<i32>,
     pub report: String,
     pub artifacts: Vec<String>,
-    pub recorded_at: DateTime<Utc>,
+    pub recorded_at: UtcDateTime,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,14 +69,14 @@ pub struct CompletionProposal {
     pub id: String,
     pub snapshot: OutcomeSnapshot,
     pub reviews: Vec<OutcomeReview>,
-    pub proposed_at: DateTime<Utc>,
+    pub proposed_at: UtcDateTime,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompletionConfirmation {
     pub proposal_id: String,
     pub reason: String,
-    pub confirmed_at: DateTime<Utc>,
+    pub confirmed_at: UtcDateTime,
     pub last_error: Option<String>,
     #[serde(default)]
     pub intent_json: Option<String>,
@@ -87,7 +87,7 @@ pub struct EtCloseReceipt {
     #[serde(default)]
     pub proposal_id: String,
     pub intent_ref: String,
-    pub completed_at: DateTime<Utc>,
+    pub completed_at: UtcDateTime,
 }
 
 impl CampaignStore {
@@ -426,7 +426,7 @@ impl CampaignStore {
             id: id.into(),
             snapshot,
             reviews,
-            proposed_at: Utc::now(),
+            proposed_at: UtcDateTime::now(),
         });
         Ok(())
     }
@@ -455,7 +455,7 @@ impl CampaignStore {
         name: &str,
         reason: &str,
         snapshot: &OutcomeSnapshot,
-        at: DateTime<Utc>,
+        at: UtcDateTime,
     ) -> Result<()> {
         self.validate_completion(name, snapshot)?;
         if reason.trim().is_empty() {
@@ -521,12 +521,7 @@ impl CampaignStore {
         Ok(())
     }
 
-    pub fn record_et_close(
-        &mut self,
-        name: &str,
-        intent_ref: &str,
-        at: DateTime<Utc>,
-    ) -> Result<()> {
+    pub fn record_et_close(&mut self, name: &str, intent_ref: &str, at: UtcDateTime) -> Result<()> {
         let initiative = self
             .find_initiative_mut(name)
             .ok_or_else(|| InitiativeError::NotFound(name.into()))?;

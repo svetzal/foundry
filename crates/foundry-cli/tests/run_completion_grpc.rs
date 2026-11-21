@@ -205,7 +205,7 @@ fn run(daemon: &Daemon, project: bool) -> tokio::process::Child {
 fn events(daemon: &Daemon) -> Vec<Event> {
     foundry_blocks::blocks::triage_core::read_events_jsonl(
         &daemon.state.path().join("events"),
-        chrono::Utc::now() - chrono::Duration::days(1),
+        foundry_sdk::time::UtcDateTime::now() - foundry_sdk::time::days(1),
     )
 }
 

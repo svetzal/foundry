@@ -6,13 +6,13 @@ use std::process::Command;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use foundry_blocks::trace_writer::TraceWriter;
 use foundry_engine::engine::Engine;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::registry::Registry;
 use foundry_sdk::sentinel::SentinelStore;
 use foundry_sdk::throttle::Throttle;
+use foundry_sdk::time::UtcDateTime;
 use foundry_sdk::trace::{BlockExecution, ProcessResult};
 use foundryd::{
     proto::foundry_server::FoundryServer,
@@ -27,10 +27,8 @@ use tonic::transport::Server;
 
 const DUMMY_ADDR: &str = "http://127.0.0.1:9";
 
-fn parse_utc(timestamp: &str) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(timestamp)
-        .expect("valid timestamp")
-        .with_timezone(&Utc)
+fn parse_utc(timestamp: &str) -> UtcDateTime {
+    UtcDateTime::parse_from_rfc3339(timestamp).expect("valid timestamp")
 }
 
 fn make_event(
@@ -329,7 +327,7 @@ async fn online_history_reads_daemon_owned_filtered_history_and_leaves_client_tr
     let client_traces = missing_client_traces_dir(client_home.path());
     assert_client_traces_absent(&client_traces, "history precondition");
 
-    let today = Utc::now().format("%Y-%m-%d").to_string();
+    let today = UtcDateTime::now().format("%Y-%m-%d");
     let output = run_foundry(
         client_home.path(),
         &client_traces,
@@ -456,7 +454,7 @@ async fn online_status_unknown_span_keeps_existing_not_found_message() {
 async fn unreachable_online_observability_commands_leave_client_traces_unchanged() {
     let client_home = tempfile::tempdir().expect("client home");
     let (client_traces, trap_file, before) = seed_client_traces_trap(client_home.path());
-    let today = Utc::now().format("%Y-%m-%d").to_string();
+    let today = UtcDateTime::now().format("%Y-%m-%d");
 
     let history = run_foundry(
         client_home.path(),

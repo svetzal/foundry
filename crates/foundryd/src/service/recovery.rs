@@ -15,9 +15,9 @@
 use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 
-use chrono::{DateTime, Duration, Utc};
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{GatherCompletedPayload, GatheredChild, InterruptedCycle, MissingChild};
+use foundry_sdk::time::UtcDateTime;
 use foundry_sdk::trace::ProcessResult;
 
 use super::RuntimeContext;
@@ -87,17 +87,14 @@ impl InterruptedRun {
         ProcessResult {
             events,
             block_executions: Vec::new(),
-            total_duration_ms: u64::try_from(elapsed.num_milliseconds()).unwrap_or(0),
+            total_duration_ms: u64::try_from(elapsed.as_millis()).unwrap_or(0),
         }
     }
 }
 
 /// System maintenance cycles started at or after `since` that have no
 /// `MaintenanceCycleCompleted` on their trace.
-pub(crate) fn find_interrupted_cycles(
-    events: &[Event],
-    since: DateTime<Utc>,
-) -> Vec<InterruptedRun> {
+pub(crate) fn find_interrupted_cycles(events: &[Event], since: UtcDateTime) -> Vec<InterruptedRun> {
     let completed: HashSet<&str> = events
         .iter()
         .filter(|e| e.event_type == EventType::MaintenanceCycleCompleted)
@@ -211,7 +208,7 @@ async fn rejoin_waiting_maintenance(ctx: &RuntimeContext, run: &mut InterruptedR
 
 /// Held children can outlive the ordinary event lookback. Include the prior
 /// day so their system cycle root, emitted before the scatter, remains visible.
-fn recovery_since(now: DateTime<Utc>, items: &[foundry_sdk::work_item::WorkItem]) -> DateTime<Utc> {
+fn recovery_since(now: UtcDateTime, items: &[foundry_sdk::work_item::WorkItem]) -> UtcDateTime {
     items
         .iter()
         .filter(|item| {
@@ -226,9 +223,9 @@ fn recovery_since(now: DateTime<Utc>, items: &[foundry_sdk::work_item::WorkItem]
                 .filter(|root| {
                     root.event_type == EventType::ProjectRunStarted && root.gather_id.is_some()
                 })
-                .map(|root| item.submitted_at.min(root.occurred_at) - Duration::days(1))
+                .map(|root| item.submitted_at.min(root.occurred_at) - foundry_sdk::time::days(1))
         })
-        .fold(now - Duration::days(LOOKBACK_DAYS), DateTime::min)
+        .fold(now - foundry_sdk::time::days(LOOKBACK_DAYS), UtcDateTime::min)
 }
 
 /// Find and close every interrupted cycle in the last [`LOOKBACK_DAYS`].
@@ -241,7 +238,7 @@ pub(crate) async fn recover_interrupted_cycles(ctx: &RuntimeContext, events_dir:
             return;
         }
     };
-    let since = recovery_since(Utc::now(), &items);
+    let since = recovery_since(UtcDateTime::now(), &items);
     let events = foundry_blocks::blocks::triage_core::read_events_jsonl(events_dir, since);
     for mut run in find_interrupted_cycles(&events, since) {
         rejoin_waiting_maintenance(ctx, &mut run, &foundry_sdk::paths::work_items_path()).await;
@@ -281,23 +278,23 @@ pub(crate) async fn recover_interrupted_cycles(ctx: &RuntimeContext, events_dir:
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone as _;
     use foundry_sdk::throttle::Throttle;
+    use foundry_sdk::time::{SignedDuration, UtcDateTime};
 
     use super::*;
 
-    fn at(h: u32, m: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 9, 26, h, m, 0).unwrap()
+    fn at(h: u32, m: u32) -> UtcDateTime {
+        UtcDateTime::from_ymd_hms(2026, 9, 26, h, m, 0).unwrap()
     }
 
-    fn event(ty: EventType, project: &str, trace: &str, when: DateTime<Utc>) -> Event {
+    fn event(ty: EventType, project: &str, trace: &str, when: UtcDateTime) -> Event {
         let mut e = Event::new(ty, project.to_string(), Throttle::Full, serde_json::json!({}))
             .with_trace_id(Some(trace.to_string()));
         e.occurred_at = when;
         e
     }
 
-    fn completed(project: &str, trace: &str, when: DateTime<Utc>) -> Event {
+    fn completed(project: &str, trace: &str, when: UtcDateTime) -> Event {
         let mut e = event(EventType::ProjectRunCompleted, project, trace, when);
         e.payload = serde_json::json!({ "success": true });
         e
@@ -378,7 +375,7 @@ mod tests {
     #[test]
     fn a_maintenance_child_held_over_a_week_retains_its_original_cycle() {
         use foundry_sdk::work_item::{WorkItem, WorkItemKind, WorkItemSpec, WorkLane};
-        let now = Utc::now();
+        let now = UtcDateTime::now();
         let mut cycle = Event::new(
             EventType::MaintenanceCycleStarted,
             "system".into(),
@@ -386,7 +383,7 @@ mod tests {
             serde_json::json!({}),
         )
         .with_trace_id(Some("old-cycle".into()));
-        cycle.occurred_at = now - Duration::days(20);
+        cycle.occurred_at = now - foundry_sdk::time::days(20);
         let mut child = Event::new(
             EventType::ProjectRunStarted,
             "alpha".into(),
@@ -395,7 +392,7 @@ mod tests {
         )
         .with_trace_id(cycle.trace_id.clone())
         .with_gather_id(Some("old-gather".into()));
-        child.occurred_at = cycle.occurred_at + Duration::seconds(1);
+        child.occurred_at = cycle.occurred_at + SignedDuration::from_secs(1);
         let mut item = WorkItem::queued(
             WorkItemSpec {
                 project: "alpha".into(),

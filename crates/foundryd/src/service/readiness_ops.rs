@@ -39,7 +39,7 @@ fn to_proto(check: SteeringPrecheck) -> proto::InitiativeReadiness {
         dispatch_open: check.dispatch_open,
         occupied: check.occupied,
         max_active_members: u64::try_from(check.max_active_members).unwrap_or(u64::MAX),
-        observed_at: chrono::Utc::now().to_rfc3339(),
+        observed_at: foundry_sdk::time::UtcDateTime::now().to_rfc3339(),
         live: true,
     }
 }

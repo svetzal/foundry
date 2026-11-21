@@ -56,7 +56,7 @@ impl Fixture {
                 origin: EventType::InitiativeAdvanceRequested.to_string(),
                 trace_id: None,
             },
-            chrono::Utc::now(),
+            foundry_sdk::time::UtcDateTime::now(),
         );
         item.started_root = Some(trigger.clone());
         item.reserved_projects = reserved.iter().map(ToString::to_string).collect();
@@ -64,7 +64,7 @@ impl Fixture {
         for earlier in &mut ledger.items {
             if earlier.occupies_slot() && earlier.kind == WorkItemKind::Workflow {
                 earlier.execution_completed = true;
-                earlier.settle_landed("steered", chrono::Utc::now());
+                earlier.settle_landed("steered", foundry_sdk::time::UtcDateTime::now());
             }
         }
         ledger.upsert(item);
@@ -196,7 +196,7 @@ impl AgentGateway for EditOwner {
                 "shared",
                 "Owner changed priorities",
                 &[],
-                chrono::Utc::now(),
+                foundry_sdk::time::UtcDateTime::now(),
             )?;
             guard.save()?;
             Ok(AgentResponse::success(ask()))
@@ -324,10 +324,10 @@ fn task_landing_consumes_only_the_shown_findings_and_records_verified_milestones
             trace_id: None,
         },
         root,
-        chrono::Utc::now(),
+        foundry_sdk::time::UtcDateTime::now(),
     );
     item.started_root = item.pending_root.clone();
-    item.start(chrono::Utc::now());
+    item.start(foundry_sdk::time::UtcDateTime::now());
     item.execution_completed = true;
     item.disposition = Some(WorkDisposition {
         landed_commit: Some("abc123".into()),
@@ -483,7 +483,7 @@ async fn cleanup_owner_that_arrives_after_steer_refuses_child_and_releases_reser
             origin: "owner".into(),
             trace_id: None,
         },
-        chrono::Utc::now(),
+        foundry_sdk::time::UtcDateTime::now(),
     );
     owner.started_root = Some(Event::new(
         EventType::ExecutionRequested,
@@ -491,7 +491,7 @@ async fn cleanup_owner_that_arrives_after_steer_refuses_child_and_releases_reser
         Throttle::Full,
         serde_json::json!({"project":"sample"}),
     ));
-    owner.settle_landed("done but cleanup pending", chrono::Utc::now());
+    owner.settle_landed("done but cleanup pending", foundry_sdk::time::UtcDateTime::now());
     WorkItemStore {
         items: vec![owner],
         ..Default::default()

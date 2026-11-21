@@ -65,7 +65,7 @@ pub struct WorkItemEventPayload {
     pub depends_on: Vec<String>,
     /// The earliest time the scheduler may start it. Absent when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub not_before: Option<chrono::DateTime<chrono::Utc>>,
+    pub not_before: Option<crate::time::UtcDateTime>,
 }
 
 impl WorkItemEventPayload {
@@ -149,7 +149,7 @@ pub struct PacingPayload {
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
+    use crate::time::UtcDateTime;
 
     use super::WorkItemEventPayload;
     use crate::work_item::{WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkLane};
@@ -165,7 +165,7 @@ mod tests {
                 origin: "campaign tidy-cli cycle 3".to_string(),
                 trace_id: Some("a".repeat(32)),
             },
-            Utc::now(),
+            UtcDateTime::now(),
         )
     }
 
@@ -202,7 +202,7 @@ mod tests {
     #[test]
     fn a_settled_item_reports_its_disposition() {
         let mut settled = item();
-        settled.settle_failed("daemon restarted", Utc::now());
+        settled.settle_failed("daemon restarted", UtcDateTime::now());
         let payload = WorkItemEventPayload::from_item(&settled);
         assert_eq!(payload.state, WorkItemState::Failed);
         assert_eq!(payload.reason, "daemon restarted");

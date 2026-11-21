@@ -207,7 +207,7 @@ impl SteerInitiative {
                         item.settle_cancelled(
                             "initiative intent was discarded or revoked",
                             item.disposition.clone(),
-                            chrono::Utc::now(),
+                            foundry_sdk::time::UtcDateTime::now(),
                         );
                         events.push(Event::new(
                             EventType::WorkItemCancelled,

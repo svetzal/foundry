@@ -8,11 +8,11 @@
 use std::path::{Component, Path};
 
 use anyhow::{Context, Result, bail};
-use chrono::Utc;
 use foundry_sdk::campaign::{
     Campaign, CampaignStatus, CampaignStore, DoneEvidence, Transition, check_inline_context_budget,
 };
 use foundry_sdk::registry::Registry;
+use foundry_sdk::time::UtcDateTime;
 
 use crate::daemon::{connect_daemon_required, status_to_anyhow};
 use crate::proto::{
@@ -555,7 +555,7 @@ fn cancel_offline_and_render(store_path: &Path, name: &str, reason: &str) -> Res
         .store
         .find_mut(name)
         .ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
-    let transition = campaign.cancel(reason, Utc::now())?;
+    let transition = campaign.cancel(reason, UtcDateTime::now())?;
     let rendered = render::campaign::campaign_detail(campaign);
     if transition == Transition::Applied {
         guard.save()?;
@@ -838,7 +838,7 @@ fn decide_offline_and_render(
         .store
         .find_mut(name)
         .ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
-    campaign.record_owner_decision(decision.to_string(), Utc::now(), add_cycles)?;
+    campaign.record_owner_decision(decision.to_string(), UtcDateTime::now(), add_cycles)?;
     let rendered = render::campaign::campaign_detail(campaign);
     guard.save()?;
     Ok(rendered)
@@ -856,7 +856,7 @@ fn edit_offline_and_render(
         .find_mut(name)
         .ok_or_else(|| anyhow::anyhow!("campaign '{name}' not found"))?;
     let note = render::campaign::gate_probes_offline_note(&evidence);
-    campaign.amend_done_evidence(evidence, reason, Utc::now())?;
+    campaign.amend_done_evidence(evidence, reason, UtcDateTime::now())?;
     let rendered = render::campaign::campaign_detail_proto(&detail_to_proto(campaign));
     guard.save()?;
     Ok(format!("{rendered}{note}"))
@@ -885,7 +885,7 @@ fn complete_offline_and_render(
         .into_iter()
         .map(|item| item.id.clone())
         .collect();
-    let transition = campaign.complete(reason, Utc::now(), &open_trunk_ci)?;
+    let transition = campaign.complete(reason, UtcDateTime::now(), &open_trunk_ci)?;
     let rendered = render::campaign::campaign_detail(campaign);
     if transition == Transition::Applied {
         guard.save()?;
@@ -1111,7 +1111,7 @@ mod tests {
                 origin: "test".to_string(),
                 trace_id: None,
             },
-            Utc::now(),
+            UtcDateTime::now(),
         );
         let red = FollowUp {
             of: parent.id.clone(),
@@ -1122,7 +1122,7 @@ mod tests {
                 run_url: None,
             },
         }
-        .into_item(&parent, Utc::now());
+        .into_item(&parent, UtcDateTime::now());
         let red_id = red.id.clone();
         let mut items = WorkItemStore::default();
         items.upsert(parent);
@@ -1143,7 +1143,7 @@ mod tests {
         items
             .find_mut(&red_id)
             .unwrap()
-            .settle_landed("trunk CI green at x", Utc::now());
+            .settle_landed("trunk CI green at x", UtcDateTime::now());
         items.save(&ledger).unwrap();
         complete_and_render(&store, &ledger, "http://127.0.0.1:0", true, "c", "shipped")
             .await

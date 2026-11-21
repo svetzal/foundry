@@ -14,12 +14,12 @@
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use chrono::Utc;
 use foundry_blocks::trace_writer::TraceWriter;
 use foundry_engine::engine::Engine;
 use foundry_engine::event_writer::EventWriter;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::registry::Registry;
+use foundry_sdk::time::UtcDateTime;
 use foundry_sdk::work_item::{
     WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkItemStore, WorkLane,
 };
@@ -68,7 +68,7 @@ fn running_item(project: &str) -> WorkItem {
             origin: "foundry task".to_string(),
             trace_id: Some("a".repeat(32)),
         },
-        Utc::now(),
+        UtcDateTime::now(),
     )
 }
 

@@ -31,7 +31,7 @@
 
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
+use crate::time::UtcDateTime;
 
 use crate::event::{Event, EventType};
 use crate::payload::WorkItemEventPayload;
@@ -44,7 +44,7 @@ pub struct WorkItemEventRecord {
     /// Which of the `work_item_*` event types this is.
     pub event_type: EventType,
     /// When the event occurred.
-    pub occurred_at: DateTime<Utc>,
+    pub occurred_at: UtcDateTime,
     /// The workflow trace the event was emitted on, when it carries one.
     pub trace_id: Option<String>,
     /// The item as it stood at this event.
@@ -180,7 +180,7 @@ fn parse_record(line: &str) -> Result<Option<WorkItemEventRecord>, serde_json::E
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone as _;
+    use crate::time::UtcDateTime;
 
     use super::*;
     use crate::throttle::Throttle;
@@ -196,7 +196,7 @@ mod tests {
                 origin: "test".to_string(),
                 trace_id: Some("a".repeat(32)),
             },
-            Utc::now(),
+            UtcDateTime::now(),
         );
         item.id = id.to_string();
         item
@@ -206,7 +206,7 @@ mod tests {
         event_type: EventType,
         id: &str,
         state: WorkItemState,
-        occurred: DateTime<Utc>,
+        occurred: UtcDateTime,
     ) -> Event {
         let mut subject = item(id);
         subject.state = state;
@@ -223,8 +223,8 @@ mod tests {
         event
     }
 
-    fn at(month: u32, second: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, month, 1, 0, 0, second).single().expect("valid date")
+    fn at(month: u32, second: u32) -> UtcDateTime {
+        UtcDateTime::from_ymd_hms(2026, month, 1, 0, 0, second).expect("valid date")
     }
 
     fn line(event: &Event) -> String {

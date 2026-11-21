@@ -9,29 +9,29 @@ pub(crate) fn parse_throttle(s: &str) -> i32 {
 /// such as `30m`, `2h` or `1d` (units `s`, `m`, `h`, `d`).
 pub(crate) fn parse_not_before(
     text: &str,
-    now: chrono::DateTime<chrono::Utc>,
-) -> anyhow::Result<chrono::DateTime<chrono::Utc>> {
+    now: foundry_sdk::time::UtcDateTime,
+) -> anyhow::Result<foundry_sdk::time::UtcDateTime> {
     let text = text.trim();
-    if let Ok(at) = chrono::DateTime::parse_from_rfc3339(text) {
-        return Ok(at.with_timezone(&chrono::Utc));
+    if let Ok(at) = foundry_sdk::time::UtcDateTime::parse_from_rfc3339(text) {
+        return Ok(at);
     }
-    let duration = parse_duration(text).ok_or_else(|| {
+    parse_duration(text).and_then(|duration| now.checked_add(duration)).ok_or_else(|| {
         anyhow::anyhow!(
             "--not-before takes an RFC 3339 time (2026-10-11T09:00:00Z) or a duration such as 2h; got '{text}'"
         )
-    })?;
-    Ok(now + duration)
+    })
 }
 
 /// Parse a duration like `90s`, `30m`, `2h` or `1d`.
-fn parse_duration(text: &str) -> Option<chrono::Duration> {
+fn parse_duration(text: &str) -> Option<foundry_sdk::time::SignedDuration> {
+    use foundry_sdk::time::SignedDuration;
     let (digits, unit) = text.split_at(text.find(|c: char| !c.is_ascii_digit())?);
     let amount: i64 = digits.parse().ok()?;
     match unit {
-        "s" => Some(chrono::Duration::seconds(amount)),
-        "m" => Some(chrono::Duration::minutes(amount)),
-        "h" => Some(chrono::Duration::hours(amount)),
-        "d" => Some(chrono::Duration::days(amount)),
+        "s" => Some(SignedDuration::from_secs(amount)),
+        "m" => SignedDuration::try_from_mins(amount),
+        "h" => SignedDuration::try_from_hours(amount),
+        "d" => SignedDuration::try_from_hours(amount.checked_mul(24)?),
         _ => None,
     }
 }
@@ -137,7 +137,7 @@ mod tests {
 
     // -- parse_not_before tests --
 
-    fn now() -> chrono::DateTime<chrono::Utc> {
+    fn now() -> foundry_sdk::time::UtcDateTime {
         "2026-10-10T12:00:00Z".parse().unwrap()
     }
 
@@ -169,7 +169,15 @@ mod tests {
 
     #[test]
     fn not_before_names_what_it_rejects() {
-        for bad in ["tomorrow", "2h30m", "", "h2", "10"] {
+        for bad in [
+            "tomorrow",
+            "2h30m",
+            "",
+            "h2",
+            "10",
+            "768614336404564651d",
+            "99999999999999h",
+        ] {
             let err = parse_not_before(bad, now()).unwrap_err();
             assert!(err.to_string().contains("--not-before takes"), "{bad}: {err}");
         }

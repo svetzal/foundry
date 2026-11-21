@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use chrono::{DateTime, TimeZone as _, Utc};
 use foundry_blocks::trace_writer::TraceWriter;
 use foundry_engine::engine::Engine;
 use foundry_engine::event_writer::EventWriter;
@@ -20,6 +19,7 @@ use foundry_sdk::payload::WorkItemEventPayload;
 use foundry_sdk::registry::Registry;
 use foundry_sdk::sentinel::SentinelStore;
 use foundry_sdk::throttle::Throttle;
+use foundry_sdk::time::UtcDateTime;
 use foundry_sdk::work_item::{
     WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkItemStore, WorkLane,
 };
@@ -44,7 +44,7 @@ fn item(id: &str, kind: WorkItemKind, lane: WorkLane) -> WorkItem {
             origin: "maintenance cycle".to_string(),
             trace_id: Some(SHARED_TRACE.to_string()),
         },
-        Utc::now(),
+        UtcDateTime::now(),
     );
     item.id = id.to_string();
     item
@@ -57,7 +57,7 @@ fn lifecycle_event(
     event_type: EventType,
     state: WorkItemState,
     reason: &str,
-    occurred_at: DateTime<Utc>,
+    occurred_at: UtcDateTime,
 ) -> Event {
     let mut snapshot = subject.clone();
     snapshot.state = state;
@@ -75,10 +75,8 @@ fn lifecycle_event(
     event
 }
 
-fn at(year: i32, month: u32, day: u32, second: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(year, month, day, 12, 0, second)
-        .single()
-        .expect("valid date")
+fn at(year: i32, month: u32, day: u32, second: u32) -> UtcDateTime {
+    UtcDateTime::from_ymd_hms(year, month, day, 12, 0, second).expect("valid date")
 }
 
 struct Fixture {

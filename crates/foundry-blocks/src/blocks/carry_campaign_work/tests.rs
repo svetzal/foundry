@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Duration, Utc};
 use foundry_sdk::campaign::{
     Campaign, CampaignBudget, CampaignStatus, CampaignStore, DoneEvidence, Transition,
 };
@@ -10,6 +9,7 @@ use foundry_sdk::payload::{
 };
 use foundry_sdk::task_block::TaskBlock;
 use foundry_sdk::throttle::Throttle;
+use foundry_sdk::time::{SignedDuration, UtcDateTime};
 use foundry_sdk::work_item::{
     WorkDisposition, WorkItem, WorkItemKind, WorkItemOperatorAction, WorkItemSpec, WorkItemState,
     WorkItemStore, WorkLane,
@@ -21,10 +21,8 @@ use super::{SettleCarriedCampaignWork, sweep_for};
 const PROJECT: &str = "alpha";
 const CAMPAIGN: &str = "transient-recovery";
 
-fn start() -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339("2026-10-10T00:00:00Z")
-        .unwrap()
-        .with_timezone(&Utc)
+fn start() -> UtcDateTime {
+    UtcDateTime::parse_from_rfc3339("2026-10-10T00:00:00Z").unwrap()
 }
 
 /// A work item submitted `minutes` after `start()`, in `state`, preserving
@@ -43,14 +41,14 @@ fn item(id: &str, source: Option<WorkSource>, state: WorkItemState, minutes: i64
             origin: "campaign".into(),
             trace_id: Some(format!("{minutes:0>32}")),
         },
-        start() + Duration::minutes(minutes),
+        start() + SignedDuration::from_mins(minutes),
     )
     .with_source(source);
     item.id = id.into();
     item.state = state;
     if state.is_open() {
         item.reason = format!("{} by its run", state.tag());
-        item.settled_at = Some(start() + Duration::minutes(minutes + 1));
+        item.settled_at = Some(start() + SignedDuration::from_mins(minutes + 1));
         item.disposition = Some(WorkDisposition {
             task_branch: Some(format!("foundry-task/{id}")),
             branch_cleanup: Vec::new(),

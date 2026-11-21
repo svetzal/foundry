@@ -656,7 +656,7 @@ pub async fn resume_item(
 ) -> Result<()> {
     anyhow::ensure!(!offline, "queue resume requires foundryd; --offline is not supported");
     let not_before = not_before
-        .map(|text| crate::commands::parse_not_before(text, chrono::Utc::now()))
+        .map(|text| crate::commands::parse_not_before(text, foundry_sdk::time::UtcDateTime::now()))
         .transpose()?;
     let mut client = crate::daemon::connect_daemon_online(addr).await?;
     let item = client
@@ -774,7 +774,7 @@ mod tests {
         );
     }
 
-    use chrono::{DateTime, Utc};
+    use foundry_sdk::time::UtcDateTime;
     use foundry_sdk::work_item::{
         WorkDisposition, WorkItemKind, WorkItemSpec, WorkItemStore, WorkLane,
     };
@@ -782,8 +782,8 @@ mod tests {
 
     use super::*;
 
-    fn at(seconds: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(seconds, 0).expect("in-range timestamp")
+    fn at(seconds: i64) -> UtcDateTime {
+        UtcDateTime::from_timestamp(seconds, 0).expect("in-range timestamp")
     }
 
     fn item(id: &str, project: &str, state: WorkItemState, settled: i64) -> WorkItem {

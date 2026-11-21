@@ -647,7 +647,7 @@ pub struct CycleOutcome {
 pub struct OwnerDecision {
     pub decision: String,
     pub authorized_by: String,
-    pub decided_at: chrono::DateTime<chrono::Utc>,
+    pub decided_at: crate::time::UtcDateTime,
     /// Present only on the record `foundry campaign edit` appends: the done
     /// evidence this decision replaced and what replaced it. The decision text
     /// carries the owner's reason, which formation reads as binding context.
@@ -1110,9 +1110,8 @@ mod tests {
                 done_evidence_amendment: None,
                 decision: "Proceed with the gRPC path.".to_string(),
                 authorized_by: "tester".to_string(),
-                decided_at: chrono::DateTime::parse_from_rfc3339("2026-07-18T12:00:00Z")
-                    .unwrap()
-                    .with_timezone(&chrono::Utc),
+                decided_at: crate::time::UtcDateTime::parse_from_rfc3339("2026-07-18T12:00:00Z")
+                    .unwrap(),
             }],
             pending_run_result: None,
             objective_history: vec![],
@@ -1134,9 +1133,7 @@ mod tests {
     /// rewrites still reads in an older one; an amendment round-trips intact.
     #[test]
     fn done_evidence_amendment_is_absent_unless_recorded_and_round_trips() {
-        let at = chrono::DateTime::parse_from_rfc3339("2026-10-20T12:00:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
+        let at = crate::time::UtcDateTime::parse_from_rfc3339("2026-10-20T12:00:00Z").unwrap();
         let plain = OwnerDecision {
             decision: "keep going".to_string(),
             authorized_by: "owner".to_string(),

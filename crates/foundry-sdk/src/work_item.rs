@@ -19,7 +19,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
+use crate::time::UtcDateTime;
 use serde::{Deserialize, Serialize};
 
 use crate::error::StoreError;
@@ -253,7 +253,7 @@ pub struct WorkItemOperatorAction {
     pub previous_reason: String,
     /// Earlier settlement timestamp, retained as evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub previous_settled_at: Option<DateTime<Utc>>,
+    pub previous_settled_at: Option<UtcDateTime>,
 }
 
 /// An obligation a landed item left behind, held by a [`WorkItemKind::FollowUp`]
@@ -471,7 +471,7 @@ impl FollowUp {
     /// The open ledger item holding this follow-up of `parent`, settled at `at`
     /// in the state, with the objective and the reason the obligation implies.
     #[must_use]
-    pub fn into_item(self, parent: &WorkItem, at: DateTime<Utc>) -> WorkItem {
+    pub fn into_item(self, parent: &WorkItem, at: UtcDateTime) -> WorkItem {
         let objective = self.obligation.objective(parent, self.commit.as_deref());
         let reason = self.obligation.reason(&parent.id, self.commit.as_deref());
         let state = self.obligation.opening_state();
@@ -501,13 +501,13 @@ pub struct WorkItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<WorkSource>,
     /// When the item entered the ledger.
-    pub submitted_at: DateTime<Utc>,
+    pub submitted_at: UtcDateTime,
     /// When an agent started on it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub started_at: Option<DateTime<Utc>>,
+    pub started_at: Option<UtcDateTime>,
     /// When it settled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub settled_at: Option<DateTime<Utc>>,
+    pub settled_at: Option<UtcDateTime>,
     /// Where it stands.
     pub state: WorkItemState,
     /// Why it is in that state, in one line.
@@ -552,7 +552,7 @@ pub struct WorkItem {
     pub depends_on: Vec<String>,
     /// The earliest time the scheduler may start the item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub not_before: Option<DateTime<Utc>>,
+    pub not_before: Option<UtcDateTime>,
     /// The root event that starts the item, held while it waits. The
     /// scheduler builds the started root from it and clears it on start, so a
     /// queued item survives a daemon restart with everything it needs to run.
@@ -643,7 +643,7 @@ impl WorkItem {
 
     /// Admit `spec` to the ledger as `submitted`.
     #[must_use]
-    pub fn submitted(spec: WorkItemSpec, at: DateTime<Utc>) -> Self {
+    pub fn submitted(spec: WorkItemSpec, at: UtcDateTime) -> Self {
         Self {
             id: mint_work_item_id(),
             project: spec.project,
@@ -685,7 +685,7 @@ impl WorkItem {
     /// from. The caller sets the reason it waits with (see
     /// [`crate::pacing::evaluate`]).
     #[must_use]
-    pub fn queued(spec: WorkItemSpec, root: Event, at: DateTime<Utc>) -> Self {
+    pub fn queued(spec: WorkItemSpec, root: Event, at: UtcDateTime) -> Self {
         let mut item = Self::submitted(spec, at);
         item.queue();
         item.pending_root = Some(root);
@@ -702,7 +702,7 @@ impl WorkItem {
 
     /// Move the item to `running`, dropping the held root. The scheduler
     /// retains the actual dispatched event in [`Self::started_root`].
-    pub fn start(&mut self, at: DateTime<Utc>) {
+    pub fn start(&mut self, at: UtcDateTime) {
         self.state = WorkItemState::Running;
         self.started_at = Some(at);
         self.reason = "running".to_string();
@@ -729,7 +729,7 @@ impl WorkItem {
     /// Compatibility constructor for already-running records and test fixtures.
     /// Daemon execution uses [`Self::queued`] and the shared scheduler instead.
     #[must_use]
-    pub fn dispatched(spec: WorkItemSpec, at: DateTime<Utc>) -> Self {
+    pub fn dispatched(spec: WorkItemSpec, at: UtcDateTime) -> Self {
         let mut item = Self::submitted(spec, at);
         item.queue();
         item.start(at);
@@ -739,7 +739,7 @@ impl WorkItem {
     /// Settle a waiting item `needs_decision` with `reason`, before it ever
     /// started: a dependency settled some way other than `landed`, and only
     /// the owner can say whether the item should run regardless.
-    pub fn settle_needs_decision(&mut self, reason: &str, at: DateTime<Utc>) {
+    pub fn settle_needs_decision(&mut self, reason: &str, at: UtcDateTime) {
         self.state = WorkItemState::NeedsDecision;
         self.reason = one_line(reason);
         self.settled_at = Some(at);
@@ -761,7 +761,7 @@ impl WorkItem {
         objective: String,
         state: WorkItemState,
         reason: &str,
-        at: DateTime<Utc>,
+        at: UtcDateTime,
     ) -> Self {
         let mut item = Self::submitted(
             WorkItemSpec {
@@ -824,7 +824,7 @@ impl WorkItem {
         &mut self,
         result: &TaskRunCompletedPayload,
         worktree_removed: Option<bool>,
-        at: DateTime<Utc>,
+        at: UtcDateTime,
     ) {
         let (state, reason) = match &result.verdict {
             TaskVerdict::Complete if result.land_blocked.is_some() => {
@@ -872,7 +872,7 @@ impl WorkItem {
     /// Used by the run-shaped kinds, whose terminals report success as a
     /// boolean with no typed verdict to map: a maintenance run, a release or
     /// a remediation that reports success has reached trunk.
-    pub fn settle_landed(&mut self, reason: &str, at: DateTime<Utc>) {
+    pub fn settle_landed(&mut self, reason: &str, at: UtcDateTime) {
         self.state = WorkItemState::Landed;
         self.reason = one_line(reason);
         self.settled_at = Some(at);
@@ -898,7 +898,7 @@ impl WorkItem {
         &mut self,
         reason: &str,
         disposition: Option<WorkDisposition>,
-        at: DateTime<Utc>,
+        at: UtcDateTime,
     ) {
         self.state = WorkItemState::Cancelled;
         self.reason = one_line(reason);
@@ -913,7 +913,7 @@ impl WorkItem {
     /// importantly on daemon start, where every item left `running` by the
     /// previous process is settled so a restart never leaves work visibly
     /// running.
-    pub fn settle_failed(&mut self, reason: &str, at: DateTime<Utc>) {
+    pub fn settle_failed(&mut self, reason: &str, at: UtcDateTime) {
         self.state = WorkItemState::Failed;
         self.reason = one_line(reason);
         self.settled_at = Some(at);
@@ -1148,7 +1148,7 @@ impl WorkItemStore {
         id: &str,
         commit: &str,
         conclusion: TrunkCiConclusion,
-        at: DateTime<Utc>,
+        at: UtcDateTime,
     ) -> TrunkCiApplied {
         let mut applied = TrunkCiApplied::default();
         let Some(item) = self.find_mut(id) else {
@@ -1210,8 +1210,8 @@ impl WorkItemStore {
         &mut self,
         id: &str,
         project: &str,
-        requested_at: DateTime<Utc>,
-        at: DateTime<Utc>,
+        requested_at: UtcDateTime,
+        at: UtcDateTime,
         applied: &mut TrunkCiApplied,
     ) {
         let later_green = self
@@ -1267,8 +1267,8 @@ impl WorkItemStore {
         &mut self,
         project: &str,
         commit: &str,
-        requested_at: DateTime<Utc>,
-        at: DateTime<Utc>,
+        requested_at: UtcDateTime,
+        at: UtcDateTime,
         applied: &mut TrunkCiApplied,
     ) {
         let carried: Vec<String> = self
@@ -1375,7 +1375,7 @@ impl WorkItemStore {
         &mut self,
         landed_id: &str,
         commit: &str,
-        at: DateTime<Utc>,
+        at: UtcDateTime,
     ) -> Vec<WorkItem> {
         let Some(project) = self.find(landed_id).map(|item| item.project.clone()) else {
             return Vec::new();
@@ -1484,8 +1484,8 @@ mod tests {
         }
     }
 
-    fn now() -> DateTime<Utc> {
-        Utc::now()
+    fn now() -> UtcDateTime {
+        UtcDateTime::now()
     }
 
     fn run_result(verdict: TaskVerdict, landed: bool) -> TaskRunCompletedPayload {
@@ -1668,7 +1668,10 @@ mod tests {
         let mut store = WorkItemStore::default();
         let mut traceless = spec();
         traceless.trace_id = None;
-        let older = WorkItem::dispatched(traceless.clone(), now() - chrono::Duration::minutes(5));
+        let older = WorkItem::dispatched(
+            traceless.clone(),
+            now() - crate::time::SignedDuration::from_mins(5),
+        );
         let newer = WorkItem::dispatched(traceless, now());
         let newest_id = newer.id.clone();
         store.upsert(older);
@@ -2442,8 +2445,8 @@ mod tests {
 
     // --- follow-ups ----------------------------------------------------------
 
-    fn fixed(seconds: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(1_790_000_000 + seconds, 0).expect("in-range timestamp")
+    fn fixed(seconds: i64) -> UtcDateTime {
+        UtcDateTime::from_timestamp(1_790_000_000 + seconds, 0).expect("in-range timestamp")
     }
 
     /// A standalone task that landed as `landedcommit` with `gaps` remaining.

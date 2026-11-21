@@ -13,7 +13,8 @@ const CAMPAIGN: &str = "transient-recovery";
 /// An item of `test-project` that settled `state` an hour ago, preserving
 /// work on its own branch.
 fn open_item(id: &str, source: Option<WorkSource>, state: WorkItemState) -> WorkItem {
-    let earlier = chrono::Utc::now() - chrono::Duration::hours(1);
+    let earlier =
+        foundry_sdk::time::UtcDateTime::now() - foundry_sdk::time::SignedDuration::from_hours(1);
     let mut item = WorkItem::dispatched(
         foundry_sdk::work_item::WorkItemSpec {
             project: "test-project".into(),
@@ -125,7 +126,11 @@ async fn a_dispatched_campaign_cycle_carries_the_campaigns_earlier_open_cycles()
         previous_settled_at: owner_cancelled.settled_at,
     });
     let evidence = owner_cancelled.disposition.clone();
-    owner_cancelled.settle_cancelled("owner closed", evidence, chrono::Utc::now());
+    owner_cancelled.settle_cancelled(
+        "owner closed",
+        evidence,
+        foundry_sdk::time::UtcDateTime::now(),
+    );
     let untouched = [
         owner_cancelled,
         open_item(
@@ -241,7 +246,7 @@ async fn a_gracefully_cancelled_campaigns_in_flight_cycle_settles_when_it_finish
     }))
     .unwrap();
     assert_eq!(
-        stopped.cancel("owner stopped", chrono::Utc::now()).unwrap(),
+        stopped.cancel("owner stopped", foundry_sdk::time::UtcDateTime::now()).unwrap(),
         foundry_sdk::campaign::Transition::Applied
     );
     foundry_sdk::campaign::CampaignStore {

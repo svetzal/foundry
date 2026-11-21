@@ -227,9 +227,10 @@ pub async fn drain(
     anyhow::ensure!(!offline, "pacing drain requires foundryd; --offline is not supported");
     let deadline = timeout
         .map(|text| {
-            let now = chrono::Utc::now();
+            let now = foundry_sdk::time::UtcDateTime::now();
             let at = crate::commands::parse_not_before(text, now)?;
-            (at - now).to_std().context("--timeout must be a duration ahead, such as 30m")
+            std::time::Duration::try_from(at - now)
+                .context("--timeout must be a duration ahead, such as 30m")
         })
         .transpose()?
         .map(|wait| tokio::time::Instant::now() + wait);
@@ -394,12 +395,12 @@ mod tests {
                 trace_id: None,
             },
             root,
-            chrono::Utc::now(),
+            foundry_sdk::time::UtcDateTime::now(),
         );
         queued.reason = "ready".to_string();
         let mut running = queued.clone();
         running.id = "wi_running".to_string();
-        running.start(chrono::Utc::now());
+        running.start(foundry_sdk::time::UtcDateTime::now());
         WorkItemStore {
             version: 1,
             items: vec![queued.clone(), running],

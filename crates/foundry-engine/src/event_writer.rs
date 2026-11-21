@@ -44,7 +44,7 @@ impl EventWriter {
         let mut line = serde_json::to_string(event)?;
         line.push('\n');
 
-        let month_key = event.occurred_at.format("%Y-%m").to_string();
+        let month_key = event.occurred_at.format("%Y-%m");
         let file_path = self.output_dir.join(format!("{month_key}.jsonl"));
 
         // Hold the lock while checking and writing so concurrent delivery of
@@ -74,9 +74,9 @@ impl EventWriter {
 mod tests {
     use std::fs;
 
-    use chrono::{TimeZone, Utc};
     use foundry_sdk::event::{Event, EventType};
     use foundry_sdk::throttle::Throttle;
+    use foundry_sdk::time::UtcDateTime;
     use serde_json::Value;
     use tempfile::TempDir;
 
@@ -84,7 +84,7 @@ mod tests {
 
     fn make_event_at(year: i32, month: u32, day: u32) -> Event {
         let occurred_at =
-            Utc.with_ymd_and_hms(year, month, day, 12, 0, 0).single().expect("invalid date");
+            UtcDateTime::from_ymd_hms(year, month, day, 12, 0, 0).expect("invalid date");
         let mut event = Event::new(
             EventType::GreetingRequested,
             "test-project".to_string(),
@@ -222,7 +222,7 @@ mod tests {
             Throttle::Full,
             serde_json::json!({"message": "hello \"world\" \n tab:\there"}),
         );
-        let occurred_at = Utc.with_ymd_and_hms(2026, 3, 15, 12, 0, 0).single().unwrap();
+        let occurred_at = UtcDateTime::from_ymd_hms(2026, 3, 15, 12, 0, 0).unwrap();
         event.occurred_at = occurred_at;
         event.recorded_at = occurred_at;
 

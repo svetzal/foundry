@@ -333,7 +333,7 @@ pub async fn task(
     let operator_origin = crate::origin::local_operator_origin(origin);
     let not_before = options
         .not_before
-        .map(|text| crate::commands::parse_not_before(text, chrono::Utc::now()))
+        .map(|text| crate::commands::parse_not_before(text, foundry_sdk::time::UtcDateTime::now()))
         .transpose()?;
     let payload = task_payload(
         project,
@@ -361,7 +361,7 @@ pub async fn task(
 #[derive(Debug, Default)]
 struct TaskSchedule<'a> {
     after: &'a [String],
-    not_before: Option<chrono::DateTime<chrono::Utc>>,
+    not_before: Option<foundry_sdk::time::UtcDateTime>,
 }
 
 pub async fn release(addr: &str, project: &str, bump: Option<String>) -> Result<()> {
@@ -670,7 +670,7 @@ mod tests {
     #[test]
     fn task_payload_carries_after_and_not_before_only_when_given() {
         let after = vec!["wi_a".to_string(), "wi_b".to_string()];
-        let not_before: chrono::DateTime<chrono::Utc> = "2026-10-11T09:00:00Z".parse().unwrap();
+        let not_before: foundry_sdk::time::UtcDateTime = "2026-10-11T09:00:00Z".parse().unwrap();
         let payload = super::task_payload(
             "p",
             "do the thing",

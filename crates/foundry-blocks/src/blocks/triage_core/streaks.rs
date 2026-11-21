@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use chrono::{DateTime, Duration, Utc};
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::PreflightCompletedPayload;
+use foundry_sdk::time::UtcDateTime;
 use foundry_sdk::triage::{Decision, FailureClass, FailureVerdict, InfraIncident};
 
 use super::RawFailure;
@@ -11,7 +11,7 @@ use super::correlate::correlate;
 
 /// One gate occurrence record used while computing streak lengths.
 struct GateOccurrence {
-    occurred_at: DateTime<Utc>,
+    occurred_at: UtcDateTime,
     passed: bool,
 }
 
@@ -28,7 +28,7 @@ struct GateOccurrence {
 /// streak computation for the rest of the history; the caller surfaces the
 /// count in the emitted digest payload instead).
 pub fn streaks(events: &[Event], lookback_days: u32) -> (HashMap<(String, String), u32>, u64) {
-    let cutoff = Utc::now() - Duration::days(i64::from(lookback_days));
+    let cutoff = UtcDateTime::now() - foundry_sdk::time::days(i64::from(lookback_days));
 
     let mut gate_history: HashMap<(String, String), Vec<GateOccurrence>> = HashMap::new();
     let mut unparsed_events = 0u64;
@@ -149,9 +149,9 @@ pub fn build_verdicts(
 
 #[cfg(test)]
 mod tests {
-    use chrono::{Duration, Utc};
     use foundry_sdk::event::{Event, EventType};
     use foundry_sdk::throttle::Throttle;
+    use foundry_sdk::time::{SignedDuration, UtcDateTime};
     use foundry_sdk::triage::{Decision, FailureClass};
 
     use super::*;
@@ -184,7 +184,7 @@ mod tests {
         let events: Vec<Event> = (0..4)
             .map(|i| {
                 let mut e = make_preflight_event("alpha", "fmt", false, false);
-                e.occurred_at = Utc::now() - Duration::hours(i64::from(i) + 1);
+                e.occurred_at = UtcDateTime::now() - SignedDuration::from_hours(i64::from(i) + 1);
                 e
             })
             .collect();
@@ -201,14 +201,14 @@ mod tests {
 
         for i in 0..2 {
             let mut e = make_preflight_event("alpha", "test", false, false);
-            e.occurred_at = Utc::now() - Duration::hours(i64::from(i) + 1);
+            e.occurred_at = UtcDateTime::now() - SignedDuration::from_hours(i64::from(i) + 1);
             events.push(e);
         }
         let mut pass = make_preflight_event("alpha", "test", true, false);
-        pass.occurred_at = Utc::now() - Duration::hours(3);
+        pass.occurred_at = UtcDateTime::now() - SignedDuration::from_hours(3);
         events.push(pass);
         let mut old_fail = make_preflight_event("alpha", "test", false, false);
-        old_fail.occurred_at = Utc::now() - Duration::hours(4);
+        old_fail.occurred_at = UtcDateTime::now() - SignedDuration::from_hours(4);
         events.push(old_fail);
 
         let (result, unparsed) = streaks(&events, 30);
@@ -221,7 +221,7 @@ mod tests {
     fn streaks_counts_unparsed_events_and_skips_them() {
         let mut events: Vec<Event> = Vec::new();
         let mut good = make_preflight_event("alpha", "fmt", false, false);
-        good.occurred_at = Utc::now() - Duration::hours(1);
+        good.occurred_at = UtcDateTime::now() - SignedDuration::from_hours(1);
         events.push(good);
 
         let mut malformed = Event::new(
@@ -230,7 +230,7 @@ mod tests {
             Throttle::Full,
             serde_json::json!({ "not": "a valid preflight payload shape" }),
         );
-        malformed.occurred_at = Utc::now() - Duration::hours(1);
+        malformed.occurred_at = UtcDateTime::now() - SignedDuration::from_hours(1);
         events.push(malformed);
 
         let (result, unparsed) = streaks(&events, 30);
@@ -241,8 +241,8 @@ mod tests {
 
     #[test]
     fn build_verdicts_streak_override_escalates_at_n_ge_3() {
-        let now = Utc::now();
-        let window_start = now - Duration::hours(5);
+        let now = UtcDateTime::now();
+        let window_start = now - SignedDuration::from_hours(5);
         let window_end = now;
 
         let mut all_events: Vec<Event> = Vec::new();
@@ -250,7 +250,7 @@ mod tests {
 
         for i in 0..4_u32 {
             let mut e = make_preflight_event("alpha", "test", false, false);
-            e.occurred_at = now - Duration::hours(i64::from(i) + 1);
+            e.occurred_at = now - SignedDuration::from_hours(i64::from(i) + 1);
             all_events.push(e.clone());
             raw_failures.push(RawFailure {
                 project: "alpha".to_string(),
@@ -285,7 +285,7 @@ mod tests {
             gate_output: "test foo ... FAILED".to_string(),
             exit_code: Some(101),
             fix_command: None,
-            occurred_at: Utc::now(),
+            occurred_at: UtcDateTime::now(),
             logs: vec!["/logs/test.stdout.log".to_string()],
         };
 

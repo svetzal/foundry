@@ -35,7 +35,8 @@ impl AgentGateway for FollowUpAgent {
 
 /// An item of `test-project` that settled `state` an hour ago.
 fn continued(id: &str, state: WorkItemState) -> WorkItem {
-    let earlier = chrono::Utc::now() - chrono::Duration::hours(1);
+    let earlier =
+        foundry_sdk::time::UtcDateTime::now() - foundry_sdk::time::SignedDuration::from_hours(1);
     let mut item = WorkItem::dispatched(
         foundry_sdk::work_item::WorkItemSpec {
             project: "test-project".into(),
@@ -72,7 +73,7 @@ async fn run_follow_up(
     let store_path = dir.join("work-items.json");
     let mut owner_closed = continued("wi_owner_closed", WorkItemState::Preserved);
     let evidence = owner_closed.disposition.clone();
-    owner_closed.settle_cancelled("owner closed", evidence, chrono::Utc::now());
+    owner_closed.settle_cancelled("owner closed", evidence, foundry_sdk::time::UtcDateTime::now());
     let items = [
         continued("wi_preserved", WorkItemState::Preserved),
         continued("wi_needs_decision", WorkItemState::NeedsDecision),

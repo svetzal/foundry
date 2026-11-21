@@ -261,9 +261,9 @@ mod tests {
 
         let mut newer = event_with_spans();
         newer.project = "alpha".to_string();
-        newer.occurred_at = chrono::DateTime::parse_from_rfc3339("2026-07-24T12:00:00Z")
-            .expect("valid timestamp")
-            .with_timezone(&chrono::Utc);
+        newer.occurred_at =
+            foundry_sdk::time::UtcDateTime::parse_from_rfc3339("2026-07-24T12:00:00Z")
+                .expect("valid timestamp");
         let newer_id = newer.id.clone();
         writer
             .write(
@@ -278,9 +278,9 @@ mod tests {
 
         let mut older = event_with_spans();
         older.project = "alpha".to_string();
-        older.occurred_at = chrono::DateTime::parse_from_rfc3339("2026-07-24T08:00:00Z")
-            .expect("valid timestamp")
-            .with_timezone(&chrono::Utc);
+        older.occurred_at =
+            foundry_sdk::time::UtcDateTime::parse_from_rfc3339("2026-07-24T08:00:00Z")
+                .expect("valid timestamp");
         let older_id = older.id.clone();
         writer
             .write(
@@ -296,7 +296,7 @@ mod tests {
         let response = history_rpc(
             &store,
             Request::new(HistoryRequest {
-                date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
+                date: foundry_sdk::time::UtcDateTime::now().format("%Y-%m-%d"),
                 project: "alpha".to_string(),
                 recent_days: 7,
             }),

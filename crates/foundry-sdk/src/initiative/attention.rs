@@ -1,5 +1,5 @@
 //! Current unanswered questions and inactive initiatives are digest evidence, independent of event watermarks.
-use chrono::{DateTime, Duration, Utc};
+use crate::time::UtcDateTime;
 use std::fmt::Write;
 
 use crate::campaign::{CampaignStatus, CampaignStore};
@@ -12,7 +12,7 @@ impl CampaignStore {
     pub fn initiative_attention_events(
         &self,
         ledger: &WorkItemStore,
-        now: DateTime<Utc>,
+        now: UtcDateTime,
     ) -> super::Result<Vec<OpsEventDigest>> {
         let mut events = Vec::new();
         for record in &self.initiatives {
@@ -21,14 +21,14 @@ impl CampaignStore {
             }
             let initiative = self.initiative_view(&record.name)?;
             for question in initiative.open_questions.iter().chain(&initiative.deferred_questions) {
-                if now.signed_duration_since(question.opened_at) <= Duration::days(1) {
+                if now.signed_duration_since(question.opened_at) <= crate::time::days(1) {
                     continue;
                 }
                 events.push(attention_event(
                     format!("initiative-question-{}", question.id),
                     "initiative_question_overdue", now,
                     format!("Initiative '{}' waits on its owner for {} hours: {} (members: {}). Answer with foundry initiative decide {} --decision '<answer>' --question {}{}",
-                        initiative.name, now.signed_duration_since(question.opened_at).num_hours(),
+                        initiative.name, now.signed_duration_since(question.opened_at).as_hours(),
                         question.question, question.members.join(", "), initiative.name, question.id,
                         question.members.iter().fold(String::new(), |mut args, member| { let _ = write!(args, " --member {member}"); args })),
                 ));
@@ -82,7 +82,7 @@ impl CampaignStore {
                 .max();
             if !active
                 && last_activity
-                    .is_some_and(|at| now.signed_duration_since(at) > Duration::days(30))
+                    .is_some_and(|at| now.signed_duration_since(at) > crate::time::days(30))
             {
                 events.push(attention_event(format!("initiative-inactive-{}", initiative.name),
                     "initiative_inactive", now, format!("Initiative '{}' has had no active member for over 30 days. Review its outcome and continue or cancel it: foundry initiative show {}", initiative.name, initiative.name)));
@@ -95,7 +95,7 @@ impl CampaignStore {
 fn attention_event(
     id: String,
     event_type: &str,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
     summary: String,
 ) -> OpsEventDigest {
     OpsEventDigest {
@@ -117,10 +117,10 @@ mod tests {
     #[test]
     fn strict_day_threshold_and_answers_control_current_anomalies() {
         let mut store = store();
-        let now = Utc::now();
+        let now = UtcDateTime::now();
         store.record_question("sample", "Which API version?", &[]).unwrap();
         store.find_initiative_mut("sample").unwrap().open_questions[0].opened_at =
-            now - Duration::days(1);
+            now - crate::time::days(1);
         assert!(
             store
                 .initiative_attention_events(&WorkItemStore::default(), now)
@@ -129,7 +129,10 @@ mod tests {
             "a question exactly one day old is not yet overdue"
         );
         let events = store
-            .initiative_attention_events(&WorkItemStore::default(), now + Duration::seconds(1))
+            .initiative_attention_events(
+                &WorkItemStore::default(),
+                now + crate::time::SignedDuration::from_secs(1),
+            )
             .unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, "initiative_question_overdue");
@@ -138,7 +141,7 @@ mod tests {
         store.decide_initiative_answering("sample", "Use v1", &[], &[id], now).unwrap();
         assert!(
             store
-                .initiative_attention_events(&WorkItemStore::default(), now + Duration::days(2))
+                .initiative_attention_events(&WorkItemStore::default(), now + crate::time::days(2))
                 .unwrap()
                 .is_empty(),
             "a decided question raises no attention event"
@@ -148,7 +151,7 @@ mod tests {
     #[test]
     fn inactivity_needs_a_known_age_and_no_active_member() {
         let mut store = store();
-        let now = Utc::now();
+        let now = UtcDateTime::now();
         store.find_initiative_mut("sample").unwrap().created_at = None;
         assert!(
             store
@@ -157,7 +160,7 @@ mod tests {
                 .is_empty(),
             "an initiative with no known age is never inactive"
         );
-        store.find_initiative_mut("sample").unwrap().created_at = Some(now - Duration::days(30));
+        store.find_initiative_mut("sample").unwrap().created_at = Some(now - crate::time::days(30));
         assert!(
             store
                 .initiative_attention_events(&WorkItemStore::default(), now)
@@ -167,7 +170,10 @@ mod tests {
         );
         assert_eq!(
             store
-                .initiative_attention_events(&WorkItemStore::default(), now + Duration::seconds(1))
+                .initiative_attention_events(
+                    &WorkItemStore::default(),
+                    now + crate::time::SignedDuration::from_secs(1)
+                )
                 .unwrap()[0]
                 .event_type,
             "initiative_inactive"
@@ -175,7 +181,7 @@ mod tests {
         store.find_mut("one").unwrap().status = CampaignStatus::Active;
         assert!(
             store
-                .initiative_attention_events(&WorkItemStore::default(), now + Duration::days(2))
+                .initiative_attention_events(&WorkItemStore::default(), now + crate::time::days(2))
                 .unwrap()
                 .is_empty(),
             "an active member keeps the initiative from reading inactive"
@@ -186,8 +192,8 @@ mod tests {
         use crate::work_item::{WorkItem, WorkItemKind, WorkItemSpec, WorkLane};
         use crate::work_source::WorkSource;
         let mut store = store();
-        let now = Utc::now();
-        store.find_initiative_mut("sample").unwrap().created_at = Some(now - Duration::days(40));
+        let now = UtcDateTime::now();
+        store.find_initiative_mut("sample").unwrap().created_at = Some(now - crate::time::days(40));
         store
             .decide_initiative("sample", "Still considering the scope", &[], now)
             .unwrap();
@@ -207,11 +213,11 @@ mod tests {
                 origin: "initiative".into(),
                 trace_id: None,
             },
-            now - Duration::days(35),
+            now - crate::time::days(35),
         );
         item.source = Some(WorkSource::initiative("sample", 1));
-        item.start(now - Duration::days(35));
-        item.settle_landed("Member landed", now - Duration::days(2));
+        item.start(now - crate::time::days(35));
+        item.settle_landed("Member landed", now - crate::time::days(2));
         let ledger = WorkItemStore {
             items: vec![item],
             ..Default::default()
@@ -229,8 +235,8 @@ mod tests {
         use crate::work_item::{WorkItem, WorkItemSpec, WorkLane};
         use crate::work_source::WorkSource;
         let mut store = store();
-        let now = Utc::now();
-        store.find_initiative_mut("sample").unwrap().created_at = Some(now - Duration::days(40));
+        let now = UtcDateTime::now();
+        store.find_initiative_mut("sample").unwrap().created_at = Some(now - crate::time::days(40));
         let root = Event::new(
             EventType::InitiativeAdvanceRequested,
             "system".into(),

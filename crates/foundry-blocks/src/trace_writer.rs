@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use chrono::Utc;
+use foundry_sdk::time::UtcDateTime;
 
 use foundry_sdk::trace::{ProcessResult, TraceIndex};
 
@@ -30,7 +30,7 @@ impl TraceWriter {
     /// back the moment it settles.
     pub fn write(&self, event_id: &str, result: &ProcessResult) -> Result<()> {
         static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let date = Utc::now().format("%Y-%m-%d").to_string();
+        let date = UtcDateTime::now().format("%Y-%m-%d");
         let dir = self.base_dir.join(&date);
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(format!("{event_id}.json"));
@@ -104,10 +104,10 @@ impl TraceWriter {
         project_filter: Option<&str>,
     ) -> Vec<(String, Vec<TraceIndex>)> {
         let mut result = Vec::new();
-        let today = Utc::now().date_naive();
+        let today = UtcDateTime::now().date();
         for offset in 0..days {
-            let date = today - chrono::Duration::days(i64::try_from(offset).unwrap_or(0));
-            let date_str = date.format("%Y-%m-%d").to_string();
+            let date = today - jiff::Span::new().days(i64::try_from(offset).unwrap_or(0));
+            let date_str = date.to_string();
             let indices = self.list_date(&date_str, project_filter);
             if !indices.is_empty() {
                 result.push((date_str, indices));
@@ -232,7 +232,7 @@ mod tests {
         }
         assert_eq!(misses, 0, "reads that found no complete result");
         let leftovers: Vec<_> =
-            std::fs::read_dir(dir.path().join(Utc::now().format("%Y-%m-%d").to_string()))
+            std::fs::read_dir(dir.path().join(UtcDateTime::now().format("%Y-%m-%d")))
                 .unwrap()
                 .flatten()
                 .map(|entry| entry.file_name())
@@ -295,7 +295,7 @@ mod tests {
 
         writer.write("evt_111", &result).expect("write");
 
-        let today = Utc::now().format("%Y-%m-%d").to_string();
+        let today = UtcDateTime::now().format("%Y-%m-%d");
         let indices = writer.list_date(&today, None);
 
         assert_eq!(indices.len(), 1);
@@ -312,7 +312,7 @@ mod tests {
         let result = sample_result(EventType::GreetingRequested, "proj-a");
         writer.write("evt_good", &result).expect("write");
 
-        let today = Utc::now().format("%Y-%m-%d").to_string();
+        let today = UtcDateTime::now().format("%Y-%m-%d");
         let date_dir = dir.path().join(&today);
         std::fs::write(date_dir.join("evt_bad.json"), "not valid json").expect("write corrupt");
 
@@ -343,7 +343,7 @@ mod tests {
         // Today should appear since we just wrote a trace.
         assert!(!recent.is_empty());
         let (date, indices) = &recent[0];
-        let today = Utc::now().format("%Y-%m-%d").to_string();
+        let today = UtcDateTime::now().format("%Y-%m-%d");
         assert_eq!(date, &today);
         assert_eq!(indices[0].event_id, "evt_222");
     }

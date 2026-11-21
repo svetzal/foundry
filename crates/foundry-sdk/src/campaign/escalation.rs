@@ -21,7 +21,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
+use crate::time::UtcDateTime;
 use serde::{Deserialize, Serialize};
 
 use super::{Campaign, CampaignStatus};
@@ -43,7 +43,7 @@ pub struct CampaignEscalation {
     /// carries it.
     pub reason: String,
     /// When the campaign escalated.
-    pub escalated_at: DateTime<Utc>,
+    pub escalated_at: UtcDateTime,
     /// Dispatched cycles at the escalation.
     pub cycles_completed: u64,
     /// Cycles whose work had landed at the escalation.
@@ -205,7 +205,7 @@ mod tests {
             })
             .unwrap(),
         );
-        event.occurred_at = DateTime::from_timestamp(second, 0).unwrap();
+        event.occurred_at = UtcDateTime::from_timestamp(second, 0).unwrap();
         event
     }
 
@@ -270,7 +270,7 @@ mod tests {
 
         let recorded = CampaignEscalation {
             reason: "kept as recorded".to_string(),
-            escalated_at: DateTime::from_timestamp(50, 0).unwrap(),
+            escalated_at: UtcDateTime::from_timestamp(50, 0).unwrap(),
             cycles_completed: 1,
             cycles_landed: 0,
             question: None,
@@ -312,7 +312,7 @@ mod tests {
     fn a_record_round_trips_and_omits_unset_fields() {
         let record = CampaignEscalation {
             reason: "r".to_string(),
-            escalated_at: DateTime::from_timestamp(1, 0).unwrap(),
+            escalated_at: UtcDateTime::from_timestamp(1, 0).unwrap(),
             cycles_completed: 1,
             cycles_landed: 0,
             question: None,

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::BufRead;
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
+use crate::time::UtcDateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -131,11 +131,8 @@ pub fn read_report(campaign: &Campaign, directory: &Path) -> anyhow::Result<Camp
     Ok(report)
 }
 
-fn timestamp(value: &Value) -> Option<DateTime<Utc>> {
-    value
-        .as_str()
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|t| t.with_timezone(&Utc))
+fn timestamp(value: &Value) -> Option<UtcDateTime> {
+    value.as_str().and_then(|s| UtcDateTime::parse_from_rfc3339(s).ok())
 }
 
 /// Fold events independent of file order. Session IDs prevent duplicated usage.
@@ -295,7 +292,7 @@ fn account_session(stage: &mut StageReport, start: &Value, finish: Option<&Value
     if let (Some(start), Some(end)) =
         (timestamp(&start["started_at"]), timestamp(&finish["ended_at"]))
     {
-        stage.elapsed_ms += u64::try_from((end - start).num_milliseconds()).unwrap_or(0);
+        stage.elapsed_ms += u64::try_from((end - start).as_millis()).unwrap_or(0);
     }
     add_terminal_accounting(stage, finish);
 }
@@ -405,7 +402,7 @@ mod tests {
             json!({"campaign":"c","project":"p","reason":"budget exhausted (6)",
                 "cycles_completed":6,"cycles_landed":4}),
         );
-        logged.occurred_at = DateTime::from_timestamp(100, 0).unwrap();
+        logged.occurred_at = UtcDateTime::from_timestamp(100, 0).unwrap();
         let events = vec![serde_json::to_value(&logged).unwrap()];
 
         let from_log = aggregate(&escalated, &events).open_escalation.unwrap();

@@ -1,6 +1,6 @@
 //! Read-only steering decisions and durable, guarded admission into member work.
 
-use chrono::{DateTime, Utc};
+use crate::time::UtcDateTime;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -219,7 +219,7 @@ pub struct SteeringRecord {
     pub prompt: String,
     pub decision: SteeringDecision,
     pub provider: Option<AgentProvider>,
-    pub recorded_at: DateTime<Utc>,
+    pub recorded_at: UtcDateTime,
     /// The earlier steer and step this pass followed up, when it was one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub follow_up_of: Option<SteeringFollowUp>,
@@ -623,7 +623,7 @@ impl CampaignStore {
             prompt,
             decision,
             provider,
-            recorded_at: Utc::now(),
+            recorded_at: UtcDateTime::now(),
             follow_up_of: notes.follow_up_of,
             integration_skipped: notes.integration_skipped,
         });
@@ -706,7 +706,7 @@ impl CampaignStore {
             prompt,
             decision,
             provider,
-            recorded_at: Utc::now(),
+            recorded_at: UtcDateTime::now(),
             follow_up_of: notes.follow_up_of,
             integration_skipped: notes.integration_skipped,
         });
@@ -872,7 +872,7 @@ impl CampaignStore {
                 self.stage_initiative_campaign(name, campaign, member.as_deref())?;
             }
             SteeringDecision::Recover { kind, detail } => {
-                self.record_initiative_recovery(name, id, *kind, detail, Utc::now())?;
+                self.record_initiative_recovery(name, id, *kind, detail, UtcDateTime::now())?;
             }
             SteeringDecision::Done { reviews } => self.validate_outcome_reviews(name, reviews)?,
             SteeringDecision::Wait { .. } => {
@@ -1532,7 +1532,7 @@ impl CampaignStore {
         decision: &str,
         members: &[String],
         add_cycles: u64,
-        at: DateTime<Utc>,
+        at: UtcDateTime,
     ) -> Result<super::InitiativeOwnerDecision> {
         self.decide_initiative_answering_with_budget(name, decision, members, &[], add_cycles, at)
     }
@@ -1545,7 +1545,7 @@ impl CampaignStore {
         members: &[String],
         question_ids: &[String],
         add_cycles: u64,
-        at: DateTime<Utc>,
+        at: UtcDateTime,
     ) -> Result<super::InitiativeOwnerDecision> {
         self.decision_scope(name, decision, members)?;
         if add_cycles == 0
@@ -1639,7 +1639,7 @@ impl CampaignStore {
                     && !campaign.status.is_terminal()
                 {
                     let _transition = campaign
-                        .cancel("initiative intent was discarded or revoked", Utc::now())
+                        .cancel("initiative intent was discarded or revoked", UtcDateTime::now())
                         .map_err(|error| InitiativeError::Precondition(error.to_string()))?;
                 }
                 cancelled.push(member.name.clone());

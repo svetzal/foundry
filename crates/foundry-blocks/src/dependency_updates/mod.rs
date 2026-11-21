@@ -37,13 +37,13 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use chrono::NaiveDate;
 use foundry_sdk::dependency_holds::{DependencyHolds, HoldDecision};
 use foundry_sdk::payload::{
     Advisory, AppliedHold, DependencyClassification, Ecosystem, LapsedHold, OutdatedDependency,
     StaleHold, SupplyChainFinding, TransitiveAdvisory, UnclassifiedScope, UpdateClass,
 };
 use foundry_sdk::registry::Stack;
+use jiff::civil::Date;
 
 use crate::gateway::ShellGateway;
 
@@ -320,7 +320,7 @@ pub async fn classify(
     holds: Result<DependencyHolds, String>,
     advisories: Advisories,
     source: &dyn VersionSource,
-    today: NaiveDate,
+    today: Date,
 ) -> DependencyClassification {
     let mut out = DependencyClassification {
         advisory_source: advisories.source.clone(),
@@ -760,8 +760,8 @@ mod tests {
     use super::*;
     use foundry_sdk::dependency_holds::HoldEntry;
 
-    fn day() -> NaiveDate {
-        NaiveDate::from_ymd_opt(2026, 9, 25).unwrap()
+    fn day() -> Date {
+        jiff::civil::date(2026, 9, 25)
     }
 
     fn versions(eco: Ecosystem, raw: &[&str]) -> Vec<Version> {

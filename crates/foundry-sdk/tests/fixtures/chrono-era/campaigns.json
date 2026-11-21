@@ -1,0 +1,975 @@
+{
+  "version": 1,
+  "campaigns": [
+    {
+      "recovery": {
+        "id": "synthetic-29",
+        "kind": "capability_unavailable",
+        "detail": "synthetic-30",
+        "recorded_at": "2026-01-23T04:00:05.123456789Z",
+        "resolution": null
+      },
+      "name": "synthetic-31",
+      "project": "project_delta",
+      "mission": "synthetic-32",
+      "providers": {},
+      "intent_refs": [
+        "synthetic-33",
+        "synthetic-34"
+      ],
+      "context_paths": [
+        "synthetic-35",
+        "synthetic-36"
+      ],
+      "writable_repositories": [],
+      "done_evidence": [
+        {
+          "kind": "gate",
+          "command": "synthetic-37",
+          "required": true,
+          "artifacts": [
+            "synthetic-38",
+            "synthetic-39"
+          ]
+        },
+        {
+          "kind": "review",
+          "statement": "synthetic-40"
+        }
+      ],
+      "budget": {
+        "max_cycles": 5,
+        "stages": {
+          "formation_prompt_bytes": 32768
+        }
+      },
+      "escalation": [
+        "synthetic-41",
+        "synthetic-42"
+      ],
+      "status": "cancelled",
+      "cycles_completed": 0,
+      "cycles_landed": 0,
+      "authorized_by": "synthetic-43",
+      "agent_provider": "codex",
+      "owner_decisions": [
+        {
+          "decision": "synthetic-44",
+          "authorized_by": "synthetic-45",
+          "decided_at": "2026-01-24T04:05:19.123456789Z"
+        }
+      ]
+    },
+    {
+      "recovery": null,
+      "name": "synthetic-46",
+      "project": "project_bravo",
+      "mission": "synthetic-47",
+      "providers": {},
+      "intent_refs": [
+        "synthetic-48"
+      ],
+      "context_paths": [
+        "synthetic-49",
+        "synthetic-50"
+      ],
+      "writable_repositories": [],
+      "done_evidence": [
+        {
+          "kind": "gate",
+          "command": "synthetic-51",
+          "required": true
+        },
+        {
+          "kind": "review",
+          "statement": "synthetic-52"
+        }
+      ],
+      "budget": {
+        "max_cycles": 18,
+        "stages": {
+          "formation_prompt_bytes": 32768
+        }
+      },
+      "escalation": [
+        "synthetic-53",
+        "synthetic-54"
+      ],
+      "status": "completed",
+      "cycles_completed": 18,
+      "cycles_landed": 9,
+      "authorized_by": "synthetic-55",
+      "agent_provider": "codex",
+      "last_run_event_id": "evt_85ff68928934c32599df946c",
+      "owner_decisions": [
+        {
+          "decision": "synthetic-56",
+          "authorized_by": "synthetic-57",
+          "decided_at": "2026-01-25T04:10:47.123456789Z"
+        }
+      ],
+      "objective_history": [
+        {
+          "cycle": 11,
+          "objective": "synthetic-58",
+          "outcome": {
+            "verdict": "remainder",
+            "gaps": [
+              "synthetic-59"
+            ],
+            "landed": true
+          }
+        },
+        {
+          "cycle": 12,
+          "objective": "synthetic-60",
+          "outcome": {
+            "verdict": "complete",
+            "landed": true
+          }
+        }
+      ]
+    },
+    {
+      "recovery": {
+        "id": "synthetic-61",
+        "kind": "runner_unavailable",
+        "detail": "synthetic-62",
+        "recorded_at": "2026-01-26T04:16:29.123456789Z",
+        "resolution": null
+      },
+      "name": "synthetic-63",
+      "project": "synthetic-64",
+      "mission": "synthetic-65",
+      "providers": {},
+      "intent_refs": [
+        "synthetic-66",
+        "synthetic-67"
+      ],
+      "context_paths": [
+        "synthetic-68",
+        "synthetic-69"
+      ],
+      "writable_repositories": [
+        "synthetic-70"
+      ],
+      "done_evidence": [
+        {
+          "kind": "gate",
+          "command": "synthetic-71",
+          "required": true,
+          "artifacts": [
+            "synthetic-72"
+          ]
+        },
+        {
+          "kind": "gate",
+          "command": "synthetic-73",
+          "required": true,
+          "artifacts": [
+            "synthetic-74",
+            "synthetic-75"
+          ]
+        }
+      ],
+      "budget": {
+        "max_cycles": 48,
+        "stages": {
+          "formation_prompt_bytes": 49152
+        }
+      },
+      "escalation": [
+        "synthetic-76",
+        "synthetic-77"
+      ],
+      "status": "cancelled",
+      "cycles_completed": 37,
+      "cycles_landed": 14,
+      "authorized_by": "synthetic-78",
+      "agent_provider": "codex",
+      "last_run_event_id": "evt_9138ec530d4f0618061b9957",
+      "owner_decisions": [
+        {
+          "decision": "synthetic-79",
+          "authorized_by": "synthetic-80",
+          "decided_at": "2026-01-27T04:22:25.123456789Z"
+        },
+        {
+          "decision": "synthetic-81",
+          "authorized_by": "synthetic-82",
+          "decided_at": "2026-01-28T04:28:35.123456789Z"
+        }
+      ],
+      "objective_history": [
+        {
+          "cycle": 30,
+          "objective": "synthetic-83",
+          "outcome": {
+            "verdict": "complete",
+            "landed": true
+          }
+        },
+        {
+          "cycle": 31,
+          "objective": "synthetic-84",
+          "outcome": {
+            "verdict": "defect",
+            "diagnosis": "synthetic-85",
+            "landed": false
+          }
+        }
+      ]
+    }
+  ],
+  "initiatives": [
+    {
+      "recovery": {
+        "id": "evt_17241ac793d56fc315231845",
+        "kind": "unmet_precondition",
+        "detail": "synthetic-86",
+        "recorded_at": "2026-01-29T04:34:59.123456789Z",
+        "resolution": {
+          "evidence": [
+            "synthetic-87"
+          ],
+          "resolved_at": "2026-01-30T04:41:37.123456789Z"
+        }
+      },
+      "name": "synthetic-88",
+      "outcome": "synthetic-89",
+      "created_at": "2026-01-31T04:48:29.123456789Z",
+      "intent_refs": [
+        "synthetic-90"
+      ],
+      "projects": [
+        "synthetic-91",
+        "synthetic-92"
+      ],
+      "brief": {
+        "path": "/synthetic/path/93",
+        "hash": "8548d2ea0927b748af21d49a62d469a158bc937fb5c39e77fa69e80a8054eb9b"
+      },
+      "members": [
+        {
+          "kind": "campaign",
+          "name": "synthetic-94",
+          "after": [],
+          "intent_ref": null,
+          "description": null,
+          "intent_state": null,
+          "audit_finding_id": null
+        },
+        {
+          "kind": "campaign",
+          "name": "synthetic-95",
+          "after": [
+            "synthetic-96"
+          ],
+          "intent_ref": null,
+          "description": null,
+          "intent_state": null,
+          "audit_finding_id": null
+        }
+      ],
+      "done_evidence": [
+        {
+          "kind": "gate",
+          "command": "synthetic-97",
+          "host": null,
+          "required": true,
+          "artifacts": []
+        },
+        {
+          "kind": "review",
+          "statement": "synthetic-98"
+        }
+      ],
+      "budget": {
+        "max_cycles": 90,
+        "max_active_members": 4,
+        "max_open_questions": 3
+      },
+      "authorized_by": "synthetic-99",
+      "agent_provider": "codex",
+      "providers": {
+        "formation": "codex",
+        "execution": "codex",
+        "review": "codex"
+      },
+      "status": "completed",
+      "owner_decisions": [
+        {
+          "decision": "synthetic-100",
+          "authorized_by": "synthetic-101",
+          "decided_at": "2026-02-01T04:55:35.123456789Z",
+          "members": [
+            "synthetic-102"
+          ],
+          "question_ids": []
+        },
+        {
+          "decision": "synthetic-103",
+          "authorized_by": "synthetic-104",
+          "decided_at": "2026-02-02T05:02:55.123456789Z",
+          "members": [
+            "synthetic-105",
+            "synthetic-106"
+          ],
+          "question_ids": []
+        }
+      ],
+      "status_notes": [
+        {
+          "text": "synthetic-107",
+          "recorded_at": "2026-02-03T05:10:29.123456789Z"
+        },
+        {
+          "text": "synthetic-108",
+          "recorded_at": "2026-02-04T05:18:17.123456789Z"
+        }
+      ],
+      "open_questions": [],
+      "deferred_questions": [],
+      "derive_source": null,
+      "provider_pairings": [],
+      "holds": [],
+      "milestones": [
+        {
+          "member": "synthetic-109",
+          "name": "landed",
+          "evidence": [
+            "synthetic-110",
+            "synthetic-111"
+          ]
+        },
+        {
+          "member": "synthetic-112",
+          "name": "landed",
+          "evidence": [
+            "synthetic-113",
+            "synthetic-114"
+          ]
+        }
+      ],
+      "task_dispatches": [],
+      "reservations": [],
+      "steering": null,
+      "steering_history": [
+        {
+          "id": "evt_2f626f002e7291270d72bb70",
+          "prompt": "synthetic-115",
+          "decision": {
+            "decision": "relay",
+            "finding": {
+              "id": "fnd_project30_recovery_method",
+              "initiative": "synthetic-116",
+              "from": {
+                "kind": "owner",
+                "id": "synthetic-117"
+              },
+              "to": [
+                "synthetic-118",
+                "synthetic-119"
+              ],
+              "kind": "owner_note",
+              "text": "synthetic-120",
+              "refs": [
+                "synthetic-121",
+                "synthetic-122"
+              ],
+              "consumed_by": [],
+              "recorded_at": "2026-02-05T05:26:19.123456789Z",
+              "audit": null
+            },
+            "to": [
+              "synthetic-123",
+              "synthetic-124"
+            ]
+          },
+          "provider": "codex",
+          "recorded_at": "2026-02-06T05:34:35.123456789Z"
+        },
+        {
+          "id": "evt_971a59e4857cd8a30f2013e1",
+          "prompt": "synthetic-125",
+          "decision": {
+            "decision": "advance",
+            "member": "synthetic-126",
+            "project": null
+          },
+          "provider": "codex",
+          "recorded_at": "2026-02-07T05:43:05.123456789Z"
+        }
+      ],
+      "pending_actions": [],
+      "close_proposals": [],
+      "steering_enabled": true,
+      "intent_revision": "",
+      "work_admissions": [
+        {
+          "action_id": "evt_971a59e4857cd8a30f2013e1",
+          "member": "synthetic-127",
+          "providers": {
+            "formation": "codex",
+            "execution": "codex",
+            "review": "codex"
+          },
+          "work_item": "wi_b4805e3a7a237e6608575d8e"
+        },
+        {
+          "action_id": "evt_81ab405388043db89e1d2259",
+          "member": "synthetic-128",
+          "providers": {
+            "formation": "codex",
+            "execution": "codex",
+            "review": "codex"
+          },
+          "work_item": "wi_940af659e48b3d5029286e30"
+        }
+      ],
+      "pairing_base_cycles": null,
+      "integration_results": [
+        {
+          "id": "synthetic-129",
+          "gate_index": 0,
+          "host": "synthetic-130",
+          "command": "synthetic-131",
+          "snapshot": {
+            "repositories": [
+              {
+                "project": "project_alpha",
+                "root": "/synthetic/path/132",
+                "registry": "synthetic-133",
+                "trunk": "synthetic-134",
+                "head": "synthetic-135",
+                "status": "",
+                "diff": ""
+              },
+              {
+                "project": "synthetic-136",
+                "root": "/synthetic/path/137",
+                "registry": "synthetic-138",
+                "trunk": "synthetic-139",
+                "head": "synthetic-140",
+                "status": "",
+                "diff": ""
+              }
+            ],
+            "intent_revision": "",
+            "policy_hash": "9c359bd50cfad581c9aba8f87dfc1d6ede7e2f5f78711b61c8246ad15f8a9c2f"
+          },
+          "passed": false,
+          "exit_code": 22,
+          "report": "synthetic-141",
+          "artifacts": [],
+          "recorded_at": "2026-02-08T05:51:49.123456789Z"
+        },
+        {
+          "id": "synthetic-142",
+          "gate_index": 0,
+          "host": "synthetic-143",
+          "command": "synthetic-144",
+          "snapshot": {
+            "repositories": [
+              {
+                "project": "project_alpha",
+                "root": "/synthetic/path/145",
+                "registry": "synthetic-146",
+                "trunk": "synthetic-147",
+                "head": "synthetic-148",
+                "status": "",
+                "diff": ""
+              },
+              {
+                "project": "synthetic-149",
+                "root": "/synthetic/path/150",
+                "registry": "synthetic-151",
+                "trunk": "synthetic-152",
+                "head": "synthetic-153",
+                "status": "",
+                "diff": ""
+              }
+            ],
+            "intent_revision": "",
+            "policy_hash": "5a8f1e1f8e58c2aa346a291fe7a9db453ca08bc4d5615f3c78ec957a00f24ab2"
+          },
+          "passed": false,
+          "exit_code": 22,
+          "report": "synthetic-154",
+          "artifacts": [],
+          "recorded_at": "2026-02-09T06:00:47.123456789Z"
+        }
+      ],
+      "completion_proposal": {
+        "id": "evt_ad7dceb1f46fcf0f32845454",
+        "snapshot": {
+          "repositories": [
+            {
+              "project": "project_alpha",
+              "root": "/synthetic/path/155",
+              "registry": "synthetic-156",
+              "trunk": "f61b8fcf47d3efa53e6203121e659be96f852a32\n",
+              "head": "f61b8fcf47d3efa53e6203121e659be96f852a32\n",
+              "status": "",
+              "diff": ""
+            },
+            {
+              "project": "synthetic-157",
+              "root": "/synthetic/path/158",
+              "registry": "synthetic-159",
+              "trunk": "fdaa372df62eb37f12078c22e2271243601e48ad\n",
+              "head": "fdaa372df62eb37f12078c22e2271243601e48ad\n",
+              "status": "",
+              "diff": ""
+            }
+          ],
+          "intent_revision": "",
+          "policy_hash": "f4e383a9566273456940bc66e2396e7c7cf7f4abdada72354f710207826a15e1"
+        },
+        "reviews": [
+          {
+            "statement": "synthetic-160",
+            "affirmed": true,
+            "evidence": [
+              "synthetic-161",
+              "synthetic-162"
+            ]
+          },
+          {
+            "statement": "synthetic-163",
+            "affirmed": true,
+            "evidence": [
+              "synthetic-164",
+              "synthetic-165"
+            ]
+          }
+        ],
+        "proposed_at": "2026-02-10T06:09:59.123456789Z"
+      },
+      "completion_confirmation": {
+        "proposal_id": "evt_ad7dceb1f46fcf0f32845454",
+        "reason": "synthetic-166",
+        "confirmed_at": "2026-02-11T06:19:25.123456789Z",
+        "last_error": null,
+        "intent_json": null
+      },
+      "completion_receipts": []
+    },
+    {
+      "recovery": {
+        "id": "evt_17241ac793d56fc315231845",
+        "kind": "unmet_precondition",
+        "detail": "synthetic-167",
+        "recorded_at": "2026-02-12T06:29:05.123456789Z",
+        "resolution": {
+          "evidence": [
+            "synthetic-168"
+          ],
+          "resolved_at": "2026-02-13T06:38:59.123456789Z"
+        }
+      },
+      "name": "synthetic-169",
+      "outcome": "synthetic-170",
+      "created_at": "2026-02-14T06:49:07.123456789Z",
+      "intent_refs": [
+        "synthetic-171"
+      ],
+      "projects": [
+        "synthetic-172",
+        "synthetic-173"
+      ],
+      "brief": {
+        "path": "/synthetic/path/174",
+        "hash": "8548d2ea0927b748af21d49a62d469a158bc937fb5c39e77fa69e80a8054eb9b"
+      },
+      "members": [
+        {
+          "kind": "campaign",
+          "name": "synthetic-175",
+          "after": [],
+          "intent_ref": null,
+          "description": null,
+          "intent_state": null,
+          "audit_finding_id": null
+        },
+        {
+          "kind": "campaign",
+          "name": "synthetic-176",
+          "after": [
+            "synthetic-177"
+          ],
+          "intent_ref": null,
+          "description": null,
+          "intent_state": null,
+          "audit_finding_id": null
+        }
+      ],
+      "done_evidence": [
+        {
+          "kind": "gate",
+          "command": "synthetic-178",
+          "host": null,
+          "required": true,
+          "artifacts": []
+        },
+        {
+          "kind": "review",
+          "statement": "synthetic-179"
+        }
+      ],
+      "budget": {
+        "max_cycles": 90,
+        "max_active_members": 4,
+        "max_open_questions": 3
+      },
+      "authorized_by": "synthetic-180",
+      "agent_provider": "codex",
+      "providers": {
+        "formation": "codex",
+        "execution": "codex",
+        "review": "codex"
+      },
+      "status": "completed",
+      "owner_decisions": [
+        {
+          "decision": "synthetic-181",
+          "authorized_by": "synthetic-182",
+          "decided_at": "2026-02-15T06:59:29.123456789Z",
+          "members": [
+            "synthetic-183"
+          ],
+          "question_ids": []
+        },
+        {
+          "decision": "synthetic-184",
+          "authorized_by": "synthetic-185",
+          "decided_at": "2026-02-16T07:10:05.123456789Z",
+          "members": [
+            "synthetic-186",
+            "synthetic-187"
+          ],
+          "question_ids": []
+        }
+      ],
+      "status_notes": [
+        {
+          "text": "synthetic-188",
+          "recorded_at": "2026-02-17T07:20:55.123456789Z"
+        },
+        {
+          "text": "synthetic-189",
+          "recorded_at": "2026-02-18T07:31:59.123456789Z"
+        }
+      ],
+      "open_questions": [],
+      "deferred_questions": [],
+      "derive_source": null,
+      "provider_pairings": [],
+      "holds": [],
+      "milestones": [
+        {
+          "member": "synthetic-190",
+          "name": "landed",
+          "evidence": [
+            "synthetic-191",
+            "synthetic-192"
+          ]
+        },
+        {
+          "member": "synthetic-193",
+          "name": "landed",
+          "evidence": [
+            "synthetic-194",
+            "synthetic-195"
+          ]
+        }
+      ],
+      "task_dispatches": [],
+      "reservations": [],
+      "steering": null,
+      "steering_history": [
+        {
+          "id": "evt_2f626f002e7291270d72bb70",
+          "prompt": "synthetic-196",
+          "decision": {
+            "decision": "relay",
+            "finding": {
+              "id": "fnd_project30_recovery_method",
+              "initiative": "synthetic-197",
+              "from": {
+                "kind": "owner",
+                "id": "synthetic-198"
+              },
+              "to": [
+                "synthetic-199",
+                "synthetic-200"
+              ],
+              "kind": "owner_note",
+              "text": "synthetic-201",
+              "refs": [
+                "synthetic-202",
+                "synthetic-203"
+              ],
+              "consumed_by": [],
+              "recorded_at": "2026-02-19T07:43:17.123456789Z",
+              "audit": null
+            },
+            "to": [
+              "synthetic-204",
+              "synthetic-205"
+            ]
+          },
+          "provider": "codex",
+          "recorded_at": "2026-02-20T07:54:49.123456789Z"
+        },
+        {
+          "id": "evt_971a59e4857cd8a30f2013e1",
+          "prompt": "synthetic-206",
+          "decision": {
+            "decision": "advance",
+            "member": "synthetic-207",
+            "project": null
+          },
+          "provider": "codex",
+          "recorded_at": "2026-02-21T08:06:35.123456789Z"
+        }
+      ],
+      "pending_actions": [],
+      "close_proposals": [],
+      "steering_enabled": true,
+      "intent_revision": "",
+      "work_admissions": [
+        {
+          "action_id": "evt_971a59e4857cd8a30f2013e1",
+          "member": "synthetic-208",
+          "providers": {
+            "formation": "codex",
+            "execution": "codex",
+            "review": "codex"
+          },
+          "work_item": "wi_b4805e3a7a237e6608575d8e"
+        },
+        {
+          "action_id": "evt_81ab405388043db89e1d2259",
+          "member": "synthetic-209",
+          "providers": {
+            "formation": "codex",
+            "execution": "codex",
+            "review": "codex"
+          },
+          "work_item": "wi_940af659e48b3d5029286e30"
+        }
+      ],
+      "pairing_base_cycles": null,
+      "integration_results": [
+        {
+          "id": "synthetic-210",
+          "gate_index": 0,
+          "host": "synthetic-211",
+          "command": "synthetic-212",
+          "snapshot": {
+            "repositories": [
+              {
+                "project": "project_alpha",
+                "root": "/synthetic/path/213",
+                "registry": "synthetic-214",
+                "trunk": "synthetic-215",
+                "head": "synthetic-216",
+                "status": "",
+                "diff": ""
+              },
+              {
+                "project": "synthetic-217",
+                "root": "/synthetic/path/218",
+                "registry": "synthetic-219",
+                "trunk": "synthetic-220",
+                "head": "synthetic-221",
+                "status": "",
+                "diff": ""
+              }
+            ],
+            "intent_revision": "",
+            "policy_hash": "9c359bd50cfad581c9aba8f87dfc1d6ede7e2f5f78711b61c8246ad15f8a9c2f"
+          },
+          "passed": false,
+          "exit_code": 22,
+          "report": "synthetic-222",
+          "artifacts": [],
+          "recorded_at": "2026-02-22T08:18:35.123456789Z"
+        },
+        {
+          "id": "synthetic-223",
+          "gate_index": 0,
+          "host": "synthetic-224",
+          "command": "synthetic-225",
+          "snapshot": {
+            "repositories": [
+              {
+                "project": "project_alpha",
+                "root": "/synthetic/path/226",
+                "registry": "synthetic-227",
+                "trunk": "synthetic-228",
+                "head": "synthetic-229",
+                "status": "",
+                "diff": ""
+              },
+              {
+                "project": "synthetic-230",
+                "root": "/synthetic/path/231",
+                "registry": "synthetic-232",
+                "trunk": "synthetic-233",
+                "head": "synthetic-234",
+                "status": "",
+                "diff": ""
+              }
+            ],
+            "intent_revision": "",
+            "policy_hash": "5a8f1e1f8e58c2aa346a291fe7a9db453ca08bc4d5615f3c78ec957a00f24ab2"
+          },
+          "passed": false,
+          "exit_code": 22,
+          "report": "synthetic-235",
+          "artifacts": [],
+          "recorded_at": "2026-02-23T08:30:49.123456789Z"
+        }
+      ],
+      "completion_proposal": {
+        "id": "evt_ad7dceb1f46fcf0f32845454",
+        "snapshot": {
+          "repositories": [
+            {
+              "project": "project_alpha",
+              "root": "/synthetic/path/236",
+              "registry": "synthetic-237",
+              "trunk": "f61b8fcf47d3efa53e6203121e659be96f852a32\n",
+              "head": "f61b8fcf47d3efa53e6203121e659be96f852a32\n",
+              "status": "",
+              "diff": ""
+            },
+            {
+              "project": "synthetic-238",
+              "root": "/synthetic/path/239",
+              "registry": "synthetic-240",
+              "trunk": "fdaa372df62eb37f12078c22e2271243601e48ad\n",
+              "head": "fdaa372df62eb37f12078c22e2271243601e48ad\n",
+              "status": "",
+              "diff": ""
+            }
+          ],
+          "intent_revision": "",
+          "policy_hash": "f4e383a9566273456940bc66e2396e7c7cf7f4abdada72354f710207826a15e1"
+        },
+        "reviews": [
+          {
+            "statement": "synthetic-241",
+            "affirmed": true,
+            "evidence": [
+              "synthetic-242",
+              "synthetic-243"
+            ]
+          },
+          {
+            "statement": "synthetic-244",
+            "affirmed": true,
+            "evidence": [
+              "synthetic-245",
+              "synthetic-246"
+            ]
+          }
+        ],
+        "proposed_at": "2026-02-24T08:43:17.123456789Z"
+      },
+      "completion_confirmation": {
+        "proposal_id": "evt_ad7dceb1f46fcf0f32845454",
+        "reason": "synthetic-247",
+        "confirmed_at": "2026-02-25T08:55:59.123456789Z",
+        "last_error": null,
+        "intent_json": null
+      },
+      "completion_receipts": []
+    }
+  ],
+  "findings": [
+    {
+      "id": "fnd_evt_11696d84ce63d4fac98d2998_audit_0",
+      "initiative": "synthetic-248",
+      "from": {
+        "kind": "initiative_steering",
+        "id": "evt_11696d84ce63d4fac98d2998"
+      },
+      "to": [],
+      "kind": "evidence",
+      "text": "synthetic-249",
+      "refs": [
+        "synthetic-250",
+        "synthetic-251"
+      ],
+      "consumed_by": [],
+      "recorded_at": "2026-02-26T09:08:55.123456789Z",
+      "audit": {
+        "intent_ref": "synthetic-252",
+        "classification": "partial",
+        "project": "synthetic-253",
+        "paths": [
+          "synthetic-254",
+          "synthetic-255"
+        ],
+        "explanation": "synthetic-256"
+      }
+    },
+    {
+      "id": "fnd_evt_11696d84ce63d4fac98d2998_audit_1",
+      "initiative": "synthetic-257",
+      "from": {
+        "kind": "initiative_steering",
+        "id": "evt_11696d84ce63d4fac98d2998"
+      },
+      "to": [],
+      "kind": "evidence",
+      "text": "synthetic-258",
+      "refs": [
+        "synthetic-259",
+        "synthetic-260"
+      ],
+      "consumed_by": [],
+      "recorded_at": "2026-02-27T09:22:05.123456789Z",
+      "audit": {
+        "intent_ref": "synthetic-261",
+        "classification": "partial",
+        "project": "synthetic-262",
+        "paths": [
+          "synthetic-263",
+          "synthetic-264"
+        ],
+        "explanation": "synthetic-265"
+      }
+    },
+    {
+      "id": "fnd_evt_ad7dceb1f46fcf0f32845454_audit_8",
+      "initiative": "synthetic-266",
+      "from": {
+        "kind": "initiative_steering",
+        "id": "evt_ad7dceb1f46fcf0f32845454"
+      },
+      "to": [],
+      "kind": "evidence",
+      "text": "synthetic-267",
+      "refs": [
+        "synthetic-268",
+        "synthetic-269"
+      ],
+      "consumed_by": [],
+      "recorded_at": "2026-02-28T09:35:29.123456789Z",
+      "audit": {
+        "intent_ref": "synthetic-270",
+        "classification": "realised",
+        "project": "project_charlie",
+        "paths": [
+          "synthetic-271",
+          "synthetic-272"
+        ],
+        "explanation": "synthetic-273"
+      }
+    }
+  ]
+}

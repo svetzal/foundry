@@ -335,7 +335,7 @@ async fn a_steer_started_beside_member_work_skips_integration_and_records_why() 
             origin: "test".into(),
             trace_id: None,
         },
-        chrono::Utc::now(),
+        foundry_sdk::time::UtcDateTime::now(),
     ));
     ledger.save(&fixture.ledger).unwrap();
     // A gate that ran would fail and file a regression finding.
@@ -381,7 +381,7 @@ async fn premature_done_without_eligible_repairs_records_recovery_and_no_owner_q
             "old-worker-wait",
             foundry_sdk::recovery::RecoveryKind::UnmetPrecondition,
             "member work was in flight",
-            chrono::Utc::now(),
+            foundry_sdk::time::UtcDateTime::now(),
         )
         .unwrap();
     store.save(&fixture.store).unwrap();
@@ -456,7 +456,7 @@ async fn fresh_done_evidence_rechecks_a_previous_completion_precondition_without
             "old-gate",
             foundry_sdk::recovery::RecoveryKind::UnmetPrecondition,
             "required initiative gate 0 has no current passing evidence",
-            chrono::Utc::now(),
+            foundry_sdk::time::UtcDateTime::now(),
         )
         .unwrap();
     store.save(&fixture.store).unwrap();

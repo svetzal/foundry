@@ -287,11 +287,11 @@ fn history_offline(date: Option<&str>, project: Option<&str>) {
         let indices = read_index_from_dir(&dir, project);
         render_history_days(Some(date_str), std::iter::once((date_str.to_string(), indices)));
     } else {
-        let today = chrono::Utc::now().date_naive();
+        let today = foundry_sdk::time::UtcDateTime::now().date();
         let mut days = Vec::new();
         for offset in 0..7_i64 {
-            let day = today - chrono::Duration::days(offset);
-            let date_str = day.format("%Y-%m-%d").to_string();
+            let day = today - jiff::Span::new().days(offset);
+            let date_str = day.to_string();
             let dir = base_dir.join(&date_str);
             let indices = read_index_from_dir(&dir, project);
             days.push((date_str, indices));

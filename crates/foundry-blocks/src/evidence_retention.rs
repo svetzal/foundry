@@ -218,7 +218,7 @@ fn newest_write(trace: &Path) -> std::io::Result<SystemTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{TimeZone as _, Utc};
+    use foundry_sdk::time::UtcDateTime;
     use foundry_sdk::work_item::{WorkItemKind, WorkItemSpec, WorkLane};
 
     const NOW_SECS: u64 = 2_000_000_000;
@@ -244,7 +244,7 @@ mod tests {
                 origin: "test".to_string(),
                 trace_id: Some(trace_id.to_string()),
             },
-            Utc.timestamp_opt(1_900_000_000, 0).unwrap(),
+            UtcDateTime::from_timestamp(1_900_000_000, 0).unwrap(),
         )
     }
 
@@ -286,11 +286,11 @@ mod tests {
     fn waiting_running_and_unfinished_items_hold_their_traces() {
         let waiting = item("t-waiting");
         let mut running = item("t-running");
-        running.start(Utc.timestamp_opt(1_900_000_100, 0).unwrap());
+        running.start(UtcDateTime::from_timestamp(1_900_000_100, 0).unwrap());
         let mut settled = item("t-settled");
-        settled.start(Utc.timestamp_opt(1_900_000_100, 0).unwrap());
+        settled.start(UtcDateTime::from_timestamp(1_900_000_100, 0).unwrap());
         settled.execution_completed = true;
-        settled.settle_failed("boom", Utc.timestamp_opt(1_900_000_200, 0).unwrap());
+        settled.settle_failed("boom", UtcDateTime::from_timestamp(1_900_000_200, 0).unwrap());
         let store = WorkItemStore {
             items: vec![waiting, running, settled],
             ..WorkItemStore::default()

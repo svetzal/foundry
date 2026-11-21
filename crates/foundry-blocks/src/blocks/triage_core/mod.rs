@@ -5,9 +5,9 @@
 //! side effects beyond reading JSONL files. All functions are unit-testable
 //! without a real engine.
 
-use chrono::{DateTime, Utc};
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::PreflightCompletedPayload;
+use foundry_sdk::time::UtcDateTime;
 
 mod classify;
 mod correlate;
@@ -27,7 +27,7 @@ pub struct RawFailure {
     pub gate_output: String,
     pub exit_code: Option<i32>,
     pub fix_command: Option<String>,
-    pub occurred_at: DateTime<Utc>,
+    pub occurred_at: UtcDateTime,
     /// Files holding the gate's complete output (see `GateResult::logs`).
     pub logs: Vec<String>,
 }
@@ -46,8 +46,8 @@ pub struct RawFailure {
 /// digest payload instead).
 pub fn run_failures(
     events: &[Event],
-    window_start: DateTime<Utc>,
-    window_end: DateTime<Utc>,
+    window_start: UtcDateTime,
+    window_end: UtcDateTime,
 ) -> (Vec<RawFailure>, u64) {
     let mut failures = Vec::new();
     let mut unparsed_events = 0u64;
@@ -97,9 +97,9 @@ pub fn run_failures(
 
 #[cfg(test)]
 mod tests {
-    use chrono::{Duration, TimeZone as _, Utc};
     use foundry_sdk::event::{Event, EventType};
     use foundry_sdk::throttle::Throttle;
+    use foundry_sdk::time::{SignedDuration, UtcDateTime};
 
     use super::*;
 
@@ -133,8 +133,8 @@ mod tests {
             make_preflight_event("beta", "fmt", false, false), // real failure → included
             make_preflight_event("gamma", "fmt", true, false), // passed → excluded
         ];
-        let window_end = Utc::now() + Duration::seconds(1);
-        let window_start = window_end - Duration::hours(1);
+        let window_end = UtcDateTime::now() + SignedDuration::from_secs(1);
+        let window_start = window_end - SignedDuration::from_hours(1);
 
         let (failures, unparsed) = run_failures(&events, window_start, window_end);
 
@@ -147,23 +147,24 @@ mod tests {
     fn run_failures_carry_the_gate_log_paths() {
         let mut event = make_preflight_event("alpha", "test", false, false);
         event.payload["results"][0]["logs"] = serde_json::json!(["/logs/test.stdout.log"]);
-        let window_end = Utc::now() + Duration::seconds(1);
+        let window_end = UtcDateTime::now() + SignedDuration::from_secs(1);
 
-        let (failures, _) = run_failures(&[event], window_end - Duration::hours(1), window_end);
+        let (failures, _) =
+            run_failures(&[event], window_end - SignedDuration::from_hours(1), window_end);
 
         assert_eq!(failures[0].logs, vec!["/logs/test.stdout.log".to_string()]);
     }
 
     #[test]
     fn run_failures_respects_window_bounds() {
-        let window_end = Utc.with_ymd_and_hms(2026, 6, 1, 12, 0, 0).unwrap();
-        let window_start = window_end - Duration::hours(2);
+        let window_end = UtcDateTime::from_ymd_hms(2026, 6, 1, 12, 0, 0).unwrap();
+        let window_start = window_end - SignedDuration::from_hours(2);
 
         let mut inside = make_preflight_event("alpha", "fmt", false, false);
-        inside.occurred_at = Utc.with_ymd_and_hms(2026, 6, 1, 11, 0, 0).unwrap();
+        inside.occurred_at = UtcDateTime::from_ymd_hms(2026, 6, 1, 11, 0, 0).unwrap();
 
         let mut before = make_preflight_event("beta", "fmt", false, false);
-        before.occurred_at = Utc.with_ymd_and_hms(2026, 6, 1, 9, 0, 0).unwrap();
+        before.occurred_at = UtcDateTime::from_ymd_hms(2026, 6, 1, 9, 0, 0).unwrap();
 
         let (failures, unparsed) = run_failures(&[inside, before], window_start, window_end);
 
@@ -174,8 +175,8 @@ mod tests {
 
     #[test]
     fn run_failures_counts_unparsed_events_and_skips_them() {
-        let window_end = Utc::now() + Duration::seconds(1);
-        let window_start = window_end - Duration::hours(1);
+        let window_end = UtcDateTime::now() + SignedDuration::from_secs(1);
+        let window_start = window_end - SignedDuration::from_hours(1);
 
         let good = make_preflight_event("beta", "fmt", false, false);
         let malformed = Event::new(

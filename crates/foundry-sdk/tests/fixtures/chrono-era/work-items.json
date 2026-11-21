@@ -1,0 +1,161 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "id": "wi_895cdfdbf59514726528dbd4",
+      "project": "foundry",
+      "objective": "synthetic-1",
+      "kind": "campaign_cycle",
+      "lane": "campaign",
+      "origin": "synthetic-2",
+      "submitted_at": "2026-01-03T04:05:06Z",
+      "started_at": "2026-01-03T04:05:07.120Z",
+      "settled_at": "2026-01-05T03:05:47.123456789Z",
+      "state": "cancelled",
+      "reason": "synthetic-3",
+      "trace_id": "af6e96caa5fae6efb0ef70f13ee26ca0",
+      "disposition": {
+        "verdict": "defect",
+        "preservation_ref": "synthetic-4",
+        "worktree": "/synthetic/path/5",
+        "worktree_removed": true
+      },
+      "operator_action": {
+        "command": "close",
+        "origin": "synthetic-6",
+        "previous_state": "preserved",
+        "previous_reason": "synthetic-7",
+        "previous_settled_at": "2026-01-06T03:06:49.123456789Z"
+      },
+      "execution_completed": false
+    },
+    {
+      "id": "wi_705d822a7e84b6da0f145d22",
+      "project": "synthetic-8",
+      "objective": "synthetic-9",
+      "kind": "maintenance",
+      "lane": "maintenance",
+      "origin": "synthetic-10",
+      "submitted_at": "2026-01-07T03:08:05.123456789Z",
+      "started_at": "2026-01-08T03:09:35.123456789Z",
+      "settled_at": "2026-01-09T03:11:19.654321Z",
+      "state": "landed",
+      "reason": "synthetic-11",
+      "trace_id": "8a594a08a9c43ecec6605b6446ba6bd0",
+      "execution_completed": false
+    },
+    {
+      "id": "wi_16353ecfca000a0a9b079a1d",
+      "project": "system",
+      "objective": "synthetic-12",
+      "kind": "workflow",
+      "lane": "maintenance",
+      "origin": "ops_digest_started",
+      "source": {
+        "kind": "sentinel",
+        "ref": "synthetic-13"
+      },
+      "submitted_at": "2026-01-10T03:13:17.123456789Z",
+      "started_at": "2026-01-11T03:15:29.123456789Z",
+      "settled_at": "2026-01-12T03:17:55.123456789Z",
+      "state": "landed",
+      "reason": "synthetic-14",
+      "trace_id": "ea48336be3319db39eddd960eed6157e",
+      "started_root": {
+        "id": "evt_ec6c2a49ea159b20155a741d",
+        "event_type": "ops_digest_started",
+        "project": "system",
+        "occurred_at": "2026-01-13T03:20:35.123456789Z",
+        "recorded_at": "2026-01-14T03:23:29.123456789Z",
+        "throttle": "full",
+        "trace_id": "ea48336be3319db39eddd960eed6157e",
+        "span_id": "6e125865c9147166",
+        "parent_span_id": "f70dee7e0d002ad1",
+        "causation_id": "evt_b8dcef6e9af19389eb650988",
+        "source": {
+          "kind": "sentinel",
+          "ref": "synthetic-15"
+        },
+        "payload": {
+          "admitted_work_item_id": "wi_16353ecfca000a0a9b079a1d",
+          "event_count": 1,
+          "forced_event": {
+            "domain": "infrastructure",
+            "event_type": "work_reconcile_anomaly",
+            "id": "evt_3bfc67a1b88c4c04c0da7fff",
+            "occurred_at": "2026-01-15T03:26:37.123456789+00:00",
+            "summary": "synthetic-16",
+            "urgency": "synthetic-17"
+          }
+        }
+      },
+      "execution_completed": true
+    },
+    {
+      "id": "wi_8f69647f1074dc851affda43",
+      "project": "synthetic-18",
+      "objective": "synthetic-19",
+      "kind": "follow_up",
+      "lane": "interactive",
+      "origin": "synthetic-20",
+      "source": {
+        "kind": "work_item",
+        "ref": "wi_377d89d2cea8d7338573d2a4"
+      },
+      "submitted_at": "2026-01-16T03:29:59.123456789Z",
+      "settled_at": "2026-01-17T03:33:35.123456789Z",
+      "state": "failed",
+      "reason": "synthetic-21",
+      "trace_id": "1dd81eebbb70c57a7e15a27fb11271f2",
+      "follow_up": {
+        "of": "wi_377d89d2cea8d7338573d2a4",
+        "commit": "f7a431b8cc7bcdafc2c69b1a48490a5f42610ee3",
+        "obligation": "trunk_ci",
+        "failing_jobs": [
+          "synthetic-22"
+        ],
+        "log_tail": "synthetic-23",
+        "run_url": "synthetic-24"
+      },
+      "execution_completed": false
+    },
+    {
+      "id": "wi_de130468b981625851e97052",
+      "project": "system",
+      "objective": "synthetic-25",
+      "kind": "workflow",
+      "lane": "maintenance",
+      "origin": "ops_digest_started",
+      "source": {
+        "kind": "sentinel",
+        "ref": "synthetic-26"
+      },
+      "submitted_at": "2026-01-18T03:37:25.123456789Z",
+      "started_at": "2026-01-19T03:41:29.123456789Z",
+      "settled_at": "2026-01-20T03:45:47.123456789Z",
+      "state": "landed",
+      "reason": "synthetic-27",
+      "trace_id": "de789a30a1a77db1d0253efec3b9b64a",
+      "started_root": {
+        "id": "evt_1529513be4c840f3dbaf8fab",
+        "event_type": "ops_digest_started",
+        "project": "system",
+        "occurred_at": "2026-01-21T03:50:19.123456789Z",
+        "recorded_at": "2026-01-22T03:55:05.123456789Z",
+        "throttle": "full",
+        "trace_id": "de789a30a1a77db1d0253efec3b9b64a",
+        "span_id": "c7fe5c7157a774ba",
+        "parent_span_id": "c483c731d229809c",
+        "causation_id": "evt_1f1ae347f53ec430e981a0ed",
+        "source": {
+          "kind": "sentinel",
+          "ref": "synthetic-28"
+        },
+        "payload": {
+          "admitted_work_item_id": "wi_de130468b981625851e97052"
+        }
+      },
+      "execution_completed": true
+    }
+  ]
+}

@@ -191,7 +191,7 @@ fn propose_test_outcome(home: &std::path::Path) {
                 exit_code: Some(0),
                 report: "gate-capture.md".into(),
                 artifacts: vec![],
-                recorded_at: chrono::Utc::now(),
+                recorded_at: foundry_sdk::time::UtcDateTime::now(),
             },
         )
         .unwrap();
@@ -486,7 +486,8 @@ async fn owner_hold_stays_passive_and_member_pin_releases_it() {
         loop {
             let events = foundry_blocks::blocks::triage_core::read_events_jsonl(
                 &home.path().join("events"),
-                chrono::Utc::now() - chrono::Duration::minutes(1),
+                foundry_sdk::time::UtcDateTime::now()
+                    - foundry_sdk::time::SignedDuration::from_mins(1),
             );
             if let Some(fact) = events.into_iter().find(|event| event.id == event_id) {
                 break fact;
@@ -879,7 +880,7 @@ fn decision_projection(decision: &proto::InitiativeDecision) -> serde_json::Valu
 
 fn assert_rfc3339(timestamp: &str) {
     assert!(
-        chrono::DateTime::parse_from_rfc3339(timestamp).is_ok(),
+        foundry_sdk::time::UtcDateTime::parse_from_rfc3339(timestamp).is_ok(),
         "{timestamp:?} is not RFC 3339"
     );
 }
@@ -1710,7 +1711,7 @@ async fn typed_campaign_recheck_preserves_owner_controls_and_refuses_stale_or_em
             "recovery_environment",
             RecoveryKind::EnvironmentUnavailable,
             "Required toolchain is missing",
-            chrono::Utc::now(),
+            foundry_sdk::time::UtcDateTime::now(),
         )
         .unwrap();
     store.save(&path).unwrap();
@@ -1798,7 +1799,7 @@ async fn typed_initiative_recheck_retains_questions_holds_budgets_and_records_no
             "recovery_evidence",
             RecoveryKind::MissingEvidence,
             "Required integration gate has no current passing evidence",
-            chrono::Utc::now(),
+            foundry_sdk::time::UtcDateTime::now(),
         )
         .unwrap();
     store.save(&path).unwrap();
@@ -1839,7 +1840,7 @@ async fn failed_recovery_write_changes_no_state_or_events() {
             "recovery_runner",
             RecoveryKind::RunnerUnavailable,
             "Provider transport is unavailable",
-            chrono::Utc::now(),
+            foundry_sdk::time::UtcDateTime::now(),
         )
         .unwrap();
     store.save(&path).unwrap();

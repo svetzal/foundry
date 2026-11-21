@@ -12,7 +12,6 @@ use std::process::Command;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use foundry_blocks::trace_writer::TraceWriter;
 use foundry_engine::engine::Engine;
 use foundry_engine::event_writer::EventWriter;
@@ -22,6 +21,7 @@ use foundry_sdk::payload::WorkItemEventPayload;
 use foundry_sdk::registry::Registry;
 use foundry_sdk::sentinel::SentinelStore;
 use foundry_sdk::throttle::Throttle;
+use foundry_sdk::time::UtcDateTime;
 use foundry_sdk::work_item::{
     WorkDisposition, WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkItemStore, WorkLane,
 };
@@ -39,8 +39,8 @@ use tonic::transport::Server;
 /// A port nothing listens on, so the online path must fail rather than connect.
 const DUMMY_ADDR: &str = "http://127.0.0.1:9";
 
-fn at(seconds: i64) -> DateTime<Utc> {
-    DateTime::from_timestamp(seconds, 0).expect("in-range timestamp")
+fn at(seconds: i64) -> UtcDateTime {
+    UtcDateTime::from_timestamp(seconds, 0).expect("in-range timestamp")
 }
 
 fn item(
@@ -1582,7 +1582,7 @@ async fn queue_show_and_json_read_automatic_supersession_from_daemon_ledger() {
             origin: "test".into(),
             trace_id: Some(foundry_sdk::event::mint_trace_id()),
         },
-        Utc::now(),
+        UtcDateTime::now(),
     );
     store.upsert(running.clone());
     store.save(&ledger).unwrap();
@@ -1658,7 +1658,7 @@ async fn reconcile_cli_prints_daemon_invocation_and_rejects_offline() {
     let report = state
         .path()
         .join("reconcile")
-        .join(format!("{}.md", Utc::now().format("%Y-%m-%d")));
+        .join(format!("{}.md", UtcDateTime::now().format("%Y-%m-%d")));
     assert_eq!(markdown, std::fs::read_to_string(report).unwrap());
     assert!(markdown.contains(
         "Settled: 0; orphan worktrees: 0; orphan branches: 0; broken items: 0; unresolved: 0"

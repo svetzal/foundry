@@ -8,14 +8,14 @@
 //! scheduler with a recording dispatcher and a pinned clock.
 use super::*;
 
-use chrono::{DateTime, TimeZone as _, Utc};
 use foundry_sdk::payload::{LoopContext, TaskRunCompletedPayload, TaskVerdict};
+use foundry_sdk::time::UtcDateTime;
 use foundry_sdk::work_item::{WorkDisposition, WorkItemSpec};
 
 use crate::pacing::PacingScheduler;
 
-fn at(second: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 10, 20, 12, 0, second).single().expect("valid date")
+fn at(second: u32) -> UtcDateTime {
+    UtcDateTime::from_ymd_hms(2026, 10, 20, 12, 0, second).expect("valid date")
 }
 
 fn spec(project: &str, id: &str) -> WorkItemSpec {

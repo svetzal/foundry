@@ -862,9 +862,8 @@ async fn online_campaign_show_prints_the_recorded_escalation_question_and_option
     let mut asking = make_campaign("asking", CampaignStatus::Escalated);
     asking.open_escalation = Some(foundry_sdk::campaign::CampaignEscalation {
         reason: "boundaries differ; options: A | B".to_string(),
-        escalated_at: chrono::DateTime::parse_from_rfc3339("2026-10-11T03:00:00Z")
-            .expect("timestamp")
-            .with_timezone(&chrono::Utc),
+        escalated_at: foundry_sdk::time::UtcDateTime::parse_from_rfc3339("2026-10-11T03:00:00Z")
+            .expect("timestamp"),
         cycles_completed: 2,
         cycles_landed: 1,
         question: Some("boundaries differ".to_string()),

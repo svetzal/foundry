@@ -9,10 +9,10 @@
 
 use std::path::Path;
 
-use chrono::Utc;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::WorkItemEventPayload;
 use foundry_sdk::throttle::Throttle;
+use foundry_sdk::time::UtcDateTime;
 use foundry_sdk::work_item::{WorkItem, WorkItemStore, ledger_write_gate};
 
 use super::RuntimeContext;
@@ -26,7 +26,7 @@ pub(crate) const RESTART_REASON: &str = "daemon restarted";
 /// Pure but for the store: the caller records the events, so this is testable
 /// without an engine.
 pub(crate) fn settle_running(store: &mut WorkItemStore) -> Vec<WorkItem> {
-    let now = Utc::now();
+    let now = UtcDateTime::now();
     let mut settled = Vec::new();
     for item in &mut store.items {
         if item.occupies_slot() {
@@ -156,7 +156,7 @@ pub(crate) async fn settle_running_items_on_start(ctx: &RuntimeContext, path: &P
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
+    use foundry_sdk::time::UtcDateTime;
     use foundry_sdk::work_item::{
         WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkItemStore, WorkLane,
     };
@@ -173,7 +173,7 @@ mod tests {
                 origin: "foundry task".to_string(),
                 trace_id: Some("a".repeat(32)),
             },
-            Utc::now(),
+            UtcDateTime::now(),
         )
     }
 
@@ -217,7 +217,7 @@ mod tests {
             foundry_sdk::throttle::Throttle::Full,
             serde_json::json!({}),
         ));
-        item.settle_cancelled("campaign ended", None, Utc::now());
+        item.settle_cancelled("campaign ended", None, UtcDateTime::now());
         assert!(item.occupies_slot());
         let mut store = WorkItemStore::default();
         store.upsert(item);

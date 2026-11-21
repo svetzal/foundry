@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
+use crate::time::UtcDateTime;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -46,7 +46,7 @@ pub struct Initiative {
     pub outcome: String,
     /// Known creation time; legacy records have no inferred age.
     #[serde(default)]
-    pub created_at: Option<DateTime<Utc>>,
+    pub created_at: Option<UtcDateTime>,
     #[serde(default)]
     pub intent_refs: Vec<String>,
     pub projects: Vec<String>,
@@ -251,7 +251,7 @@ fn required() -> bool {
 pub struct InitiativeOwnerDecision {
     pub decision: String,
     pub authorized_by: String,
-    pub decided_at: DateTime<Utc>,
+    pub decided_at: UtcDateTime,
     pub members: Vec<String>,
     #[serde(default)]
     pub question_ids: Vec<String>,
@@ -261,7 +261,7 @@ pub struct InitiativeOwnerDecision {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InitiativeStatusNote {
     pub text: String,
-    pub recorded_at: DateTime<Utc>,
+    pub recorded_at: UtcDateTime,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -269,7 +269,7 @@ pub struct InitiativeQuestion {
     pub id: String,
     pub question: String,
     pub members: Vec<String>,
-    pub opened_at: DateTime<Utc>,
+    pub opened_at: UtcDateTime,
     /// Derived from current campaign escalations; rebuilt rather than held as policy.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub from_members: bool,
@@ -310,8 +310,8 @@ pub struct Finding {
     pub refs: Vec<String>,
     #[serde(default)]
     pub consumed_by: Vec<FindingConsumption>,
-    #[serde(default = "Utc::now")]
-    pub recorded_at: DateTime<Utc>,
+    #[serde(default = "UtcDateTime::now")]
+    pub recorded_at: UtcDateTime,
     #[serde(default)]
     pub audit: Option<AuditEvidence>,
 }
@@ -334,7 +334,7 @@ impl Finding {
             text: text.into(),
             refs,
             consumed_by: vec![],
-            recorded_at: Utc::now(),
+            recorded_at: UtcDateTime::now(),
             audit: None,
         }
     }
@@ -558,7 +558,7 @@ impl CampaignStore {
                 campaign.budget.max_cycles = initiative.budget.max_cycles;
             }
         }
-        initiative.created_at = Some(Utc::now());
+        initiative.created_at = Some(UtcDateTime::now());
         self.initiatives.push(initiative);
         Ok(())
     }
@@ -642,7 +642,7 @@ impl CampaignStore {
         name: &str,
         decision: &str,
         members: &[String],
-        at: DateTime<Utc>,
+        at: UtcDateTime,
     ) -> Result<InitiativeOwnerDecision> {
         self.decide_initiative_answering(name, decision, members, &[], at)
     }
@@ -656,7 +656,7 @@ impl CampaignStore {
         decision: &str,
         members: &[String],
         question_ids: &[String],
-        at: DateTime<Utc>,
+        at: UtcDateTime,
     ) -> Result<InitiativeOwnerDecision> {
         self.decision_scope(name, decision, members)?;
         let mut candidate = self.clone();
@@ -765,7 +765,7 @@ impl CampaignStore {
         &mut self,
         name: &str,
         text: &str,
-        at: DateTime<Utc>,
+        at: UtcDateTime,
     ) -> Result<InitiativeStatusNote> {
         let initiative = self.require_initiative(name)?;
         if initiative.status.is_terminal() {
@@ -788,7 +788,7 @@ impl CampaignStore {
         &mut self,
         name: &str,
         reason: &str,
-        at: DateTime<Utc>,
+        at: UtcDateTime,
     ) -> Result<Transition> {
         let initiative = self.require_initiative(name)?;
         if initiative.status == InitiativeStatus::Completed {
@@ -827,7 +827,7 @@ impl CampaignStore {
         &mut self,
         name: &str,
         reason: &str,
-        at: DateTime<Utc>,
+        at: UtcDateTime,
     ) -> Result<Transition> {
         let initiative = self.require_initiative(name)?;
         if initiative.status == InitiativeStatus::Cancelled {
@@ -923,7 +923,7 @@ impl CampaignStore {
             id: question_id(name, question),
             question: question.trim().into(),
             members: applicable,
-            opened_at: Utc::now(),
+            opened_at: UtcDateTime::now(),
             from_members: false,
         };
         if initiative.open_questions.len() < initiative.budget.max_open_questions {
@@ -975,7 +975,7 @@ impl CampaignStore {
             let prior_question =
                 prior.iter().find(|question| question.question.trim() == text.trim());
             let opened_at = campaign.open_escalation.as_ref().map_or_else(
-                || prior_question.map_or_else(Utc::now, |question| question.opened_at),
+                || prior_question.map_or_else(UtcDateTime::now, |question| question.opened_at),
                 |escalation| escalation.escalated_at,
             );
             let opened_at =

@@ -914,20 +914,20 @@ fn ledger_item(root: Event, kind: WorkItemKind, state: WorkItemState) -> WorkIte
             trace_id: None,
         },
         root.clone(),
-        chrono::Utc::now(),
+        foundry_sdk::time::UtcDateTime::now(),
     )
     .with_source(source);
     match state {
         WorkItemState::Queued => {}
         WorkItemState::Held => item.hold(),
         WorkItemState::Running => {
-            item.start(chrono::Utc::now());
+            item.start(foundry_sdk::time::UtcDateTime::now());
             item.started_root = Some(root);
         }
         WorkItemState::Landed => {
-            item.start(chrono::Utc::now());
+            item.start(foundry_sdk::time::UtcDateTime::now());
             item.started_root = Some(root);
-            item.settle_landed("landed", chrono::Utc::now());
+            item.settle_landed("landed", foundry_sdk::time::UtcDateTime::now());
             item.execution_completed = true;
         }
         other => panic!("fixture does not build {other:?}"),

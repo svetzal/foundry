@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Datelike as _, Utc};
 use foundry_sdk::event::Event;
+use foundry_sdk::time::UtcDateTime;
 
 /// Read Foundry events from JSONL files since a given timestamp.
 ///
@@ -9,23 +9,19 @@ use foundry_sdk::event::Event;
 /// (files are named `YYYY-MM.jsonl`). Malformed lines are skipped and
 /// logged at `debug!` (expected, high-cardinality) — never silently
 /// discarded; an unreadable file is logged at `warn!`.
-pub fn read_events_jsonl(events_dir: &Path, since: DateTime<Utc>) -> Vec<Event> {
+pub fn read_events_jsonl(events_dir: &Path, since: UtcDateTime) -> Vec<Event> {
     let mut events = Vec::new();
 
-    let now = Utc::now();
+    let now = UtcDateTime::now();
     let months: Vec<String> = {
         let mut v = Vec::new();
         // Prior month
-        let prior = if now.month0() == 0 {
-            chrono::NaiveDate::from_ymd_opt(now.year() - 1, 12, 1)
-        } else {
-            chrono::NaiveDate::from_ymd_opt(now.year(), now.month() - 1, 1)
-        };
+        let prior = now.date().first_of_month().yesterday().ok();
         if let Some(d) = prior {
-            v.push(d.format("%Y-%m").to_string());
+            v.push(d.strftime("%Y-%m").to_string());
         }
         // Current month
-        v.push(now.format("%Y-%m").to_string());
+        v.push(now.format("%Y-%m"));
         v
     };
 
@@ -37,7 +33,7 @@ pub fn read_events_jsonl(events_dir: &Path, since: DateTime<Utc>) -> Vec<Event> 
     events
 }
 
-fn read_jsonl_file(path: &Path, since: DateTime<Utc>, out: &mut Vec<Event>) {
+fn read_jsonl_file(path: &Path, since: UtcDateTime, out: &mut Vec<Event>) {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(err) => {
@@ -80,16 +76,12 @@ fn read_jsonl_file(path: &Path, since: DateTime<Utc>, out: &mut Vec<Event>) {
 /// calling `read_events_jsonl`.
 #[allow(dead_code)]
 pub fn month_paths(events_dir: &Path) -> Vec<PathBuf> {
-    let now = Utc::now();
+    let now = UtcDateTime::now();
     let mut paths = Vec::new();
 
-    let prior = if now.month0() == 0 {
-        chrono::NaiveDate::from_ymd_opt(now.year() - 1, 12, 1)
-    } else {
-        chrono::NaiveDate::from_ymd_opt(now.year(), now.month() - 1, 1)
-    };
+    let prior = now.date().first_of_month().yesterday().ok();
     if let Some(d) = prior {
-        paths.push(events_dir.join(format!("{}.jsonl", d.format("%Y-%m"))));
+        paths.push(events_dir.join(format!("{}.jsonl", d.strftime("%Y-%m"))));
     }
     paths.push(events_dir.join(format!("{}.jsonl", now.format("%Y-%m"))));
     paths
@@ -99,9 +91,9 @@ pub fn month_paths(events_dir: &Path) -> Vec<PathBuf> {
 mod tests {
     use std::io::Write as _;
 
-    use chrono::{Duration, Utc};
     use foundry_sdk::event::{Event, EventType};
     use foundry_sdk::throttle::Throttle;
+    use foundry_sdk::time::{SignedDuration, UtcDateTime};
     use tempfile::TempDir;
 
     use super::*;
@@ -123,15 +115,15 @@ mod tests {
             serde_json::json!({"project": "proj2", "workflow": "maintain", "all_passed": false, "required_passed": false, "results": []}),
         );
 
-        let now = Utc::now();
-        let month = now.format("%Y-%m").to_string();
+        let now = UtcDateTime::now();
+        let month = now.format("%Y-%m");
         let path = dir.path().join(format!("{month}.jsonl"));
         let mut f = std::fs::File::create(&path).unwrap();
         writeln!(f, "{}", serde_json::to_string(&event1).unwrap()).unwrap();
         writeln!(f, "{}", serde_json::to_string(&event2).unwrap()).unwrap();
         drop(f);
 
-        let since = now - Duration::hours(1);
+        let since = now - SignedDuration::from_hours(1);
         let loaded = read_events_jsonl(dir.path(), since);
 
         assert_eq!(loaded.len(), 2);
@@ -140,8 +132,8 @@ mod tests {
     #[test]
     fn read_events_jsonl_skips_malformed_lines() {
         let dir = TempDir::new().unwrap();
-        let now = Utc::now();
-        let month = now.format("%Y-%m").to_string();
+        let now = UtcDateTime::now();
+        let month = now.format("%Y-%m");
         let path = dir.path().join(format!("{month}.jsonl"));
         let mut f = std::fs::File::create(&path).unwrap();
         writeln!(f, "this is not json at all").unwrap();
@@ -155,7 +147,7 @@ mod tests {
         writeln!(f, "{}", serde_json::to_string(&good).unwrap()).unwrap();
         drop(f);
 
-        let since = now - Duration::hours(1);
+        let since = now - SignedDuration::from_hours(1);
         let events = read_events_jsonl(dir.path(), since);
         assert_eq!(events.len(), 1, "malformed line must not abort parsing");
     }

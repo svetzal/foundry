@@ -9,12 +9,12 @@
 
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, FixedOffset};
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{
     OpsDigestCompletedPayload, OpsDigestStartedPayload, OpsEventDigest, OpsObservedPayload,
 };
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::time::UtcDateTime;
 use serde::Deserialize;
 
 use super::{TriggerContext, emit_result};
@@ -102,7 +102,7 @@ fn low_disk_event(
     if low.is_empty() {
         return None;
     }
-    let now = chrono::Utc::now();
+    let now = foundry_sdk::time::UtcDateTime::now();
     let places: Vec<String> = low.iter().map(foundry_sdk::disk::DiskSpace::describe).collect();
     Some(OpsEventDigest {
         id: format!("host-disk-low-{}", now.format("%Y%m%dT%H")),
@@ -211,7 +211,10 @@ impl TaskBlock for ObserveEvents {
                         .lock()
                         .map_err(|_| anyhow::anyhow!("ledger gate poisoned"))?;
                     let ledger = foundry_sdk::work_item::WorkItemStore::load(&work_items)?;
-                    Ok(guard.store.initiative_attention_events(&ledger, chrono::Utc::now())?)
+                    Ok(guard.store.initiative_attention_events(
+                        &ledger,
+                        foundry_sdk::time::UtcDateTime::now(),
+                    )?)
                 })
                 .await??
             } else {
@@ -321,7 +324,7 @@ fn observe(
 }
 
 /// Read the watermark from disk. Returns `None` on missing/unreadable file.
-fn read_watermark(path: &Path) -> Option<DateTime<FixedOffset>> {
+fn read_watermark(path: &Path) -> Option<UtcDateTime> {
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
@@ -334,7 +337,7 @@ fn read_watermark(path: &Path) -> Option<DateTime<FixedOffset>> {
         }
     };
     let ts = content.trim();
-    match DateTime::parse_from_rfc3339(ts) {
+    match UtcDateTime::parse_from_rfc3339(ts) {
         Ok(parsed) => Some(parsed),
         Err(err) => {
             // Best-effort: a malformed watermark value is treated the same as
@@ -350,12 +353,11 @@ fn read_watermark(path: &Path) -> Option<DateTime<FixedOffset>> {
 ///
 /// If no watermark exists, falls back to 24 hours ago so the first run
 /// is not empty on a freshly-installed daemon.
-fn read_cutoff(watermark_path: &Path) -> DateTime<FixedOffset> {
+fn read_cutoff(watermark_path: &Path) -> UtcDateTime {
     if let Some(wm) = read_watermark(watermark_path) {
         return wm;
     }
-    let fallback = chrono::Utc::now() - chrono::Duration::hours(FIRST_RUN_LOOKBACK_HOURS);
-    fallback.fixed_offset()
+    UtcDateTime::now() - foundry_sdk::time::SignedDuration::from_hours(FIRST_RUN_LOOKBACK_HOURS)
 }
 
 /// Decide whether the chain should proceed to summarisation.
@@ -452,7 +454,7 @@ fn domain_of(event_type: &str, has_client: bool) -> &'static str {
 /// `cutoff`. Malformed lines and unparseable timestamps are skipped and
 /// logged at `debug!` (expected, high-cardinality on malformed upstream
 /// data) — never silently discarded.
-fn read_events_since(intake_dir: &Path, cutoff: DateTime<FixedOffset>) -> Vec<MbosEvent> {
+fn read_events_since(intake_dir: &Path, cutoff: UtcDateTime) -> Vec<MbosEvent> {
     let mut events = Vec::new();
 
     let entries = match std::fs::read_dir(intake_dir) {
@@ -481,7 +483,7 @@ fn read_events_since(intake_dir: &Path, cutoff: DateTime<FixedOffset>) -> Vec<Mb
     events
 }
 
-fn read_jsonl_file(path: &Path, cutoff: DateTime<FixedOffset>, out: &mut Vec<MbosEvent>) {
+fn read_jsonl_file(path: &Path, cutoff: UtcDateTime, out: &mut Vec<MbosEvent>) {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(err) => {
@@ -498,7 +500,7 @@ fn read_jsonl_file(path: &Path, cutoff: DateTime<FixedOffset>, out: &mut Vec<Mbo
         match serde_json::from_str::<MbosEvent>(trimmed) {
             Ok(event) => {
                 // Only include events strictly after the cutoff.
-                match DateTime::parse_from_rfc3339(&event.occurred_at) {
+                match UtcDateTime::parse_from_rfc3339(&event.occurred_at) {
                     Ok(ts) if ts > cutoff => out.push(event),
                     Ok(_) => {}
                     Err(err) => {
@@ -654,8 +656,8 @@ mod tests {
     // cutoff / filtering helpers
     // -------------------------------------------------------------------------
 
-    fn ts(s: &str) -> DateTime<FixedOffset> {
-        DateTime::parse_from_rfc3339(s).expect("valid RFC3339 timestamp in test")
+    fn ts(s: &str) -> UtcDateTime {
+        UtcDateTime::parse_from_rfc3339(s).expect("valid RFC3339 timestamp in test")
     }
 
     #[test]
@@ -670,7 +672,7 @@ mod tests {
         drop(f);
 
         let cutoff = ts("2026-05-29T00:00:00Z");
-        let events = read_events_since(dir.path(), cutoff.fixed_offset());
+        let events = read_events_since(dir.path(), cutoff);
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].id, "e2");
         assert_eq!(events[1].id, "e3");
@@ -683,8 +685,8 @@ mod tests {
         let wm_path = dir.path().join("ops-digest.watermark");
         // File does not exist.
         let cutoff = read_cutoff(&wm_path);
-        let now = chrono::Utc::now().fixed_offset();
-        let diff_hours = (now - cutoff).num_hours();
+        let now = foundry_sdk::time::UtcDateTime::now();
+        let diff_hours = (now - cutoff).as_hours();
         // Should be close to 24h ago (allow +/- 1h for test timing).
         assert!((23..=25).contains(&diff_hours), "expected ~24h lookback, got {diff_hours}h");
     }
@@ -699,7 +701,7 @@ mod tests {
         drop(f);
 
         let cutoff = ts("2026-05-01T00:00:00Z");
-        let events = read_events_since(dir.path(), cutoff.fixed_offset());
+        let events = read_events_since(dir.path(), cutoff);
         assert_eq!(events.len(), 1, "malformed line must not abort parsing");
         assert_eq!(events[0].id, "e1");
     }
@@ -737,13 +739,13 @@ mod tests {
         let campaigns = home.path().join("campaigns.json");
         let work_items = home.path().join("work-items.json");
         let watermark = home.path().join("watermark");
-        std::fs::write(&watermark, chrono::Utc::now().to_rfc3339()).unwrap();
+        std::fs::write(&watermark, foundry_sdk::time::UtcDateTime::now().to_rfc3339()).unwrap();
         let mut store = foundry_sdk::campaign::CampaignStore::default();
         store.add(serde_json::from_value(serde_json::json!({"name":"member","project":"sample","mission":"Ship it","authorized_by":"Owner","done_evidence":[{"kind":"review","statement":"It works"}]})).unwrap()).unwrap();
         store.add_initiative(serde_json::from_value(serde_json::json!({"name":"attention","outcome":"Owner succeeds","projects":["sample"],"authorized_by":"Owner","members":[{"kind":"campaign","name":"member"}],"done_evidence":[{"kind":"review","statement":"Outcome works"}]})).unwrap(), &["sample".into()]).unwrap();
         store.record_question("attention", "Which version?", &[]).unwrap();
         store.find_initiative_mut("attention").unwrap().open_questions[0].opened_at =
-            chrono::Utc::now() - chrono::Duration::days(2);
+            foundry_sdk::time::UtcDateTime::now() - foundry_sdk::time::days(2);
         store.save(&campaigns).unwrap();
         let block = ObserveEvents::new(home.path().join("intake"), &watermark)
             .with_disk(vec![], foundry_sdk::disk::DiskThreshold::from_env())
@@ -768,7 +770,7 @@ mod tests {
                 "Use v1",
                 &[],
                 &[question_id],
-                chrono::Utc::now(),
+                foundry_sdk::time::UtcDateTime::now(),
             )
             .unwrap();
         guard.save().unwrap();

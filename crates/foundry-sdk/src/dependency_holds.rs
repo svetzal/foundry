@@ -39,7 +39,7 @@
 
 use std::path::Path;
 
-use chrono::NaiveDate;
+use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 
 use crate::error::StoreError;
@@ -118,7 +118,7 @@ impl DependencyHolds {
     /// package and reports it rather than holding it forever). When several
     /// holds match, an active one wins over a lapsed one.
     #[must_use]
-    pub fn decide(&self, ecosystem: &str, package: &str, today: NaiveDate) -> HoldDecision {
+    pub fn decide(&self, ecosystem: &str, package: &str, today: Date) -> HoldDecision {
         let mut lapsed = None;
         for hold in self.holds.iter().filter(|h| h.applies_to(ecosystem, package)) {
             match hold.decide(today) {
@@ -139,14 +139,14 @@ impl HoldEntry {
             && self.ecosystem.as_deref().is_none_or(|e| e.eq_ignore_ascii_case(ecosystem))
     }
 
-    fn decide(&self, today: NaiveDate) -> HoldDecision {
+    fn decide(&self, today: Date) -> HoldDecision {
         match self.expires.as_deref() {
             None => HoldDecision::Active {
                 max: self.max.clone(),
                 reason: self.reason.clone(),
                 expires: None,
             },
-            Some(date) => match NaiveDate::parse_from_str(date, "%Y-%m-%d") {
+            Some(date) => match Date::strptime("%Y-%m-%d", date) {
                 Ok(expiry) if today <= expiry => HoldDecision::Active {
                     max: self.max.clone(),
                     reason: self.reason.clone(),
@@ -187,8 +187,8 @@ pub fn read_holds(project_dir: &Path) -> Result<DependencyHolds, StoreError> {
 mod tests {
     use super::*;
 
-    fn day(s: &str) -> NaiveDate {
-        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    fn day(s: &str) -> Date {
+        Date::strptime("%Y-%m-%d", s).unwrap()
     }
 
     fn hold(package: &str, expires: Option<&str>, ecosystem: Option<&str>) -> HoldEntry {

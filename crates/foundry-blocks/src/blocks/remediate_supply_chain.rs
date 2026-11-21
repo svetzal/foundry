@@ -378,7 +378,8 @@ fn hold_override_note(rail: &Rail<'_>, f: &SupplyChainFinding) -> Option<String>
     let ecosystem = stack_ecosystem(rail.stack)?;
     let target = f.fix_package.as_deref().unwrap_or(&f.package);
     let HoldDecision::Active { max, reason, .. } =
-        rail.holds.decide(ecosystem.as_str(), target, chrono::Utc::now().date_naive())
+        rail.holds
+            .decide(ecosystem.as_str(), target, foundry_sdk::time::UtcDateTime::now().date())
     else {
         return None;
     };

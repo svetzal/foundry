@@ -28,7 +28,7 @@ pub struct ExecutionRequestedPayload {
     /// The earliest time the scheduler may start this dispatch
     /// (`foundry task --not-before`). Additive: absent means at once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub not_before: Option<chrono::DateTime<chrono::Utc>>,
+    pub not_before: Option<crate::time::UtcDateTime>,
     /// Open work items this dispatch follows up on (`foundry task
     /// --continues`). Lineage only: when the dispatch lands, each one still
     /// open settles `landed` as superseded by it. Additive: absent means none.

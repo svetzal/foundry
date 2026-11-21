@@ -739,7 +739,7 @@ mod tests {
                 origin: "test".into(),
                 trace_id: None,
             },
-            chrono::Utc::now(),
+            foundry_sdk::time::UtcDateTime::now(),
         );
         item.id = "wi_live".into();
         // Production dispatches can have no disposition until settlement.

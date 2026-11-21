@@ -520,7 +520,7 @@ async fn nightly_resume_retains_eligibility_inflight_and_non_dispatch_modes() {
         "system".into(),
         Throttle::Full,
         serde_json::json!({"project_trace_ids": {"test-project": "maintenance"}, "interrupted": {
-            "started_at": chrono::Utc::now(), "last_event_at": chrono::Utc::now(), "unfinished": ["test-project"]}}),
+            "started_at": foundry_sdk::time::UtcDateTime::now(), "last_event_at": foundry_sdk::time::UtcDateTime::now(), "unfinished": ["test-project"]}}),
     );
     let interrupted = f.planner.execute(&request).await.unwrap();
     assert!(
@@ -597,7 +597,7 @@ async fn nightly_selected_resume_failure_never_falls_back_to_fresh_work() {
             .dir
             .path()
             .join("events")
-            .join(chrono::Utc::now().format("%Y-%m.jsonl").to_string());
+            .join(foundry_sdk::time::UtcDateTime::now().format("%Y-%m.jsonl"));
         let history = std::fs::read(&log).unwrap();
         if matches!(failure, "cancelled" | "missing-ref" | "identity-changed") {
             let mut store = WorkItemStore::load(&ledger).unwrap();

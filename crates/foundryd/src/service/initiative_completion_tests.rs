@@ -123,7 +123,7 @@ fn prepared_outcome_store(
                 exit_code: Some(0),
                 report: "capture.md".into(),
                 artifacts: vec![],
-                recorded_at: Utc::now(),
+                recorded_at: UtcDateTime::now(),
             },
         )
         .unwrap();
@@ -406,7 +406,7 @@ fn queued_and_held_initiative_tasks_block_owner_completion() {
                 origin: "synthetic".into(),
                 trace_id: None,
             },
-            Utc::now(),
+            UtcDateTime::now(),
         )
         .with_source(Some(foundry_sdk::work_source::WorkSource::initiative("proof", 0)));
         item.state = state;

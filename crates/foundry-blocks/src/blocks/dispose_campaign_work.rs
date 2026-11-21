@@ -1,12 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use chrono::Utc;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{CampaignCancelledPayload, WorkItemEventPayload};
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
 use foundry_sdk::throttle::Throttle;
+use foundry_sdk::time::UtcDateTime;
 use foundry_sdk::work_item::{WorkDisposition, WorkItem};
 
 use crate::gateway::ShellGateway;
@@ -275,7 +275,7 @@ fn settle_cancelled_cycle(
     // Disposal has finished after the original workflow unwound. Its slot can
     // now be released even though that aborted traversal cannot call complete.
     item.execution_completed = true;
-    item.settle_cancelled(&payload.terminal.reason, disposition, Utc::now());
+    item.settle_cancelled(&payload.terminal.reason, disposition, UtcDateTime::now());
     let settled = item.clone();
     super::work_ledger::save_ledger(&store, path).then_some(settled)
 }
@@ -596,7 +596,7 @@ mod tests {
                 origin: "campaign ship-billing cycle 2".to_string(),
                 trace_id: Some(TRACE.to_string()),
             },
-            chrono::Utc::now(),
+            foundry_sdk::time::UtcDateTime::now(),
         );
         let id = item.id.clone();
         let mut store = foundry_sdk::work_item::WorkItemStore::default();
@@ -813,7 +813,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (ledger, id) = ledger_with_running_cycle(dir.path());
         let mut item = settled_item(&ledger, &id);
-        item.settle_cancelled("superseded by the rewrite", None, chrono::Utc::now());
+        item.settle_cancelled(
+            "superseded by the rewrite",
+            None,
+            foundry_sdk::time::UtcDateTime::now(),
+        );
 
         let event = work_item_cancelled_event("demo", Throttle::Full, &item);
 

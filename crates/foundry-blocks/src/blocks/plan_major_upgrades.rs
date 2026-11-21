@@ -21,7 +21,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use chrono::{DateTime, Duration, Utc};
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{
     ClassificationPhase, DependencyUpdatesClassifiedPayload, MaintenanceSummaryRequestedPayload,
@@ -30,6 +29,7 @@ use foundry_sdk::payload::{
 };
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::time::{SignedDuration, UtcDateTime};
 use foundry_sdk::trace::ProcessResult;
 
 use crate::dependency_updates::majors::{self, Caps, PriorTask, ProjectMajors};
@@ -97,7 +97,7 @@ impl PlanMajorUpgrades {
 pub(crate) struct LoggedTask {
     pub project: String,
     pub objective: String,
-    pub started_at: DateTime<Utc>,
+    pub started_at: UtcDateTime,
     pub completed: Option<TaskRunCompletedPayload>,
 }
 
@@ -105,18 +105,18 @@ pub(crate) struct LoggedTask {
 /// by trace id.
 pub(crate) fn logged_upgrade_tasks(
     events_dir: &Path,
-    since: DateTime<Utc>,
+    since: UtcDateTime,
 ) -> Result<Vec<LoggedTask>, String> {
     let mut months: Vec<String> = Vec::new();
     let mut day = since;
-    while day <= Utc::now() + Duration::days(1) {
-        let m = day.format("%Y-%m").to_string();
+    while day <= UtcDateTime::now() + foundry_sdk::time::days(1) {
+        let m = day.format("%Y-%m");
         if !months.contains(&m) {
             months.push(m);
         }
-        day += Duration::days(20);
+        day += foundry_sdk::time::days(20);
     }
-    let now_month = Utc::now().format("%Y-%m").to_string();
+    let now_month = UtcDateTime::now().format("%Y-%m");
     if !months.contains(&now_month) {
         months.push(now_month);
     }
@@ -182,10 +182,10 @@ pub(crate) fn logged_upgrade_tasks(
 /// preserved work exists. `None` when it does not block.
 pub(crate) fn blocking_reason(
     task: &LoggedTask,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
 ) -> Option<(String, Option<String>)> {
     match &task.completed {
-        None if now - task.started_at < Duration::hours(IN_FLIGHT_HOURS) => Some((
+        None if now - task.started_at < SignedDuration::from_hours(IN_FLIGHT_HOURS) => Some((
             format!(
                 "a task for this upgrade is in flight (started {})",
                 task.started_at.format("%Y-%m-%d %H:%M UTC")
@@ -348,7 +348,7 @@ impl TaskBlock for PlanMajorUpgrades {
         };
 
         Box::pin(async move {
-            let now = Utc::now();
+            let now = UtcDateTime::now();
             let ledger = tokio::task::spawn_blocking(move || {
                 foundry_sdk::work_item::WorkItemStore::load(&work_items_path)
             })
@@ -523,11 +523,11 @@ async fn prior_tasks(
     events_dir: PathBuf,
     paths: &HashMap<String, PathBuf>,
     shell: &dyn ShellGateway,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
     resumes: &serde_json::Map<String, serde_json::Value>,
 ) -> (Vec<PriorTask>, Option<String>) {
     let history = tokio::task::spawn_blocking(move || {
-        logged_upgrade_tasks(&events_dir, now - Duration::days(HISTORY_DAYS))
+        logged_upgrade_tasks(&events_dir, now - foundry_sdk::time::days(HISTORY_DAYS))
     })
     .await
     .unwrap_or_else(|e| Err(format!("history lookup failed: {e}")));
@@ -592,7 +592,6 @@ fn plan_summary(payload: &MajorUpgradesPlannedPayload) -> String {
 mod tests {
     use std::sync::Arc;
 
-    use chrono::{Duration, Utc};
     use foundry_sdk::event::{Event, EventType};
     use foundry_sdk::gateway::fakes::FakeShellGateway;
     use foundry_sdk::payload::{
@@ -604,6 +603,7 @@ mod tests {
     use foundry_sdk::registry::UpdatePolicy;
     use foundry_sdk::task_block::TaskBlock;
     use foundry_sdk::throttle::Throttle;
+    use foundry_sdk::time::{SignedDuration, UtcDateTime};
     use foundry_sdk::trace::ProcessResult;
 
     use super::super::test_helpers;
@@ -889,7 +889,7 @@ mod tests {
         LoggedTask {
             project: "alpha".to_string(),
             objective: objective("alpha", &major("x")),
-            started_at: Utc::now() - Duration::hours(hours_ago),
+            started_at: UtcDateTime::now() - SignedDuration::from_hours(hours_ago),
             completed,
         }
     }
@@ -917,7 +917,7 @@ mod tests {
 
     #[test]
     fn blocking_reasons_follow_the_dedupe_rules() {
-        let now = Utc::now();
+        let now = UtcDateTime::now();
         assert!(blocking_reason(&logged(None, 2), now).unwrap().0.contains("in flight"));
         assert!(blocking_reason(&logged(None, 30), now).is_none(), "abandoned after a day");
         assert!(
@@ -954,7 +954,7 @@ mod tests {
     /// preserved work: re-dispatching it would redo finished work.
     #[test]
     fn an_unlanded_complete_blocks_a_repeat_dispatch() {
-        let now = Utc::now();
+        let now = UtcDateTime::now();
         let mut unlanded = done(false, TaskVerdict::Complete, Some("foundry-task/alpha-2"));
         unlanded.land_blocked = Some(foundry_sdk::payload::LandBlocked::TrunkMovedConflict);
         let (reason, reference) = blocking_reason(&logged(Some(unlanded), 1), now).unwrap();
@@ -983,10 +983,15 @@ mod tests {
             .iter()
             .map(|e| serde_json::to_string(e).unwrap() + "\n")
             .collect();
-        std::fs::write(dir.path().join(format!("{}.jsonl", Utc::now().format("%Y-%m"))), text)
-            .unwrap();
+        std::fs::write(
+            dir.path().join(format!("{}.jsonl", UtcDateTime::now().format("%Y-%m"))),
+            text,
+        )
+        .unwrap();
 
-        let tasks = logged_upgrade_tasks(dir.path(), Utc::now() - Duration::days(1)).unwrap();
+        let tasks =
+            logged_upgrade_tasks(dir.path(), UtcDateTime::now() - foundry_sdk::time::days(1))
+                .unwrap();
 
         assert_eq!(tasks.len(), 1, "only upgrade objectives count");
         assert!(tasks[0].completed.as_ref().is_some_and(|c| !c.landed));
@@ -1013,7 +1018,7 @@ mod tests {
         let mut start = test_event!(EventType::TaskRunStarted, "alpha", {"project": "alpha", "objective": objective("alpha", &major("x"))});
         start.trace_id = Some("t1".to_string());
         std::fs::write(
-            events.path().join(format!("{}.jsonl", Utc::now().format("%Y-%m"))),
+            events.path().join(format!("{}.jsonl", UtcDateTime::now().format("%Y-%m"))),
             serde_json::to_string(&start).unwrap() + "\n",
         )
         .unwrap();
@@ -1065,7 +1070,7 @@ mod tests {
                 trace_id: None,
             },
             root,
-            Utc::now(),
+            UtcDateTime::now(),
         );
         queued.id = "wi_waiting".to_string();
         foundry_sdk::work_item::WorkItemStore {

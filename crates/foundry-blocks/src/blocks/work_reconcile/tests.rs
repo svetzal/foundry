@@ -416,7 +416,7 @@ async fn assert_supersession_uses_either_trunk(local_ahead: bool) {
                 origin: "regression".into(),
                 trace_id: None,
             },
-            chrono::Utc::now(),
+            foundry_sdk::time::UtcDateTime::now(),
         );
         item.state = WorkItemState::Preserved;
         item.disposition = Some(WorkDisposition {
@@ -690,7 +690,7 @@ async fn open_items_fixture(root: &Path, squashed: bool) -> (PathBuf, String) {
 fn open_item(
     id: &str,
     state: foundry_sdk::work_item::WorkItemState,
-    started: chrono::DateTime<chrono::Utc>,
+    started: foundry_sdk::time::UtcDateTime,
     reference: Option<&str>,
 ) -> foundry_sdk::work_item::WorkItem {
     use foundry_sdk::work_item::{WorkDisposition, WorkItem, WorkItemKind, WorkItemSpec, WorkLane};
@@ -727,8 +727,9 @@ async fn assert_open_items_settle_when_superseded(squashed: bool) {
 
     let root = tempfile::tempdir().unwrap();
     let (checkout, trunk) = open_items_fixture(root.path(), squashed).await;
-    let earlier = chrono::Utc::now() - chrono::Duration::hours(1);
-    let now = chrono::Utc::now();
+    let earlier =
+        foundry_sdk::time::UtcDateTime::now() - foundry_sdk::time::SignedDuration::from_hours(1);
+    let now = foundry_sdk::time::UtcDateTime::now();
     let reference = Some("foundry-task/preserved");
     let settling = [
         open_item("wi_preserved", WorkItemState::Preserved, earlier, reference),
@@ -869,7 +870,8 @@ fn a_proof_never_settles_an_item_that_changed_after_inspection() {
 
     let root = tempfile::tempdir().unwrap();
     let ledger = root.path().join("ledger.json");
-    let earlier = chrono::Utc::now() - chrono::Duration::hours(1);
+    let earlier =
+        foundry_sdk::time::UtcDateTime::now() - foundry_sdk::time::SignedDuration::from_hours(1);
     let reference = Some("foundry-task/preserved");
     let inspected = [
         open_item("wi_closed", WorkItemState::NeedsDecision, earlier, reference),
@@ -909,7 +911,8 @@ fn a_superseded_item_also_settles_what_it_resumed_and_continued() {
 
     let root = tempfile::tempdir().unwrap();
     let ledger = root.path().join("ledger.json");
-    let earlier = chrono::Utc::now() - chrono::Duration::hours(1);
+    let earlier =
+        foundry_sdk::time::UtcDateTime::now() - foundry_sdk::time::SignedDuration::from_hours(1);
     let reference = Some("foundry-task/preserved");
     let original = open_item("wi_original", WorkItemState::NeedsDecision, earlier, None);
     let parent = open_item("wi_parent", WorkItemState::Preserved, earlier, reference);
@@ -953,7 +956,8 @@ fn a_superseded_follow_up_settles_the_items_it_continues() {
 
     let root = tempfile::tempdir().unwrap();
     let ledger = root.path().join("ledger.json");
-    let earlier = chrono::Utc::now() - chrono::Duration::hours(1);
+    let earlier =
+        foundry_sdk::time::UtcDateTime::now() - foundry_sdk::time::SignedDuration::from_hours(1);
     let reference = Some("foundry-task/preserved");
     let original = open_item("wi_original", WorkItemState::Failed, earlier, None);
     let mut follow_up = open_item("wi_follow_up", WorkItemState::Preserved, earlier, reference);

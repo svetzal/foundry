@@ -17,10 +17,10 @@ use std::process::{Child, Command, Output, Stdio};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
 use foundry_engine::event_writer::EventWriter;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::throttle::Throttle;
+use foundry_sdk::time::UtcDateTime;
 use foundry_sdk::work_item::{
     WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkItemStore, WorkLane,
 };
@@ -83,7 +83,7 @@ impl Home {
                 origin: "foundry task".to_string(),
                 trace_id: Some("a".repeat(32)),
             },
-            Utc::now(),
+            UtcDateTime::now(),
         );
         let item_id = item.id.clone();
         store.upsert(item);

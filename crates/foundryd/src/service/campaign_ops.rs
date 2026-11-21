@@ -1,7 +1,7 @@
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use chrono::Utc;
+use foundry_sdk::time::UtcDateTime;
 use tonic::{Request, Response, Status};
 
 use foundry_sdk::campaign::{
@@ -402,7 +402,7 @@ pub(super) fn edit(
     campaigns_path: &Path,
     registry: &Arc<RwLock<Registry>>,
     request: EditCampaignRequest,
-    now: chrono::DateTime<Utc>,
+    now: foundry_sdk::time::UtcDateTime,
 ) -> Result<(CampaignDetail, GateProbeTarget), Status> {
     let reason = request.reason.trim().to_string();
     if reason.is_empty() {
@@ -552,7 +552,7 @@ pub(super) fn decide(
         .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
 
     campaign
-        .record_owner_decision(decision, Utc::now(), req.add_cycles)
+        .record_owner_decision(decision, UtcDateTime::now(), req.add_cycles)
         .map_err(|e| map_transition_error(&e))?;
     let detail = campaign_to_detail(campaign);
     guard.save().map_err(map_save_error)?;
@@ -596,7 +596,7 @@ pub(super) fn complete(
             .find_mut(&name)
             .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
         if campaign
-            .complete(&reason, Utc::now(), &open_trunk_ci)
+            .complete(&reason, UtcDateTime::now(), &open_trunk_ci)
             .map_err(|e| map_transition_error(&e))?
             == Transition::AlreadySettled
         {
@@ -767,7 +767,7 @@ pub(super) async fn cancel(
                 .find_mut(&name)
                 .ok_or_else(|| Status::not_found(format!("campaign '{name}' not found")))?;
 
-            if campaign.cancel(&reason, Utc::now()).map_err(|e| map_transition_error(&e))?
+            if campaign.cancel(&reason, UtcDateTime::now()).map_err(|e| map_transition_error(&e))?
                 == Transition::AlreadySettled
             {
                 return Ok((
@@ -1104,9 +1104,9 @@ pub(super) fn list(
 mod in_flight_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use chrono::Utc;
     use foundry_sdk::event::{Event, EventType};
     use foundry_sdk::throttle::Throttle;
+    use foundry_sdk::time::UtcDateTime;
     use foundry_sdk::work_item::{WorkItem, WorkItemKind, WorkItemSpec, WorkItemStore, WorkLane};
     use foundry_sdk::work_source::WorkSource;
 
@@ -1135,14 +1135,14 @@ mod in_flight_tests {
                 trace_id: None,
             },
             root,
-            Utc::now(),
+            UtcDateTime::now(),
         )
         .with_source(source)
     }
 
     fn started(root: Event) -> WorkItem {
         let mut item = queued(root.clone());
-        item.start(Utc::now());
+        item.start(UtcDateTime::now());
         item.started_root = Some(root);
         item
     }
@@ -1160,7 +1160,7 @@ mod in_flight_tests {
             event_type: event_type.to_string(),
             project: "p".to_string(),
             trace_id: "t".to_string(),
-            started_at: Utc::now(),
+            started_at: UtcDateTime::now(),
             campaign: campaign.map(ToString::to_string),
             initiative: None,
         }
@@ -1193,7 +1193,7 @@ mod in_flight_tests {
     #[test]
     fn a_settled_cycle_still_holding_its_slot_is_in_flight() {
         let mut cleaning_up = started(root(EventType::ExecutionRequested, "c", Some(1)));
-        cleaning_up.settle_landed("landed", Utc::now());
+        cleaning_up.settle_landed("landed", UtcDateTime::now());
         assert!(!cleaning_up.execution_completed);
         let found =
             find_campaign_work_in_flight("c", &ledger(vec![cleaning_up.clone()]), &[]).unwrap();
@@ -1249,7 +1249,7 @@ mod tests {
             event_type: "execution_requested".into(),
             project: "proj".into(),
             trace_id: "a".repeat(32),
-            started_at: Utc::now(),
+            started_at: UtcDateTime::now(),
             campaign: Some("campaign".into()),
             initiative: None,
         };
@@ -1264,7 +1264,7 @@ mod tests {
                 origin: "campaign".into(),
                 trace_id: Some(started.trace_id.clone()),
             },
-            Utc::now(),
+            UtcDateTime::now(),
         );
         let mut root = Event::new(
             EventType::ExecutionRequested,
@@ -1387,9 +1387,10 @@ mod tests {
                 done_evidence_amendment: None,
                 decision: "Proceed with the migration.".to_string(),
                 authorized_by: "alice".to_string(),
-                decided_at: chrono::DateTime::parse_from_rfc3339("2026-07-18T10:00:00Z")
-                    .expect("parse RFC3339 timestamp")
-                    .with_timezone(&Utc),
+                decided_at: foundry_sdk::time::UtcDateTime::parse_from_rfc3339(
+                    "2026-07-18T10:00:00Z",
+                )
+                .expect("parse RFC3339 timestamp"),
             }],
             pending_run_result: None,
             objective_history: vec![],
@@ -1507,9 +1508,10 @@ mod tests {
         let mut campaign = escalated("asks");
         campaign.open_escalation = Some(foundry_sdk::campaign::CampaignEscalation {
             reason: "boundaries differ; options: A | B".to_string(),
-            escalated_at: chrono::DateTime::parse_from_rfc3339("2026-10-11T03:00:00Z")
-                .expect("timestamp")
-                .with_timezone(&Utc),
+            escalated_at: foundry_sdk::time::UtcDateTime::parse_from_rfc3339(
+                "2026-10-11T03:00:00Z",
+            )
+            .expect("timestamp"),
             cycles_completed: 2,
             cycles_landed: 1,
             question: Some("boundaries differ".to_string()),

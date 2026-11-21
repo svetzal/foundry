@@ -63,7 +63,7 @@ pub fn correlate(failures: Vec<RawFailure>) -> (Vec<InfraIncident>, Vec<RawFailu
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
+    use foundry_sdk::time::UtcDateTime;
     use foundry_sdk::triage::Decision;
 
     use super::*;
@@ -75,7 +75,7 @@ mod tests {
             gate_output: output.to_string(),
             exit_code: Some(1),
             fix_command: None,
-            occurred_at: Utc::now(),
+            occurred_at: UtcDateTime::now(),
             logs: Vec::new(),
         }
     }
@@ -118,7 +118,7 @@ mod tests {
                 gate_output: "test suite failed".to_string(),
                 exit_code: Some(1),
                 fix_command: None,
-                occurred_at: Utc::now(),
+                occurred_at: UtcDateTime::now(),
                 logs: Vec::new(),
             },
             RawFailure {
@@ -127,7 +127,7 @@ mod tests {
                 gate_output: "test suite failed".to_string(),
                 exit_code: Some(1),
                 fix_command: None,
-                occurred_at: Utc::now(),
+                occurred_at: UtcDateTime::now(),
                 logs: Vec::new(),
             },
             RawFailure {
@@ -136,7 +136,7 @@ mod tests {
                 gate_output: "test suite failed".to_string(),
                 exit_code: Some(1),
                 fix_command: None,
-                occurred_at: Utc::now(),
+                occurred_at: UtcDateTime::now(),
                 logs: Vec::new(),
             },
         ];

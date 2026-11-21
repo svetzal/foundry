@@ -4,12 +4,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use chrono::Utc;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::paths;
 use foundry_sdk::payload::{AgentSessionEndedPayload, AgentSessionStartedPayload};
 use foundry_sdk::registry::Stack;
 use foundry_sdk::throttle::Throttle;
+use foundry_sdk::time::UtcDateTime;
 use foundry_sdk::token_rates::{self, CostEstimate, RateBook};
 use foundry_sdk::token_usage::{self, SessionUsage};
 use tokio::sync::broadcast;
@@ -538,7 +538,7 @@ pub(crate) fn emit_session_started(
         effort: request.effort.as_str().to_string(),
         effective_effort: effective_effort.as_str().to_string(),
         access: request.access.label().to_string(),
-        started_at: Utc::now().to_rfc3339(),
+        started_at: UtcDateTime::now().to_rfc3339(),
         trace_id: request.trace_id.clone().unwrap_or_default(),
     };
     // Set on the envelope as well as the payload: everything that reconstructs
@@ -598,7 +598,7 @@ pub(crate) fn price_session(
     // Refresh recognised seed entries in memory too, so a session need not
     // wait for a daemon restart to receive new defaults. Overrides survive.
     token_rates::merge_default_seed_into(&mut book);
-    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let today = foundry_sdk::time::UtcDateTime::now().format("%Y-%m-%d");
     let cost = token_rates::estimate(&usage, &book, &today);
 
     if !cost.unpriced_models.is_empty() {

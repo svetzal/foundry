@@ -11,11 +11,11 @@
 
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
 use foundry_sdk::campaign::{CampaignStatus, CampaignStore};
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{CampaignTerminalPayload, WorkItemEventPayload};
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::time::UtcDateTime;
 use foundry_sdk::work_item::{WorkItem, WorkItemKind, WorkItemState, WorkItemStore};
 use foundry_sdk::work_source::WorkSourceKind;
 
@@ -211,7 +211,7 @@ fn settle_campaign_cycles(
     campaign: &str,
     project: &str,
     terminal: Option<&str>,
-    at: DateTime<Utc>,
+    at: UtcDateTime,
 ) -> Vec<WorkItem> {
     let carrier = store
         .items
@@ -228,8 +228,7 @@ fn settle_campaign_cycles(
         if !item.state.is_open() {
             continue;
         }
-        let moved_past = |carried_by: u64, submitted_at: DateTime<Utc>, carrier_id: &str| match role
-        {
+        let moved_past = |carried_by: u64, submitted_at: UtcDateTime, carrier_id: &str| match role {
             Role::Cycle(cycle) => {
                 (cycle < carried_by || (cycle == carried_by && item.id != carrier_id))
                     && item.submitted_at <= submitted_at
@@ -260,8 +259,13 @@ fn apply(path: &Path, sweep: &Sweep, terminal: Option<&str>) -> Vec<WorkItem> {
     let Some(mut store) = load_ledger(path) else {
         return Vec::new();
     };
-    let settled =
-        settle_campaign_cycles(&mut store, &sweep.campaign, &sweep.project, terminal, Utc::now());
+    let settled = settle_campaign_cycles(
+        &mut store,
+        &sweep.campaign,
+        &sweep.project,
+        terminal,
+        UtcDateTime::now(),
+    );
     if settled.is_empty() || !save_ledger(&store, path) {
         return Vec::new();
     }

@@ -218,7 +218,7 @@ pub(super) fn settle_queued_reasons(items: &mut [WorkItem]) {
         items,
         &foundry_sdk::pacing::Limits::default(),
         &foundry_sdk::pacing::PauseState::default(),
-        chrono::Utc::now(),
+        foundry_sdk::time::UtcDateTime::now(),
         &|project: &str| project.to_string(),
     );
     for verdict in verdicts {
@@ -922,11 +922,11 @@ fn preserved_parent(checkout: &Path) -> WorkItem {
             origin: "original submitter".to_string(),
             trace_id: Some(mint_trace_id()),
         },
-        chrono::Utc::now(),
+        foundry_sdk::time::UtcDateTime::now(),
     );
     parent.state = WorkItemState::Preserved;
     parent.reason = "prior remainder".to_string();
-    parent.settled_at = Some(chrono::Utc::now());
+    parent.settled_at = Some(foundry_sdk::time::UtcDateTime::now());
     parent.disposition = Some(foundry_sdk::work_item::WorkDisposition {
         task_branch: None,
         branch_cleanup: Vec::new(),
@@ -1401,7 +1401,7 @@ async fn resume_owner_cancel_before_landing_and_unrelated_settlement_preserve_ex
     let log_path = dir
         .path()
         .join("events")
-        .join(format!("{}.jsonl", chrono::Utc::now().format("%Y-%m")));
+        .join(format!("{}.jsonl", foundry_sdk::time::UtcDateTime::now().format("%Y-%m")));
     let history = std::fs::read(&log_path).unwrap();
     let registry = test_helpers::registry_with_project("test-project", checkout.to_str().unwrap());
     register_other_repository(dir.path(), &registry);
@@ -1674,7 +1674,7 @@ impl foundry_sdk::task_block::TaskBlock for BreakResumeLog {
             if let Some(ledger) = &self.ledger {
                 std::fs::create_dir(ledger.with_extension("json.tmp"))?;
             } else {
-                let month = chrono::Utc::now().format("%Y-%m.jsonl").to_string();
+                let month = foundry_sdk::time::UtcDateTime::now().format("%Y-%m.jsonl");
                 std::fs::rename(self.events.join(&month), self.events.join("retained.jsonl"))?;
                 std::fs::create_dir(self.events.join(month))?;
             }
@@ -1722,7 +1722,7 @@ async fn resume_generated_client_rejects_first_append_and_final_save_persistence
         let prior = std::fs::read(&history).unwrap();
         if failure == "first" {
             std::fs::create_dir(
-                events_dir.join(chrono::Utc::now().format("%Y-%m.jsonl").to_string()),
+                events_dir.join(foundry_sdk::time::UtcDateTime::now().format("%Y-%m.jsonl")),
             )
             .unwrap();
         }

@@ -19,7 +19,7 @@
 
 use std::path::Path;
 
-use chrono::NaiveDate;
+use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 
 use crate::error::StoreError;
@@ -96,7 +96,7 @@ impl SupplyChainAllowlist {
     /// expiry string does not parse as `YYYY-MM-DD` — is `Expired` (fail-safe:
     /// an unparseable expiry resurfaces the advisory rather than hiding it).
     #[must_use]
-    pub fn decide(&self, cve: &str, today: NaiveDate) -> AllowDecision {
+    pub fn decide(&self, cve: &str, today: Date) -> AllowDecision {
         self.decide_any(&[cve], today)
     }
 
@@ -105,7 +105,7 @@ impl SupplyChainAllowlist {
     /// of them matches. An active acceptance under any alias wins over a lapsed
     /// one; a lapse is reported only when no alias is actively accepted.
     #[must_use]
-    pub fn decide_any(&self, ids: &[&str], today: NaiveDate) -> AllowDecision {
+    pub fn decide_any(&self, ids: &[&str], today: Date) -> AllowDecision {
         let mut lapsed = None;
         for id in ids {
             match self.decide_one(id, today) {
@@ -119,7 +119,7 @@ impl SupplyChainAllowlist {
         lapsed.unwrap_or(AllowDecision::NotListed)
     }
 
-    fn decide_one(&self, cve: &str, today: NaiveDate) -> AllowDecision {
+    fn decide_one(&self, cve: &str, today: Date) -> AllowDecision {
         let Some(entry) = self.allowed.iter().find(|e| e.cve.eq_ignore_ascii_case(cve)) else {
             return AllowDecision::NotListed;
         };
@@ -127,7 +127,7 @@ impl SupplyChainAllowlist {
             None => AllowDecision::Active {
                 reason: entry.reason.clone(),
             },
-            Some(date_str) => match NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+            Some(date_str) => match Date::strptime("%Y-%m-%d", date_str) {
                 Ok(expiry) if today <= expiry => AllowDecision::Active {
                     reason: entry.reason.clone(),
                 },
@@ -171,8 +171,8 @@ pub fn read_allowlist(project_dir: &Path) -> Result<SupplyChainAllowlist, StoreE
 mod tests {
     use super::*;
 
-    fn day(s: &str) -> NaiveDate {
-        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    fn day(s: &str) -> Date {
+        Date::strptime("%Y-%m-%d", s).unwrap()
     }
 
     fn allowlist(entries: Vec<AllowEntry>) -> SupplyChainAllowlist {

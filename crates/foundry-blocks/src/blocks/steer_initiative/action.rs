@@ -283,7 +283,7 @@ fn apply_idle(
             )
         {
             guard.store.recover_initiative(&initiative.name, &recovery.id,
-                &[format!("outcome gates, reviews, settled members and current trunks verified by steering {}", action.id)], chrono::Utc::now())?;
+                &[format!("outcome gates, reviews, settled members and current trunks verified by steering {}", action.id)], foundry_sdk::time::UtcDateTime::now())?;
         }
     }
     guard.store.finish_steering_action(&initiative.name, &action.id)?;

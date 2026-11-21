@@ -16,13 +16,13 @@ use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use chrono::Utc;
 use foundry_blocks::trace_writer::TraceWriter;
 use foundry_engine::engine::Engine;
 use foundry_engine::event_writer::EventWriter;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::registry::Registry;
 use foundry_sdk::throttle::Throttle;
+use foundry_sdk::time::UtcDateTime;
 use foundryd::{
     service::{RuntimeContext, end_interrupted_agent_sessions_on_start},
     trace_store::TraceStore,
@@ -58,7 +58,7 @@ fn runtime_context(
     (ctx, rx)
 }
 
-fn lifecycle(ty: EventType, session: &str, age: chrono::Duration) -> Event {
+fn lifecycle(ty: EventType, session: &str, age: foundry_sdk::time::SignedDuration) -> Event {
     let mut event = Event::new(
         ty,
         "bedrock".to_string(),
@@ -66,7 +66,7 @@ fn lifecycle(ty: EventType, session: &str, age: chrono::Duration) -> Event {
         serde_json::json!({ "session_id": session }),
     )
     .with_trace_id(Some("b".repeat(32)));
-    event.occurred_at = Utc::now() - age;
+    event.occurred_at = UtcDateTime::now() - age;
     event.recorded_at = event.occurred_at;
     event
 }
@@ -92,11 +92,15 @@ fn ended_events(rx: &mut broadcast::Receiver<Event>) -> Vec<Event> {
 async fn a_started_session_with_no_end_gets_exactly_one_interrupted_end() {
     let dir = tempfile::tempdir().unwrap();
     let events_dir = dir.path().join("events");
-    let started = lifecycle(EventType::AgentSessionStarted, "s1", chrono::Duration::hours(1));
+    let started = lifecycle(
+        EventType::AgentSessionStarted,
+        "s1",
+        foundry_sdk::time::SignedDuration::from_hours(1),
+    );
     log(&events_dir, std::slice::from_ref(&started));
 
     let (ctx, mut rx) = runtime_context(&events_dir, &dir.path().join("traces"));
-    let before = Utc::now();
+    let before = UtcDateTime::now();
     end_interrupted_agent_sessions_on_start(&ctx, &events_dir).await;
 
     let ended = ended_events(&mut rx);
@@ -107,9 +111,12 @@ async fn a_started_session_with_no_end_gets_exactly_one_interrupted_end() {
     assert_eq!(end.payload["session_id"], "s1");
     assert_eq!(end.payload["status"], "interrupted");
     assert_eq!(end.payload["error"], "daemon restarted");
-    let ended_at: chrono::DateTime<Utc> =
+    let ended_at: foundry_sdk::time::UtcDateTime =
         end.payload["ended_at"].as_str().unwrap().parse().unwrap();
-    assert!(ended_at >= before - chrono::Duration::seconds(1), "ended at the daemon start");
+    assert!(
+        ended_at >= before - foundry_sdk::time::SignedDuration::from_secs(1),
+        "ended at the daemon start"
+    );
 
     let logged: String = std::fs::read_dir(&events_dir)
         .unwrap()
@@ -125,8 +132,16 @@ async fn a_properly_ended_session_records_nothing() {
     log(
         &events_dir,
         &[
-            lifecycle(EventType::AgentSessionStarted, "s1", chrono::Duration::hours(2)),
-            lifecycle(EventType::AgentSessionEnded, "s1", chrono::Duration::hours(1)),
+            lifecycle(
+                EventType::AgentSessionStarted,
+                "s1",
+                foundry_sdk::time::SignedDuration::from_hours(2),
+            ),
+            lifecycle(
+                EventType::AgentSessionEnded,
+                "s1",
+                foundry_sdk::time::SignedDuration::from_hours(1),
+            ),
         ],
     );
 
@@ -150,7 +165,7 @@ async fn a_second_start_records_nothing() {
         &[lifecycle(
             EventType::AgentSessionStarted,
             "s1",
-            chrono::Duration::hours(1),
+            foundry_sdk::time::SignedDuration::from_hours(1),
         )],
     );
 
@@ -167,7 +182,11 @@ async fn a_second_start_records_nothing() {
 async fn an_unparseable_log_line_is_skipped() {
     let dir = tempfile::tempdir().unwrap();
     let events_dir = dir.path().join("events");
-    let started = lifecycle(EventType::AgentSessionStarted, "s1", chrono::Duration::hours(1));
+    let started = lifecycle(
+        EventType::AgentSessionStarted,
+        "s1",
+        foundry_sdk::time::SignedDuration::from_hours(1),
+    );
     log(&events_dir, std::slice::from_ref(&started));
     let month_file = events_dir.join(format!("{}.jsonl", started.occurred_at.format("%Y-%m")));
     let mut file = std::fs::OpenOptions::new().append(true).open(month_file).unwrap();
@@ -191,7 +210,7 @@ async fn a_session_older_than_the_lookback_is_left_alone() {
         &[lifecycle(
             EventType::AgentSessionStarted,
             "old",
-            chrono::Duration::days(8),
+            foundry_sdk::time::days(8),
         )],
     );
 

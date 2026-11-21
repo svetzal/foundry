@@ -2,11 +2,11 @@
 
 use std::path::Path;
 
-use chrono::Utc;
 use foundry_sdk::campaign::{CampaignStore, CampaignStoreGuard};
 use foundry_sdk::gateway::StageProviders;
 use foundry_sdk::initiative::{Finding, Initiative, InitiativeError};
 use foundry_sdk::payload::TaskVerdict;
+use foundry_sdk::time::UtcDateTime;
 use tonic::Status;
 
 use crate::proto;
@@ -483,7 +483,7 @@ pub(super) fn decide(
             members,
             question_ids,
             add_cycles,
-            Utc::now(),
+            UtcDateTime::now(),
         )
         .map_err(error)?;
     guard.save().map_err(|error| Status::internal(error.to_string()))?;
@@ -497,7 +497,10 @@ pub(super) fn record_status(
     text: &str,
 ) -> Result<proto::Initiative, Status> {
     let mut guard = lock(path)?;
-    guard.store.record_initiative_status(name, text, Utc::now()).map_err(error)?;
+    guard
+        .store
+        .record_initiative_status(name, text, UtcDateTime::now())
+        .map_err(error)?;
     guard.save().map_err(|error| Status::internal(error.to_string()))?;
     let view = guard.store.initiative_view(name).map_err(error)?;
     Ok(to_proto(&guard.store, &view))
@@ -511,9 +514,12 @@ pub(super) fn end(
 ) -> Result<(proto::Initiative, bool), Status> {
     let mut guard = lock(path)?;
     let transition = if complete {
-        guard.store.complete_initiative(name, reason, Utc::now()).map_err(error)?
+        guard
+            .store
+            .complete_initiative(name, reason, UtcDateTime::now())
+            .map_err(error)?
     } else {
-        guard.store.cancel_initiative(name, reason, Utc::now()).map_err(error)?
+        guard.store.cancel_initiative(name, reason, UtcDateTime::now()).map_err(error)?
     };
     let changed = transition == foundry_sdk::campaign::Transition::Applied;
     if changed {
@@ -1152,7 +1158,7 @@ fn requeue_abandoned_steer(
                         trace_id: event.trace_id.clone(),
                     },
                     event.clone(),
-                    Utc::now(),
+                    UtcDateTime::now(),
                 )
                 .with_source(event.source),
             );
@@ -1216,7 +1222,7 @@ mod steering_recovery_tests {
                 trace_id: None,
             },
             root,
-            Utc::now(),
+            UtcDateTime::now(),
         );
         let child_id = child.id.clone();
         ledger.upsert(child);

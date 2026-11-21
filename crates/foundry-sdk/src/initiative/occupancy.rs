@@ -87,7 +87,7 @@ impl CampaignStore {
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
+    use crate::time::UtcDateTime;
 
     use super::*;
     use crate::campaign::{CampaignCycle, CampaignStatus};
@@ -138,10 +138,10 @@ mod tests {
                 origin: "test".into(),
                 trace_id: None,
             },
-            Utc::now(),
+            UtcDateTime::now(),
         );
         item.source = Some(crate::work_source::WorkSource::campaign(campaign, 1));
-        item.start(Utc::now());
+        item.start(UtcDateTime::now());
         item
     }
 
@@ -223,7 +223,7 @@ mod tests {
         assert!(store.enforce_member_eligibility("shared", "docs", &active).is_err());
 
         ledger.items[0].execution_completed = true;
-        ledger.items[0].settle_landed("workflow completed", Utc::now());
+        ledger.items[0].settle_landed("workflow completed", UtcDateTime::now());
         let active = store.ledger_active_members(&ledger);
         assert_eq!(occupied(&store, &active), ["backend"]);
         store.enforce_member_eligibility("shared", "docs", &active).unwrap();
@@ -291,7 +291,7 @@ mod tests {
         });
         let mut settled = running_item("docs");
         settled.execution_completed = true;
-        settled.settle_landed("workflow completed", Utc::now());
+        settled.settle_landed("workflow completed", UtcDateTime::now());
         let ledger = WorkItemStore {
             items: vec![campaign_item, task_item, settled],
             ..WorkItemStore::default()

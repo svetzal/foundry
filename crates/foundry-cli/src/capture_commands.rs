@@ -21,7 +21,9 @@ pub async fn capture(log_dir: Option<PathBuf>, command: Vec<String>) -> Result<i
     let id = format!(
         "{}-{}",
         std::process::id(),
-        chrono::Utc::now().timestamp_nanos_opt().context("clock out of range")?
+        foundry_sdk::time::UtcDateTime::now()
+            .timestamp_nanos_opt()
+            .context("clock out of range")?
     );
     let stdout = directory.join(format!("{id}.stdout.log"));
     let stderr = directory.join(format!("{id}.stderr.log"));

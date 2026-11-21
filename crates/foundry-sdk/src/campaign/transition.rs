@@ -12,7 +12,7 @@
 //! here so the legality of a transition never depends on which door the
 //! caller walked through.
 
-use chrono::{DateTime, Utc};
+use crate::time::UtcDateTime;
 
 use super::{Campaign, CampaignStatus, DoneEvidence, DoneEvidenceAmendment, OwnerDecision};
 
@@ -287,7 +287,7 @@ impl Campaign {
     pub fn record_owner_decision(
         &mut self,
         decision: String,
-        at: DateTime<Utc>,
+        at: UtcDateTime,
         add_cycles: u64,
     ) -> Result<(), TransitionError> {
         let authorized_by =
@@ -416,7 +416,7 @@ impl Campaign {
         &mut self,
         replacement: Vec<DoneEvidence>,
         reason: &str,
-        at: DateTime<Utc>,
+        at: UtcDateTime,
     ) -> Result<(), TransitionError> {
         let authorized_by =
             self.authorized_by.clone().ok_or_else(|| TransitionError::Unauthorized {
@@ -479,7 +479,7 @@ impl Campaign {
     pub fn complete(
         &mut self,
         reason: &str,
-        at: DateTime<Utc>,
+        at: UtcDateTime,
         open_trunk_ci: &[String],
     ) -> Result<Transition, TransitionError> {
         let authorized_by =
@@ -550,11 +550,7 @@ impl Campaign {
     ///
     /// Returns [`TransitionError::AlreadyCompleted`] when the campaign is
     /// already `Completed`.
-    pub fn cancel(
-        &mut self,
-        reason: &str,
-        at: DateTime<Utc>,
-    ) -> Result<Transition, TransitionError> {
+    pub fn cancel(&mut self, reason: &str, at: UtcDateTime) -> Result<Transition, TransitionError> {
         match self.check_cancellable()? {
             Transition::AlreadySettled => return Ok(Transition::AlreadySettled),
             Transition::Applied => {}
@@ -776,10 +772,8 @@ mod tests {
         }
     }
 
-    fn at() -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-07-18T12:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc)
+    fn at() -> UtcDateTime {
+        UtcDateTime::parse_from_rfc3339("2026-07-18T12:00:00Z").unwrap()
     }
 
     const ALL_STATUSES: [CampaignStatus; 6] = [
@@ -1278,7 +1272,7 @@ mod tests {
                 statement: "tests use an injected clock".to_string(),
             },
         ];
-        let later = at() + chrono::Duration::hours(1);
+        let later = at() + crate::time::SignedDuration::from_hours(1);
 
         c.amend_done_evidence(
             replacement.clone(),

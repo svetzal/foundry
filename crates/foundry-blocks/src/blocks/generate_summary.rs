@@ -1,7 +1,6 @@
+use foundry_sdk::time::UtcDateTime;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
-
-use chrono::Utc;
 
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::{
@@ -587,8 +586,8 @@ fn summary_path(
     audits_dir: &std::path::Path,
     interrupted: Option<&foundry_sdk::payload::InterruptedCycle>,
 ) -> std::path::PathBuf {
-    let started = interrupted.map_or_else(Utc::now, |i| i.started_at);
-    let runs_dir = audits_dir.join("runs").join(started.format("%Y-%m-%d").to_string());
+    let started = interrupted.map_or_else(UtcDateTime::now, |i| i.started_at);
+    let runs_dir = audits_dir.join("runs").join(started.format("%Y-%m-%d"));
     let plain = runs_dir.join("summary.md");
     if interrupted.is_some() && plain.exists() {
         return runs_dir.join(format!("summary-interrupted-{}.md", started.format("%H%M")));
@@ -688,7 +687,7 @@ impl TaskBlock for GenerateSummary {
 
             let summary = MaintenanceRunSummary {
                 // An interrupted cycle is reported as the run it was.
-                run_at: interrupted.as_ref().map_or_else(Utc::now, |i| i.started_at),
+                run_at: interrupted.as_ref().map_or_else(UtcDateTime::now, |i| i.started_at),
                 total_duration_secs: Some(total_duration_ms / 1000),
                 projects,
                 release_audits,

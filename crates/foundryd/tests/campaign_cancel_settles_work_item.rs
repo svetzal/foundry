@@ -22,7 +22,6 @@ use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use chrono::Utc;
 use foundry_blocks::trace_writer::TraceWriter;
 use foundry_engine::engine::Engine;
 use foundry_engine::event_writer::EventWriter;
@@ -34,6 +33,7 @@ use foundry_sdk::gateway::fakes::FakeShellGateway;
 use foundry_sdk::registry::{ActionFlags, ProjectEntry, Registry, Stack};
 use foundry_sdk::sentinel::SentinelStore;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::time::UtcDateTime;
 use foundry_sdk::work_item::{
     WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkItemStore, WorkLane,
 };
@@ -230,7 +230,7 @@ fn seed_running_cycle(path: &Path, trace: &str) -> String {
             origin: "campaign cancel-ledger-campaign cycle 2".to_string(),
             trace_id: Some(trace.to_string()),
         },
-        Utc::now(),
+        UtcDateTime::now(),
     );
     let id = item.id.clone();
     let mut store = WorkItemStore::default();
@@ -326,7 +326,7 @@ async fn cancellation_observation_waits_for_delayed_broadcast_after_settlement()
     store
         .find_mut(&id)
         .expect("the item")
-        .settle_cancelled(REASON, None, Utc::now());
+        .settle_cancelled(REASON, None, UtcDateTime::now());
     store.save(&ledger).expect("save settlement");
 
     let (tx, mut rx) = broadcast::channel(16);
@@ -521,7 +521,7 @@ fn seed_queued_cycle(path: &Path) -> String {
             trace_id: Some("d".repeat(32)),
         },
         root,
-        Utc::now(),
+        UtcDateTime::now(),
     )
     .with_source(Some(foundry_sdk::work_source::WorkSource::campaign(CAMPAIGN, 3)));
     let id = item.id.clone();

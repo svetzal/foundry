@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "sentinels": [
+    {
+      "name": "synthetic-283",
+      "schedule": {
+        "cron": "synthetic-284"
+      },
+      "emit": {
+        "event_type": "maintenance_cycle_started",
+        "project": "system",
+        "throttle": "full",
+        "payload": {}
+      },
+      "enabled": true
+    },
+    {
+      "name": "synthetic-285",
+      "schedule": {
+        "cron": "synthetic-286"
+      },
+      "emit": {
+        "event_type": "commit_digest_started",
+        "project": "system",
+        "throttle": "full",
+        "payload": {}
+      },
+      "enabled": true
+    }
+  ]
+}

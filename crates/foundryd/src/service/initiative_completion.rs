@@ -2,11 +2,11 @@
 
 use std::path::Path;
 
-use chrono::Utc;
 use foundry_sdk::campaign::{CampaignStore, Transition};
 use foundry_sdk::initiative::derive::{IntentProjection, derive_from_projection};
 use foundry_sdk::initiative::{Initiative, InitiativeStatus, OutcomeSnapshot};
 use foundry_sdk::registry::Registry;
+use foundry_sdk::time::UtcDateTime;
 use tonic::Status;
 
 use super::initiative_ops;
@@ -211,7 +211,7 @@ fn complete_with(
     require_no_live_work(&guard.store, ledger, name)?;
     guard
         .store
-        .confirm_completion(name, reason, &snapshot, Utc::now())
+        .confirm_completion(name, reason, &snapshot, UtcDateTime::now())
         .map_err(initiative_ops::error)?;
     guard.save().map_err(|error| Status::internal(error.to_string()))?;
     drop(guard);
@@ -300,7 +300,7 @@ fn close_and_finish(
             guard.store.validate_completion(name, snapshot).map_err(initiative_ops::error)?;
             guard
                 .store
-                .record_et_close(name, reference, Utc::now())
+                .record_et_close(name, reference, UtcDateTime::now())
                 .map_err(initiative_ops::error)?;
             guard.save().map_err(|error| Status::internal(error.to_string()))?;
         }
@@ -312,7 +312,7 @@ fn close_and_finish(
     guard.store.validate_completion(name, snapshot).map_err(initiative_ops::error)?;
     let changed = guard
         .store
-        .complete_initiative(name, reason, Utc::now())
+        .complete_initiative(name, reason, UtcDateTime::now())
         .map_err(initiative_ops::error)?
         == Transition::Applied;
     guard.save().map_err(|error| Status::internal(error.to_string()))?;

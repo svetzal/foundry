@@ -146,7 +146,7 @@ impl AuditReleaseTag {
                 &audit_result,
                 &entry.audit_exceptions,
                 &allowlist,
-                chrono::Local::now().date_naive(),
+                foundry_sdk::time::local_today(),
             );
             let note = crate::scanner::acceptance_note(&triage);
             let reported = triage.live;
@@ -558,7 +558,7 @@ fn live_findings(
         result,
         audit_exceptions,
         &allowlist,
-        chrono::Local::now().date_naive(),
+        foundry_sdk::time::local_today(),
     )
     .live
     .into_iter()

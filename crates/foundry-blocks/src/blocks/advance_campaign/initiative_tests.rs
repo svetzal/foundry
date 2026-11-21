@@ -125,9 +125,9 @@ impl crate::gateway::AgentGateway for InitiativeDecisionDuringFormation {
             if self.asked.fetch_add(1,std::sync::atomic::Ordering::SeqCst)==0 {
                 let mut guard=CampaignStore::lock_exclusive(&self.path).unwrap();
                 if self.status_only {
-                    guard.store.record_initiative_status("both", "Verification is running", chrono::Utc::now()).unwrap();
+                    guard.store.record_initiative_status("both", "Verification is running", foundry_sdk::time::UtcDateTime::now()).unwrap();
                 } else {
-                    guard.store.decide_initiative("both","Use port 5001",&[],chrono::Utc::now()).unwrap();
+                    guard.store.decide_initiative("both","Use port 5001",&[],foundry_sdk::time::UtcDateTime::now()).unwrap();
                 }
                 guard.save().unwrap();
             }
@@ -161,7 +161,7 @@ async fn automatic_diagnosis_names_the_exact_member_cycle_before_trace_fallback(
         let mut item = foundry_sdk::work_item::WorkItem::dispatched(foundry_sdk::work_item::WorkItemSpec {
             project:"p".into(),objective:"one cycle".into(),kind:foundry_sdk::work_item::WorkItemKind::CampaignCycle,
             lane:foundry_sdk::work_item::WorkLane::Campaign,origin:"initiative".into(),trace_id:Some("shared-trace".into()),
-        },chrono::Utc::now()+chrono::Duration::minutes(minute));
+        },foundry_sdk::time::UtcDateTime::now()+foundry_sdk::time::SignedDuration::from_mins(minute));
         item.id = id.into();
         item.started_root = Some(Event::new(EventType::ExecutionRequested,"p".into(),Throttle::Full,serde_json::json!({"campaign":member,"campaign_cycle":1})));
         item.source = Some(WorkSource::initiative("both",1));

@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use chrono::Utc;
 use foundry_blocks::trace_writer::TraceWriter;
 use foundry_engine::engine::Engine;
 use foundry_engine::event_writer::EventWriter;
@@ -21,6 +20,7 @@ use foundry_sdk::pacing::{PacingPaths, PauseState};
 use foundry_sdk::registry::Registry;
 use foundry_sdk::sentinel::SentinelStore;
 use foundry_sdk::throttle::Throttle;
+use foundry_sdk::time::UtcDateTime;
 use foundry_sdk::work_item::{
     WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkItemStore, WorkLane,
 };
@@ -59,7 +59,7 @@ fn queued(id: &str, project: &str) -> WorkItem {
             trace_id: Some(id.repeat(2)),
         },
         root(project),
-        Utc::now(),
+        UtcDateTime::now(),
     );
     item.id = id.to_string();
     item.reason = "ready".to_string();
@@ -68,9 +68,9 @@ fn queued(id: &str, project: &str) -> WorkItem {
 
 fn settled(id: &str, state: WorkItemState) -> WorkItem {
     let mut item = queued(id, "alpha");
-    item.start(Utc::now());
+    item.start(UtcDateTime::now());
     item.state = state;
-    item.settled_at = Some(Utc::now());
+    item.settled_at = Some(UtcDateTime::now());
     item
 }
 
@@ -251,7 +251,7 @@ async fn release_returns_a_held_item_to_the_queue_with_the_schedulers_reason() {
 async fn release_runs_a_dependency_blocked_item_regardless_of_the_settled_dependency() {
     let mut blocked = queued("wi_b", "beta");
     blocked.depends_on = vec!["wi_failed".to_string(), "wi_landed".to_string()];
-    blocked.settle_needs_decision("waits on wi_failed, which settled failed", Utc::now());
+    blocked.settle_needs_decision("waits on wi_failed, which settled failed", UtcDateTime::now());
     let f = fixture(vec![
         settled("wi_failed", WorkItemState::Failed),
         settled("wi_landed", WorkItemState::Landed),
@@ -283,7 +283,7 @@ async fn release_runs_a_dependency_blocked_item_regardless_of_the_settled_depend
 #[tokio::test]
 async fn hold_and_release_refuse_every_other_state_and_unknown_ids() {
     let mut reviewed = settled("wi_reviewed", WorkItemState::NeedsDecision);
-    reviewed.started_at = Some(Utc::now());
+    reviewed.started_at = Some(UtcDateTime::now());
     let f = fixture(vec![
         settled("wi_running", WorkItemState::Running),
         settled("wi_landed", WorkItemState::Landed),

@@ -131,7 +131,7 @@ pub(super) async fn run(
                 "foundry initiative show --json",
             ),
             artifacts: result.artifacts,
-            recorded_at: chrono::Utc::now(),
+            recorded_at: foundry_sdk::time::UtcDateTime::now(),
         });
     }
     Ok(Integration {

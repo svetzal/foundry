@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use chrono::Utc;
 use foundry_engine::admission::{Admission, ResultFuture, WorkAdmission};
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::pacing::PacingPaths;
@@ -13,6 +12,7 @@ use foundry_sdk::payload::{
     ExecutionRequestedPayload, InitiativeSteeredPayload, SteeringSettlement, WorkItemEventPayload,
 };
 use foundry_sdk::registry::Registry;
+use foundry_sdk::time::UtcDateTime;
 use foundry_sdk::trace::{BlockExecution, ProcessResult};
 use foundry_sdk::work_item::{
     WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkItemStore, WorkLane, ledger_write_gate,
@@ -318,7 +318,7 @@ impl DurableWorkAdmission {
                     trace_id: event.trace_id.clone(),
                 },
                 event.clone(),
-                Utc::now(),
+                UtcDateTime::now(),
             )
             .with_source(event.source.clone())
         };
@@ -663,21 +663,25 @@ impl WorkAdmission for DurableWorkAdmission {
                 {
                     item.settle_failed(
                         "task traversal ended without typed settlement; inspect its trace",
-                        Utc::now(),
+                        UtcDateTime::now(),
                     );
                 } else if let Some(settlement) = steering_settlement(root, result) {
                     match settlement {
                         SteeringSettlement::Landed(reason) => {
-                            item.settle_landed(&reason, Utc::now());
+                            item.settle_landed(&reason, UtcDateTime::now());
                         }
                         SteeringSettlement::Cancelled(reason) => {
-                            item.settle_cancelled(&reason, item.disposition.clone(), Utc::now());
+                            item.settle_cancelled(
+                                &reason,
+                                item.disposition.clone(),
+                                UtcDateTime::now(),
+                            );
                         }
                     }
                 } else if workflow_succeeded(root, result) {
-                    item.settle_landed(&succeeded_reason(root, result), Utc::now());
+                    item.settle_landed(&succeeded_reason(root, result), UtcDateTime::now());
                 } else {
-                    item.settle_failed(&failed_reason(result), Utc::now());
+                    item.settle_failed(&failed_reason(result), UtcDateTime::now());
                 }
                 let event = lifecycle(EventType::WorkItemSettled, item)?;
                 store.save(&self.path)?;
@@ -719,7 +723,7 @@ impl WorkAdmission for DurableWorkAdmission {
                     .find_mut(id)
                     .ok_or_else(|| anyhow::anyhow!("execution owner disappeared: {id}"))?;
                 failed.execution_completed = true;
-                failed.settle_failed(&reason, Utc::now());
+                failed.settle_failed(&reason, UtcDateTime::now());
                 failed_store.save(&self.path)?;
                 Ok(())
             })();
@@ -1254,7 +1258,7 @@ mod tests {
                     origin: "test".to_string(),
                     trace_id: Some("b".repeat(32)),
                 },
-                Utc::now(),
+                UtcDateTime::now(),
             );
             let id = item.id.clone();
             let _gate = ledger_write_gate().lock().expect("gate");
@@ -1266,7 +1270,7 @@ mod tests {
         fn settle(&self, id: &str) {
             let _gate = ledger_write_gate().lock().expect("gate");
             let mut store = self.policy.store().expect("load");
-            store.find_mut(id).expect("item").settle_landed("done", Utc::now());
+            store.find_mut(id).expect("item").settle_landed("done", UtcDateTime::now());
             store.save(&self.policy.path).expect("save");
         }
         fn submit(&self, kind: EventType, project: &str) -> JoinHandle<ProcessResult> {
@@ -1315,7 +1319,7 @@ mod tests {
             store.find_mut(&owner_id).expect("owner").settle_cancelled(
                 "obligation cancelled during cleanup",
                 None,
-                Utc::now(),
+                UtcDateTime::now(),
             );
             store.save(&h.policy.path).expect("save");
         }
@@ -1571,7 +1575,7 @@ mod tests {
             store.find_mut(&id).expect("item").settle_cancelled(
                 "operator stopped maintenance",
                 None,
-                Utc::now(),
+                UtcDateTime::now(),
             );
             store.save(&h.policy.path).expect("save");
         }
@@ -1613,7 +1617,7 @@ mod tests {
         assert!(watcher.try_recv().is_err(), "joining cannot publish terminal twice");
         let log = foundry_blocks::blocks::triage_core::read_events_jsonl(
             &h.dir.path().join("events"),
-            Utc::now() - chrono::Duration::days(1),
+            UtcDateTime::now() - foundry_sdk::time::days(1),
         );
         assert_eq!(log.iter().filter(|event| event.id == stopped.id).count(), 1);
     }
@@ -1650,7 +1654,7 @@ mod tests {
         );
         let log = foundry_blocks::blocks::triage_core::read_events_jsonl(
             &h.dir.path().join("events"),
-            Utc::now() - chrono::Duration::days(1),
+            UtcDateTime::now() - foundry_sdk::time::days(1),
         );
         for kind in [
             EventType::WorkItemSubmitted,
@@ -1666,7 +1670,7 @@ mod tests {
         store
             .find_mut(&item.id)
             .expect("item")
-            .settle_failed("daemon restarted", Utc::now());
+            .settle_failed("daemon restarted", UtcDateTime::now());
         store.save(&h.policy.path).expect("save restart");
         let failed = h.engine.join_work(&item.id).await.expect("join stopped root");
         assert!(!failed.is_success());
@@ -1764,7 +1768,7 @@ mod tests {
                 store.find_mut(&id).expect("item").settle_cancelled(
                     "operator stopped it",
                     None,
-                    Utc::now(),
+                    UtcDateTime::now(),
                 );
                 store.save(&h.policy.path).expect("save");
             }
@@ -1804,7 +1808,7 @@ mod tests {
                 trace_id: Some("b".repeat(32)),
             },
             root(EventType::CampaignAdvanceRequested, project),
-            Utc::now(),
+            UtcDateTime::now(),
         );
         let id = item.id.clone();
         let _gate = ledger_write_gate().lock().expect("gate");
@@ -2052,7 +2056,7 @@ mod tests {
         );
         let log = foundry_blocks::blocks::triage_core::read_events_jsonl(
             &h.dir.path().join("events"),
-            Utc::now() - chrono::Duration::days(1),
+            UtcDateTime::now() - foundry_sdk::time::days(1),
         );
         assert!(
             log.iter()
@@ -2201,7 +2205,7 @@ mod tests {
         result.events[0].payload["success"] = serde_json::json!(true);
         assert!(workflow_succeeded(&request, &result));
         let mut store = WorkItemStore::load(&h.policy.path).expect("store");
-        store.find_mut(&id).expect("task").start(Utc::now());
+        store.find_mut(&id).expect("task").start(UtcDateTime::now());
         store.save(&h.policy.path).expect("save");
         request.payload[ADMITTED_WORK_ITEM_KEY] = serde_json::json!(id);
         h.policy.complete(&request, &result).expect("completion");
@@ -2222,7 +2226,7 @@ mod tests {
             panic!("dry-run task must queue");
         };
         let mut store = WorkItemStore::load(&h.policy.path).expect("store");
-        store.find_mut(&id).expect("dry-run task").start(Utc::now());
+        store.find_mut(&id).expect("dry-run task").start(UtcDateTime::now());
         store.save(&h.policy.path).expect("save");
         request.payload[ADMITTED_WORK_ITEM_KEY] = serde_json::json!(id);
         h.policy.complete(&request, &result).expect("dry-run completion");
@@ -2246,7 +2250,7 @@ mod tests {
         let _gate = ledger_write_gate().lock().expect("gate");
         let mut store = h.policy.store().expect("store");
         let item = store.find_mut(&id).expect("owner");
-        item.start(Utc::now());
+        item.start(UtcDateTime::now());
         item.started_root = Some(started.clone());
         store.save(&h.policy.path).expect("persist started root");
         (id, started)
@@ -3088,7 +3092,7 @@ mod tests {
                 origin: EventType::CampaignAdvanceRequested.to_string(),
                 trace_id: None,
             },
-            Utc::now(),
+            UtcDateTime::now(),
         );
         advance.payload[ADMITTED_WORK_ITEM_KEY] = serde_json::json!(item.id);
         item.started_root = Some(advance.clone());

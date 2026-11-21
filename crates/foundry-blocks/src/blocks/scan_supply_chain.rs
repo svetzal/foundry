@@ -80,7 +80,7 @@ fn finding_from(vuln: crate::scanner::Vulnerability, cve: String) -> SupplyChain
 fn classify_vulnerabilities(
     vulnerabilities: Vec<crate::scanner::Vulnerability>,
     allowlist: &supply_chain::SupplyChainAllowlist,
-    today: chrono::NaiveDate,
+    today: jiff::civil::Date,
 ) -> (Vec<SupplyChainFinding>, Vec<SuppressedFinding>) {
     let mut findings = Vec::new();
     let mut suppressed = Vec::new();
@@ -121,7 +121,7 @@ async fn scan_all(
     entries: &[ProjectEntry],
     scanner: &dyn ScannerGateway,
 ) -> anyhow::Result<TaskBlockResult> {
-    let today = chrono::Local::now().date_naive();
+    let today = foundry_sdk::time::local_today();
     let mut scans = Vec::with_capacity(entries.len());
 
     for entry in entries {

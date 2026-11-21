@@ -21,10 +21,10 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use chrono::{DateTime, Duration, Utc};
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::payload::AgentSessionEndedPayload;
 use foundry_sdk::throttle::Throttle;
+use foundry_sdk::time::UtcDateTime;
 
 use super::RuntimeContext;
 use super::recovery::LOOKBACK_DAYS;
@@ -38,7 +38,7 @@ fn session_id(event: &Event) -> Option<&str> {
 
 /// `agent_session_started` events at or after `since` with no
 /// `agent_session_ended` for the same session id, in log order.
-pub(crate) fn find_unended_sessions(events: &[Event], since: DateTime<Utc>) -> Vec<&Event> {
+pub(crate) fn find_unended_sessions(events: &[Event], since: UtcDateTime) -> Vec<&Event> {
     let ended: HashSet<&str> = events
         .iter()
         .filter(|e| e.event_type == EventType::AgentSessionEnded)
@@ -56,7 +56,7 @@ pub(crate) fn find_unended_sessions(events: &[Event], since: DateTime<Utc>) -> V
 ///
 /// Returns `None` when `started` names no session id: there is nothing a
 /// consumer could match the end to.
-pub(crate) fn interrupted_end(started: &Event, ended_at: DateTime<Utc>) -> Option<Event> {
+pub(crate) fn interrupted_end(started: &Event, ended_at: UtcDateTime) -> Option<Event> {
     let id = session_id(started)?;
     let payload = AgentSessionEndedPayload::interrupted(id, &ended_at.to_rfc3339(), RESTART_REASON);
     #[allow(
@@ -79,8 +79,8 @@ pub(crate) fn interrupted_end(started: &Event, ended_at: DateTime<Utc>) -> Optio
 /// skipped by the reader, so a damaged log never keeps the daemon from
 /// starting.
 pub(crate) async fn end_interrupted_sessions(ctx: &RuntimeContext, events_dir: &Path) {
-    let started_at = Utc::now();
-    let since = started_at - Duration::days(LOOKBACK_DAYS);
+    let started_at = UtcDateTime::now();
+    let since = started_at - foundry_sdk::time::days(LOOKBACK_DAYS);
     let events = foundry_blocks::blocks::triage_core::read_events_jsonl(events_dir, since);
     for started in find_unended_sessions(&events, since) {
         let Some(end) = interrupted_end(started, started_at) else {
@@ -100,15 +100,15 @@ pub(crate) async fn end_interrupted_sessions(ctx: &RuntimeContext, events_dir: &
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone as _;
+    use foundry_sdk::time::UtcDateTime;
 
     use super::*;
 
-    fn at(h: u32, m: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 9, 30, h, m, 0).unwrap()
+    fn at(h: u32, m: u32) -> UtcDateTime {
+        UtcDateTime::from_ymd_hms(2026, 9, 30, h, m, 0).unwrap()
     }
 
-    fn lifecycle(ty: EventType, session: &str, when: DateTime<Utc>) -> Event {
+    fn lifecycle(ty: EventType, session: &str, when: UtcDateTime) -> Event {
         let mut e = Event::new(
             ty,
             "bedrock".to_string(),

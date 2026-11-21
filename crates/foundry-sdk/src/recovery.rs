@@ -1,5 +1,5 @@
 //! Operational recovery is evidence for reassessment, never an owner decision.
-use chrono::{DateTime, Utc};
+use crate::time::UtcDateTime;
 use serde::{Deserialize, Serialize};
 
 use crate::{campaign::CampaignStore, initiative::InitiativeError};
@@ -37,7 +37,7 @@ impl std::fmt::Display for RecoveryKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoveryResolution {
     pub evidence: Vec<String>,
-    pub resolved_at: DateTime<Utc>,
+    pub resolved_at: UtcDateTime,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,7 +45,7 @@ pub struct RecoveryState {
     pub id: String,
     pub kind: RecoveryKind,
     pub detail: String,
-    pub recorded_at: DateTime<Utc>,
+    pub recorded_at: UtcDateTime,
     #[serde(default)]
     pub resolution: Option<RecoveryResolution>,
 }
@@ -60,7 +60,7 @@ impl RecoveryState {
         &mut self,
         id: &str,
         evidence: &[String],
-        at: DateTime<Utc>,
+        at: UtcDateTime,
     ) -> Result<(), InitiativeError> {
         if self.id != id || !self.is_pending() {
             return Err(InitiativeError::Precondition(
@@ -83,7 +83,7 @@ fn record(
     id: &str,
     kind: RecoveryKind,
     detail: &str,
-    at: DateTime<Utc>,
+    at: UtcDateTime,
 ) -> Result<(), InitiativeError> {
     if id.trim().is_empty() || detail.trim().is_empty() {
         return Err(InitiativeError::Invalid("recovery requires an identity and detail".into()));
@@ -121,7 +121,7 @@ impl CampaignStore {
         id: &str,
         kind: RecoveryKind,
         detail: &str,
-        at: DateTime<Utc>,
+        at: UtcDateTime,
     ) -> Result<(), InitiativeError> {
         let campaign = self.find_mut(name).ok_or_else(|| InitiativeError::NotFound(name.into()))?;
         record(&mut campaign.recovery, id, kind, detail, at)
@@ -132,7 +132,7 @@ impl CampaignStore {
         id: &str,
         kind: RecoveryKind,
         detail: &str,
-        at: DateTime<Utc>,
+        at: UtcDateTime,
     ) -> Result<(), InitiativeError> {
         let initiative = self
             .find_initiative_mut(name)
@@ -144,7 +144,7 @@ impl CampaignStore {
         name: &str,
         id: &str,
         evidence: &[String],
-        at: DateTime<Utc>,
+        at: UtcDateTime,
     ) -> Result<(), InitiativeError> {
         let campaign = self.find_mut(name).ok_or_else(|| InitiativeError::NotFound(name.into()))?;
         if campaign.status.is_terminal()
@@ -165,7 +165,7 @@ impl CampaignStore {
         name: &str,
         id: &str,
         evidence: &[String],
-        at: DateTime<Utc>,
+        at: UtcDateTime,
     ) -> Result<(), InitiativeError> {
         let initiative = self
             .find_initiative_mut(name)
@@ -205,7 +205,7 @@ mod tests {
     #[test]
     fn resolution_matches_current_identity_requires_evidence_and_survives_restart() {
         let mut store = store();
-        let at = Utc::now();
+        let at = UtcDateTime::now();
         store
             .record_campaign_recovery(
                 "campaign",
@@ -238,7 +238,7 @@ mod tests {
     #[test]
     fn operational_evidence_cannot_change_owner_pause_questions_authority_or_budget() {
         let mut store = store();
-        let at = Utc::now();
+        let at = UtcDateTime::now();
         store
             .record_campaign_recovery(
                 "campaign",
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn fresh_completion_prerequisite_supersedes_only_an_evidence_or_precondition_wait() {
         let mut store = store();
-        let at = Utc::now();
+        let at = UtcDateTime::now();
         store
             .record_initiative_recovery(
                 "initiative",
@@ -349,7 +349,7 @@ mod tests {
     #[test]
     fn terminal_or_unauthorized_work_cannot_be_recovered() {
         let mut store = store();
-        let at = Utc::now();
+        let at = UtcDateTime::now();
         store
             .record_campaign_recovery(
                 "campaign",

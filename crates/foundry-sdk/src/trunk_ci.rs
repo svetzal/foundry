@@ -11,16 +11,16 @@
 //! Everything here is pure: no I/O and no clock. The watcher supplies the runs
 //! (or the error it got asking for them) and the time.
 
-use chrono::{DateTime, Duration, Utc};
+use crate::time::{SignedDuration, UtcDateTime};
 use serde::{Deserialize, Serialize};
 
 /// How long a watch waits for CI to report any run for its commit before it
 /// concludes [`TrunkCiState::NoRun`].
-pub const TRUNK_CI_GRACE: Duration = Duration::minutes(15);
+pub const TRUNK_CI_GRACE: SignedDuration = SignedDuration::from_mins(15);
 
 /// How long a watch may stay pending (runs still going, or GitHub unreachable)
 /// before it concludes [`TrunkCiState::Unavailable`].
-pub const TRUNK_CI_LIMIT: Duration = Duration::hours(2);
+pub const TRUNK_CI_LIMIT: SignedDuration = SignedDuration::from_hours(2);
 
 /// The prefix of the reason a campaign advance stands down with while trunk CI
 /// is pending on its project. The watcher finds stood-down advances by it.
@@ -85,10 +85,10 @@ pub struct TrunkCiWatch {
     /// Where the watch stands.
     pub state: TrunkCiState,
     /// When the item landed and the watch began.
-    pub requested_at: DateTime<Utc>,
+    pub requested_at: UtcDateTime,
     /// When the watch concluded. Absent while pending.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub concluded_at: Option<DateTime<Utc>>,
+    pub concluded_at: Option<UtcDateTime>,
     /// The run that decided the conclusion, when one did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_url: Option<String>,
@@ -110,7 +110,7 @@ pub struct TrunkCiWatch {
 impl TrunkCiWatch {
     /// A new pending watch of `commit` on `repo`'s `branch`, begun at `at`.
     #[must_use]
-    pub fn pending(repo: &str, branch: &str, commit: &str, at: DateTime<Utc>) -> Self {
+    pub fn pending(repo: &str, branch: &str, commit: &str, at: UtcDateTime) -> Self {
         Self {
             repo: repo.to_string(),
             branch: branch.to_string(),
@@ -206,8 +206,8 @@ pub enum CiVerdict {
 pub fn conclude(
     runs: Result<&[CiRun], &str>,
     branch: &str,
-    requested_at: DateTime<Utc>,
-    now: DateTime<Utc>,
+    requested_at: UtcDateTime,
+    now: UtcDateTime,
 ) -> CiVerdict {
     let elapsed = now - requested_at;
     let past_limit = elapsed >= TRUNK_CI_LIMIT;
@@ -319,8 +319,9 @@ impl TrunkCiConclusion {
 mod tests {
     use super::*;
 
-    fn at(minutes: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(1_790_000_000, 0).expect("in range") + Duration::minutes(minutes)
+    fn at(minutes: i64) -> UtcDateTime {
+        UtcDateTime::from_timestamp(1_790_000_000, 0).expect("in range")
+            + SignedDuration::from_mins(minutes)
     }
 
     fn run(status: &str, conclusion: &str) -> CiRun {

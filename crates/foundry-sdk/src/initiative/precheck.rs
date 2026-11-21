@@ -8,7 +8,7 @@
 
 use std::collections::BTreeSet;
 
-use chrono::{DateTime, Utc};
+use crate::time::UtcDateTime;
 use serde::Serialize;
 
 use super::{CampaignStore, MemberKind, Result};
@@ -163,7 +163,7 @@ impl CampaignStore {
             })
             .map(|member| member.name.as_str())
             .collect();
-        let newer = |at: DateTime<Utc>| at > since;
+        let newer = |at: UtcDateTime| at > since;
         let mut unjudged: Vec<String> = self
             .findings
             .iter()
@@ -191,7 +191,7 @@ impl CampaignStore {
 
 #[cfg(test)]
 mod tests {
-    use chrono::Duration;
+    use crate::time::{SignedDuration, UtcDateTime};
 
     use super::*;
     use crate::campaign::CampaignCycle;
@@ -234,7 +234,7 @@ mod tests {
                     reason: "workers run".into(),
                 },
                 provider: Some(AgentProvider::Codex),
-                recorded_at: Utc::now() - Duration::hours(1),
+                recorded_at: UtcDateTime::now() - SignedDuration::from_hours(1),
                 follow_up_of: None,
                 integration_skipped: None,
             });
@@ -358,7 +358,7 @@ mod tests {
             "Seen already",
             vec![],
         );
-        old.recorded_at = Utc::now() - Duration::hours(2);
+        old.recorded_at = UtcDateTime::now() - SignedDuration::from_hours(2);
         store.add_finding(old).unwrap();
         store
             .add_finding(Finding::new(
@@ -397,7 +397,9 @@ mod tests {
         let mut store = store();
         running(&mut store, "frontend");
         running(&mut store, "backend");
-        store.decide_initiative("shared", "Ship v2 first", &[], Utc::now()).unwrap();
+        store
+            .decide_initiative("shared", "Ship v2 first", &[], UtcDateTime::now())
+            .unwrap();
         assert_eq!(precheck(&store).unjudged, ["owner decision: Ship v2 first"]);
 
         store.find_initiative_mut("shared").unwrap().steering_history.clear();

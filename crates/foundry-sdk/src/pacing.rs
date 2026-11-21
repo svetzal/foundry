@@ -42,7 +42,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
+use crate::time::UtcDateTime;
 use serde::{Deserialize, Serialize};
 
 use crate::error::StoreError;
@@ -346,7 +346,7 @@ pub fn host_at_capacity(running: usize, max: usize) -> String {
 
 /// The reason a queued item waits until `at`.
 #[must_use]
-pub fn not_before(at: DateTime<Utc>) -> String {
+pub fn not_before(at: UtcDateTime) -> String {
     format!("not before {}", at.to_rfc3339())
 }
 
@@ -423,7 +423,7 @@ pub fn evaluate(
     items: &[WorkItem],
     limits: &Limits,
     pauses: &PauseState,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
     repository_of: &dyn Fn(&str) -> String,
 ) -> Vec<Verdict> {
     let mut busy: HashMap<String, String> = HashMap::new();
@@ -519,7 +519,7 @@ pub struct SnapshotItem {
     /// Why, in one line: what it occupies, or why it waits.
     pub reason: String,
     /// `started_at` for a running item, `submitted_at` for a waiting one.
-    pub since: Option<DateTime<Utc>>,
+    pub since: Option<UtcDateTime>,
 }
 
 /// The pacing stage as it stands: the limits in force, what is running, what
@@ -549,7 +549,7 @@ pub fn snapshot(
     pauses: &PauseState,
     repository_of: &dyn Fn(&str) -> String,
 ) -> Snapshot {
-    let entry = |item: &WorkItem, since: Option<DateTime<Utc>>| SnapshotItem {
+    let entry = |item: &WorkItem, since: Option<UtcDateTime>| SnapshotItem {
         id: item.id.clone(),
         project: item.project.clone(),
         repository: match claimed_repositories(item, repository_of) {
@@ -597,7 +597,7 @@ fn decide(
     running: usize,
     limits: &Limits,
     pauses: &PauseState,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
     required: &[String],
     optional: &[String],
 ) -> Decision {
@@ -645,15 +645,15 @@ fn decide(
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone as _;
+    use crate::time::UtcDateTime;
 
     use super::*;
     use crate::event::{Event, EventType};
     use crate::throttle::Throttle;
     use crate::work_item::{WorkItemKind, WorkItemSpec};
 
-    fn at(second: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 10, 10, 12, 0, second).single().expect("valid date")
+    fn at(second: u32) -> UtcDateTime {
+        UtcDateTime::from_ymd_hms(2026, 10, 10, 12, 0, second).expect("valid date")
     }
 
     fn root(project: &str) -> Event {

@@ -93,7 +93,9 @@ impl ReconcileWork {
         report.unresolved = count(&report, "unresolved");
         report.success = report.errors.is_empty();
         render(&mut report, pruned);
-        let destination = self.output.join(format!("{}.md", chrono::Utc::now().format("%Y-%m-%d")));
+        let destination = self
+            .output
+            .join(format!("{}.md", foundry_sdk::time::UtcDateTime::now().format("%Y-%m-%d")));
         if let Err(error) = write_report(&destination, &report.markdown).await {
             report.success = false;
             report.errors.push(format!("digest write {}: {error:#}", destination.display()));
@@ -555,11 +557,18 @@ fn apply_verified(path: &Path, verified: &[(WorkItem, String)]) -> Result<Vec<Wo
             continue;
         };
         disposition.landed_commit = Some(commit.clone());
-        item.settle_landed(&format!("superseded by {commit}"), chrono::Utc::now());
+        item.settle_landed(
+            &format!("superseded by {commit}"),
+            foundry_sdk::time::UtcDateTime::now(),
+        );
         let superseded = item.id.clone();
         settled.push(item.clone());
         // What the superseded item resumed or continued is discharged too.
-        settled.extend(store.settle_lineage(&superseded, commit, chrono::Utc::now()));
+        settled.extend(store.settle_lineage(
+            &superseded,
+            commit,
+            foundry_sdk::time::UtcDateTime::now(),
+        ));
     }
     if !settled.is_empty() {
         store.save(path)?;

@@ -479,7 +479,8 @@ async fn landing_settles_needs_decision_and_failed_items_whose_work_reached_trun
         }
         commit_files(&checkout, &[("later.txt", "unrelated")], "later cycle");
         let commit = hash(&checkout, "main");
-        let earlier = chrono::Utc::now() - chrono::Duration::hours(1);
+        let earlier = foundry_sdk::time::UtcDateTime::now()
+            - foundry_sdk::time::SignedDuration::from_hours(1);
         let open = |id: &str, state: WorkItemState| {
             let mut item = parent.clone();
             item.id = id.into();

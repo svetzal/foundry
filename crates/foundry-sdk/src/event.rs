@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use crate::time::UtcDateTime;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -17,9 +17,9 @@ pub struct Event {
     /// The project this event relates to.
     pub project: String,
     /// When the event occurred.
-    pub occurred_at: DateTime<Utc>,
+    pub occurred_at: UtcDateTime,
     /// When the event was recorded in the log.
-    pub recorded_at: DateTime<Utc>,
+    pub recorded_at: UtcDateTime,
     /// The throttle level propagated through this event chain.
     pub throttle: Throttle,
     /// 32-char lowercase hex. Identifies the whole tree (cycle root through
@@ -88,7 +88,7 @@ impl Event {
         throttle: Throttle,
         payload: serde_json::Value,
     ) -> Self {
-        let occurred_at = Utc::now();
+        let occurred_at = UtcDateTime::now();
         let recorded_at = occurred_at;
         let id = Self::compute_id(&event_type, &project, &occurred_at, &payload);
 
@@ -240,7 +240,7 @@ impl Event {
     fn compute_id(
         event_type: &EventType,
         project: &str,
-        occurred_at: &DateTime<Utc>,
+        occurred_at: &UtcDateTime,
         payload: &serde_json::Value,
     ) -> String {
         let mut hasher = Sha256::new();
@@ -786,11 +786,11 @@ mod tests {
 
         // timestamps must be RFC3339 parseable strings
         let occurred_at = json["occurred_at"].as_str().expect("occurred_at must be a string");
-        chrono::DateTime::parse_from_rfc3339(occurred_at)
+        crate::time::UtcDateTime::parse_from_rfc3339(occurred_at)
             .expect("occurred_at must be RFC3339 formatted");
 
         let recorded_at = json["recorded_at"].as_str().expect("recorded_at must be a string");
-        chrono::DateTime::parse_from_rfc3339(recorded_at)
+        crate::time::UtcDateTime::parse_from_rfc3339(recorded_at)
             .expect("recorded_at must be RFC3339 formatted");
     }
 
@@ -1000,7 +1000,7 @@ mod tests {
         let payload = serde_json::json!({"severity": "high"});
         let event_type = EventType::VulnerabilityDetected;
         let project = "hone-cli".to_string();
-        let now = Utc::now();
+        let now = UtcDateTime::now();
 
         let id1 = Event::compute_id(&event_type, &project, &now, &payload);
         let id2 = Event::compute_id(&event_type, &project, &now, &payload);
@@ -1495,7 +1495,7 @@ mod tests {
     fn different_payloads_produce_different_ids() {
         let event_type = EventType::VulnerabilityDetected;
         let project = "hone-cli".to_string();
-        let now = Utc::now();
+        let now = UtcDateTime::now();
 
         let id1 = Event::compute_id(
             &event_type,

@@ -322,7 +322,7 @@ async fn content_containment(path: &Path, trunk: &str, preserved: &str) -> Resul
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use chrono::{DateTime, Utc};
+    use foundry_sdk::time::UtcDateTime;
     use foundry_sdk::work_item::{
         WorkDisposition, WorkItem, WorkItemKind, WorkItemSpec, WorkItemState, WorkLane,
     };
@@ -402,10 +402,10 @@ mod tests {
                 origin: "regression".into(),
                 trace_id: None,
             },
-            Utc::now(),
+            UtcDateTime::now(),
         );
         item.state = state;
-        item.started_at = started.map(|time| DateTime::from_timestamp(time, 0).unwrap());
+        item.started_at = started.map(|time| UtcDateTime::from_timestamp(time, 0).unwrap());
         item.disposition = Some(WorkDisposition {
             task_branch: None,
             branch_cleanup: Vec::new(),

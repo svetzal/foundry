@@ -45,9 +45,9 @@ pub struct MaintenanceSummaryRequestedPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InterruptedCycle {
     /// When the cycle started.
-    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub started_at: crate::time::UtcDateTime,
     /// The last event foundryd recorded for the cycle before it stopped.
-    pub last_event_at: chrono::DateTime<chrono::Utc>,
+    pub last_event_at: crate::time::UtcDateTime,
     /// Projects whose run had not completed.
     pub unfinished: Vec<String>,
 }

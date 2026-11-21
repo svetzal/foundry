@@ -1580,7 +1580,7 @@ pub fn triage_findings<'a>(
     result: &'a AuditResult,
     exceptions: &[String],
     allowlist: &SupplyChainAllowlist,
-    today: chrono::NaiveDate,
+    today: jiff::civil::Date,
 ) -> FindingTriage<'a> {
     let mut triage = FindingTriage::default();
     for finding in &result.vulnerabilities {
@@ -2918,8 +2918,8 @@ mod tests {
         }
     }
 
-    fn day(s: &str) -> chrono::NaiveDate {
-        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    fn day(s: &str) -> jiff::civil::Date {
+        s.parse().unwrap()
     }
 
     fn allow(entries: &[(&str, Option<&str>)]) -> SupplyChainAllowlist {

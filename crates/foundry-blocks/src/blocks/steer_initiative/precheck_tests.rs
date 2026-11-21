@@ -47,7 +47,8 @@ fn steered_an_hour_ago(store: &mut CampaignStore) {
                 reason: "Both members run".into(),
             },
             provider: Some(AgentProvider::Claude),
-            recorded_at: chrono::Utc::now() - chrono::Duration::hours(1),
+            recorded_at: foundry_sdk::time::UtcDateTime::now()
+                - foundry_sdk::time::SignedDuration::from_hours(1),
             follow_up_of: None,
             integration_skipped: None,
         });

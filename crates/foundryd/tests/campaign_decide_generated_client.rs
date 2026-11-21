@@ -255,9 +255,8 @@ fn campaign_in(status: CampaignStatus) -> Campaign {
     campaign.cycles_completed = campaign.budget.max_cycles;
     campaign.open_escalation = Some(foundry_sdk::campaign::CampaignEscalation {
         reason: "an earlier question".to_string(),
-        escalated_at: chrono::DateTime::parse_from_rfc3339("2026-10-01T12:00:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc),
+        escalated_at: foundry_sdk::time::UtcDateTime::parse_from_rfc3339("2026-10-01T12:00:00Z")
+            .unwrap(),
         cycles_completed: 10,
         cycles_landed: 2,
         question: None,

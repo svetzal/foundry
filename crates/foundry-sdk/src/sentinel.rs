@@ -259,7 +259,7 @@ pub struct SentinelEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Schedule {
-    /// Standard 5-field cron expression evaluated in `chrono::Local`.
+    /// Standard 5-field cron expression evaluated in the system time zone (`TZ`, else the host zone).
     Cron(String),
 }
 

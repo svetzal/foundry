@@ -1,0 +1,47 @@
+{
+  "version": 2,
+  "projects": [
+    {
+      "name": "foundry",
+      "path": "/synthetic/path/274",
+      "stack": "rust",
+      "agent": "synthetic-275",
+      "repo": "synthetic-276",
+      "branch": "main",
+      "skip": null,
+      "actions": {
+        "iterate": false,
+        "maintain": true,
+        "push": true,
+        "audit": false,
+        "release": false
+      },
+      "install": null,
+      "installs_skill": true,
+      "notes": "synthetic-277",
+      "timeout_secs": null,
+      "update_policy": "major"
+    },
+    {
+      "name": "synthetic-278",
+      "path": "/synthetic/path/279",
+      "stack": "typescript",
+      "agent": "synthetic-280",
+      "repo": "synthetic-281",
+      "branch": "main",
+      "skip": null,
+      "actions": {
+        "iterate": false,
+        "maintain": true,
+        "push": true,
+        "audit": true,
+        "release": true
+      },
+      "install": null,
+      "installs_skill": false,
+      "notes": "synthetic-282",
+      "timeout_secs": null,
+      "update_policy": "major"
+    }
+  ]
+}

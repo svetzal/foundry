@@ -51,7 +51,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use foundry_sdk::time::UtcDateTime;
 use tokio::sync::{Notify, broadcast};
 
 use foundry_blocks::blocks::ADMITTED_WORK_ITEM_KEY;
@@ -69,7 +69,7 @@ use crate::service::RuntimeContext;
 pub type DispatchFn = Arc<dyn Fn(Event) + Send + Sync + 'static>;
 
 /// Source of "now". Indirected so tests pin a deterministic clock.
-pub type ClockFn = Arc<dyn Fn() -> DateTime<Utc> + Send + Sync + 'static>;
+pub type ClockFn = Arc<dyn Fn() -> UtcDateTime + Send + Sync + 'static>;
 
 /// The safety-net interval between ticks when nothing wakes the scheduler.
 /// Short enough that an admission whose announcement preceded its ledger
@@ -92,7 +92,7 @@ pub struct TickOutcome {
     /// `failed` for a missing root).
     pub settled: Vec<WorkItem>,
     /// The earliest `not_before` still ahead among the queued items.
-    pub next_not_before: Option<DateTime<Utc>>,
+    pub next_not_before: Option<UtcDateTime>,
 }
 
 /// The pacing scheduler. `run` consumes it and loops forever.
@@ -127,7 +127,7 @@ impl PacingScheduler {
             pacing,
             wake,
             dispatch,
-            clock: Arc::new(Utc::now),
+            clock: Arc::new(UtcDateTime::now),
         }
     }
 
@@ -156,7 +156,7 @@ impl PacingScheduler {
             let now = (self.clock)();
             let wait = outcome
                 .next_not_before
-                .and_then(|at| (at - now).to_std().ok())
+                .and_then(|at| std::time::Duration::try_from(at - now).ok())
                 .map_or(IDLE_TICK, |until| until.min(IDLE_TICK));
             tokio::select! {
                 () = tokio::time::sleep(wait) => {}
@@ -270,7 +270,7 @@ fn wakes_scheduler(event_type: &EventType) -> bool {
 fn apply_tick(
     path: &Path,
     pacing: &PacingPaths,
-    now: DateTime<Utc>,
+    now: UtcDateTime,
     repository_of: &dyn Fn(&str) -> String,
 ) -> TickOutcome {
     let Ok(_guard) = ledger_write_gate().lock() else {
@@ -413,18 +413,18 @@ fn lifecycle_event(event_type: EventType, item: &WorkItem) -> Event {
 mod tests {
     use std::sync::{Mutex, RwLock};
 
-    use chrono::TimeZone as _;
     use foundry_engine::engine::Engine;
     use foundry_sdk::pacing::{Limits, PauseState};
     use foundry_sdk::registry::Registry;
+    use foundry_sdk::time::UtcDateTime;
     use foundry_sdk::work_item::{WorkItemKind, WorkItemSpec, WorkItemState, WorkLane};
     use foundry_sdk::work_source::WorkSource;
 
     use super::*;
     use crate::service::settle_running_work_items_on_start;
 
-    fn at(second: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 10, 10, 12, 0, second).single().expect("valid date")
+    fn at(second: u32) -> UtcDateTime {
+        UtcDateTime::from_ymd_hms(2026, 10, 10, 12, 0, second).expect("valid date")
     }
 
     fn root(project: &str, extra: &serde_json::Value) -> Event {
@@ -492,7 +492,7 @@ mod tests {
         scheduler: PacingScheduler,
         dispatched: Arc<Mutex<Vec<Event>>>,
         events: broadcast::Receiver<Event>,
-        clock: Arc<Mutex<DateTime<Utc>>>,
+        clock: Arc<Mutex<UtcDateTime>>,
     }
 
     impl Harness {
@@ -592,7 +592,7 @@ mod tests {
             out
         }
 
-        fn set_clock(&self, now: DateTime<Utc>) {
+        fn set_clock(&self, now: UtcDateTime) {
             *self.clock.lock().expect("lock") = now;
         }
     }

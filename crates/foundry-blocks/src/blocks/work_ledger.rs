@@ -14,7 +14,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use chrono::Utc;
 use foundry_sdk::event::{Event, EventType};
 use foundry_sdk::pacing::{self, Decision, PacingPaths};
 use foundry_sdk::payload::{
@@ -23,6 +22,7 @@ use foundry_sdk::payload::{
 };
 use foundry_sdk::registry::Registry;
 use foundry_sdk::task_block::{BlockKind, TaskBlock, TaskBlockResult};
+use foundry_sdk::time::UtcDateTime;
 use foundry_sdk::trunk_ci::TrunkCiWatch;
 use foundry_sdk::work_item::{
     FollowUp, WorkItem, WorkItemKind, WorkItemSpec, WorkItemStore, WorkLane, ledger_write_gate,
@@ -120,7 +120,7 @@ pub fn item_from_dispatch(trigger: &Event, payload: &ExecutionRequestedPayload) 
             trace_id: trigger.trace_id.clone(),
         },
         trigger.clone(),
-        Utc::now(),
+        UtcDateTime::now(),
     )
     .with_source(trigger.source.clone());
     item.depends_on.clone_from(&payload.depends_on);
@@ -208,9 +208,10 @@ pub fn queued_reason(
             project.to_string()
         }
     };
-    let verdict = pacing::evaluate(&store.items, &limits, &pauses, Utc::now(), &repository_of)
-        .into_iter()
-        .find(|verdict| verdict.id == id);
+    let verdict =
+        pacing::evaluate(&store.items, &limits, &pauses, UtcDateTime::now(), &repository_of)
+            .into_iter()
+            .find(|verdict| verdict.id == id);
     match verdict.map(|verdict| verdict.decision) {
         Some(Decision::Wait(reason) | Decision::NeedsDecision(reason)) => reason,
         Some(Decision::Start | Decision::StartWithoutReservation) | None => {
@@ -287,10 +288,10 @@ impl SimulatedSuccess for SettleFailedDispatch {
                 origin: "foundry task".to_string(),
                 trace_id: trigger.trace_id.clone(),
             },
-            Utc::now(),
+            UtcDateTime::now(),
         )
         .with_source(trigger.source.clone());
-        item.settle_failed(&reason, Utc::now());
+        item.settle_failed(&reason, UtcDateTime::now());
         Some(item)
     }
 
@@ -337,7 +338,7 @@ fn settle_failed_in_ledger(path: &Path, trigger: &Event, reason: &str) -> Option
     let _guard = ledger_lock()?;
     let mut store = load_ledger(path)?;
     let item = store.running_for_settlement(trigger.trace_id.as_deref(), &trigger.project)?;
-    item.settle_failed(reason, Utc::now());
+    item.settle_failed(reason, UtcDateTime::now());
     let settled = item.clone();
     save_ledger(&store, path).then_some(settled)
 }
@@ -498,7 +499,7 @@ impl SettleWorkItem {
         let _guard = ledger_lock()?;
         let mut store = load_ledger(&self.store_path)?;
         let removed = worktree_removed(result);
-        let now = Utc::now();
+        let now = UtcDateTime::now();
         let item = store.running_for_settlement(trigger.trace_id.as_deref(), &trigger.project)?;
         item.settle_from_task_run(result, removed, now);
         let landed = result.landed && item.state == foundry_sdk::work_item::WorkItemState::Landed;
@@ -509,7 +510,7 @@ impl SettleWorkItem {
         let settled = item.clone();
         let mut additional = Vec::new();
         if landed && let Some(commit) = &commit {
-            additional.extend(store.settle_lineage(&settled.id, commit, Utc::now()));
+            additional.extend(store.settle_lineage(&settled.id, commit, UtcDateTime::now()));
         }
         for (candidate, commit) in
             verified.iter().filter(|_| landed && settled.project == trigger.project)
@@ -526,17 +527,17 @@ impl SettleWorkItem {
                 continue;
             };
             disposition.landed_commit = Some(commit.clone());
-            item.settle_landed(&format!("superseded by {commit}"), Utc::now());
+            item.settle_landed(&format!("superseded by {commit}"), UtcDateTime::now());
             let superseded = item.id.clone();
             additional.push(item.clone());
             // What the superseded item resumed or continued is discharged too.
-            additional.extend(store.settle_lineage(&superseded, commit, Utc::now()));
+            additional.extend(store.settle_lineage(&superseded, commit, UtcDateTime::now()));
         }
         let follow_up = FollowUp::from_landed_remainder(&settled, result)
             .filter(|follow_up| {
                 store.follow_up_of(&follow_up.of, follow_up.obligation.tag()).is_none()
             })
-            .map(|follow_up| follow_up.into_item(&settled, Utc::now()));
+            .map(|follow_up| follow_up.into_item(&settled, UtcDateTime::now()));
         if let Some(item) = &follow_up {
             store.upsert(item.clone());
         }
@@ -619,12 +620,12 @@ impl SimulatedSuccess for SettleWorkItem {
                 origin,
                 trace_id: trigger.trace_id.clone(),
             },
-            Utc::now(),
+            UtcDateTime::now(),
         )
         .with_source(trigger.source.clone());
-        item.settle_from_task_run(&result, worktree_removed(&result), Utc::now());
+        item.settle_from_task_run(&result, worktree_removed(&result), UtcDateTime::now());
         let follow_up = FollowUp::from_landed_remainder(&item, &result)
-            .map(|follow_up| follow_up.into_item(&item, Utc::now()));
+            .map(|follow_up| follow_up.into_item(&item, UtcDateTime::now()));
         Some(Settlement {
             child: item,
             discharged: Vec::new(),
@@ -777,7 +778,7 @@ pub(super) fn save_ledger(store: &WorkItemStore, path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
+    use foundry_sdk::time::UtcDateTime;
     use std::sync::Arc;
 
     use foundry_sdk::event::{Event, EventType};
@@ -864,7 +865,7 @@ mod tests {
         let _guard = foundry_sdk::work_item::ledger_write_gate().lock().unwrap();
         let mut store = WorkItemStore::load(path).unwrap();
         for item in store.items.iter_mut().filter(|item| item.is_queued()) {
-            item.start(Utc::now());
+            item.start(UtcDateTime::now());
         }
         store.save(path).unwrap();
     }
@@ -1339,7 +1340,7 @@ mod tests {
                     origin: "foundry task".to_string(),
                     trace_id: Some(seeded_trace.clone()),
                 },
-                chrono::Utc::now(),
+                foundry_sdk::time::UtcDateTime::now(),
             );
             let seeded_id = seeded.id.clone();
             store.upsert(seeded);
@@ -1385,7 +1386,7 @@ mod tests {
                 .parse_payload::<TaskRunCompletedPayload>()
                 .unwrap(),
             None,
-            Utc::now(),
+            UtcDateTime::now(),
         );
         assert!(candidate.state.is_open(), "{id} must be open, not {:?}", candidate.state);
         candidate
@@ -1418,7 +1419,7 @@ mod tests {
                 .collect();
             // The Git proof snapshot predates an owner cancellation and an
             // unrelated write to a still-open item, both under the same gate.
-            cancelled.settle_cancelled("owner stopped", None, Utc::now());
+            cancelled.settle_cancelled("owner stopped", None, UtcDateTime::now());
             edited.reason = "a later writer's reason".into();
             let unrelated = WorkItem::dispatched(
                 foundry_sdk::work_item::WorkItemSpec {
@@ -1429,7 +1430,7 @@ mod tests {
                     origin: "owner".into(),
                     trace_id: Some("b".repeat(32)),
                 },
-                Utc::now(),
+                UtcDateTime::now(),
             );
             {
                 let _guard = foundry_sdk::work_item::ledger_write_gate().lock().unwrap();
@@ -1497,7 +1498,7 @@ mod tests {
         let mut cancelled =
             open_candidate(&running, "wi_cancelled", TaskVerdict::Remainder { gaps: vec![] });
         let evidence = cancelled.disposition.clone();
-        cancelled.settle_cancelled("owner closed", evidence, Utc::now());
+        cancelled.settle_cancelled("owner closed", evidence, UtcDateTime::now());
         let mut elsewhere = open_candidate(
             &running,
             "wi_elsewhere",
@@ -1630,7 +1631,7 @@ mod tests {
 
         // The same result again, with the run's item somehow running again.
         let mut store = WorkItemStore::load(&path).unwrap();
-        store.find_mut(&running.id).unwrap().start(Utc::now());
+        store.find_mut(&running.id).unwrap().start(UtcDateTime::now());
         store.save(&path).unwrap();
         let replay = SettleWorkItem::new(path.clone()).settle(&trigger, &result, &[]).unwrap();
 

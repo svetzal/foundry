@@ -37,7 +37,7 @@ fn stale_owner_context_is_rejected_without_a_partial_action() {
     let snapshot = store.begin_steering("shared", "steer-1").unwrap();
     assert!(store.begin_steering("shared", "steer-2").is_err());
     store
-        .decide_initiative("shared", "Keep the mission focused", &[], Utc::now())
+        .decide_initiative("shared", "Keep the mission focused", &[], UtcDateTime::now())
         .unwrap();
     let before = serde_json::to_string(&store).unwrap();
     assert!(
@@ -183,7 +183,7 @@ fn task_reservations_share_the_active_limit_and_total_budget_without_copying_sta
     assert!(store.enforce_can_advance("one", &[]).is_err());
     store.release_member_reservation("shared", "wi_task-1").unwrap();
     store
-        .decide_initiative_with_budget("shared", "Continue", &[], 2, Utc::now())
+        .decide_initiative_with_budget("shared", "Continue", &[], 2, UtcDateTime::now())
         .unwrap();
     assert!(store.enforce_can_advance("one", &[]).is_ok());
     assert!(store.enforce_can_form("one", &["task_task-1".into()]).is_err());
@@ -221,7 +221,7 @@ fn member_budget_is_granted_only_within_the_shared_total_and_atomic_owner_extens
     member.status = CampaignStatus::Escalated;
     member.open_escalation = Some(crate::campaign::CampaignEscalation {
         reason: "campaign cycle budget exhausted (1)".into(),
-        escalated_at: Utc::now(),
+        escalated_at: UtcDateTime::now(),
         cycles_completed: 1,
         cycles_landed: 0,
         question: None,
@@ -233,10 +233,14 @@ fn member_budget_is_granted_only_within_the_shared_total_and_atomic_owner_extens
     assert_eq!(store.find("one").unwrap().status, CampaignStatus::Active);
     assert_eq!(store.find("one").unwrap().budget.max_cycles, 20);
     let before = serde_json::to_string(&store).unwrap();
-    assert!(store.decide_initiative_with_budget("shared", "", &[], 2, Utc::now()).is_err());
     assert!(
         store
-            .decide_initiative_with_budget("shared", "Continue", &[], u64::MAX, Utc::now())
+            .decide_initiative_with_budget("shared", "", &[], 2, UtcDateTime::now())
+            .is_err()
+    );
+    assert!(
+        store
+            .decide_initiative_with_budget("shared", "Continue", &[], u64::MAX, UtcDateTime::now())
             .is_err()
     );
     assert_eq!(serde_json::to_string(&store).unwrap(), before);
@@ -253,7 +257,7 @@ fn spent_store() -> CampaignStore {
     member.status = CampaignStatus::Escalated;
     member.open_escalation = Some(crate::campaign::CampaignEscalation {
         reason: "campaign cycle budget exhausted (2)".into(),
-        escalated_at: Utc::now(),
+        escalated_at: UtcDateTime::now(),
         cycles_completed: 2,
         cycles_landed: 2,
         question: None,
@@ -273,7 +277,7 @@ fn decision_on_a_spent_shared_budget_requires_more_cycles() {
     let before = serde_json::to_string(&store).unwrap();
 
     assert_eq!(
-        store.decide_initiative_with_budget("shared", "Finish the migration", &[], 0, Utc::now()),
+        store.decide_initiative_with_budget("shared", "Finish the migration", &[], 0, UtcDateTime::now()),
         Err(InitiativeError::Precondition(
             "initiative 'shared' exhausted its cycle budget; pass add_cycles > 0 to authorize more work"
                 .into()
@@ -294,7 +298,7 @@ fn decision_on_a_spent_shared_budget_requires_more_cycles() {
                 .map(|question| question.id.clone())
                 .collect::<Vec<_>>(),
             3,
-            Utc::now(),
+            UtcDateTime::now(),
         )
         .unwrap();
     assert_eq!(store.find("one").unwrap().status, CampaignStatus::Active);
@@ -309,15 +313,21 @@ fn decision_refusals_precede_the_spent_budget_refusal() {
     let before = serde_json::to_string(&store).unwrap();
 
     assert!(matches!(
-        store.decide_initiative_with_budget("missing", "Continue", &[], 0, Utc::now()),
+        store.decide_initiative_with_budget("missing", "Continue", &[], 0, UtcDateTime::now()),
         Err(InitiativeError::NotFound(_))
     ));
     assert_eq!(
-        store.decide_initiative_with_budget("shared", " ", &[], 0, Utc::now()),
+        store.decide_initiative_with_budget("shared", " ", &[], 0, UtcDateTime::now()),
         Err(InitiativeError::Invalid("decision must be non-empty".into()))
     );
     assert_eq!(
-        store.decide_initiative_with_budget("shared", "Continue", &["ghost".into()], 0, Utc::now()),
+        store.decide_initiative_with_budget(
+            "shared",
+            "Continue",
+            &["ghost".into()],
+            0,
+            UtcDateTime::now()
+        ),
         Err(InitiativeError::Invalid(
             "decision or finding names a campaign outside the initiative".into()
         ))
@@ -331,7 +341,7 @@ fn decision_refusals_precede_the_spent_budget_refusal() {
 fn a_spent_shared_budget_does_not_block_completion() {
     let mut store = spent_store();
     let _ = store
-        .complete_initiative("shared", "Owner accepts the outcome", Utc::now())
+        .complete_initiative("shared", "Owner accepts the outcome", UtcDateTime::now())
         .unwrap();
     assert_eq!(
         store.find_initiative("shared").unwrap().status,
@@ -567,7 +577,7 @@ fn configured_pairings_alternate_on_work_actions_and_preserve_legacy_inheritance
                 .iter()
                 .map(|question| question.id.clone())
                 .collect::<Vec<_>>(),
-            Utc::now(),
+            UtcDateTime::now(),
         )
         .unwrap();
     let second = commit(
@@ -966,7 +976,7 @@ fn refreshed_tracker_intent_preserves_owner_gate_indexes_and_invalidates_old_out
                     exit_code: Some(0),
                     report: "Captured integration evidence".into(),
                     artifacts: artifacts.clone(),
-                    recorded_at: Utc::now(),
+                    recorded_at: UtcDateTime::now(),
                 },
             )
             .unwrap();
@@ -1217,7 +1227,11 @@ fn a_status_note_does_not_invalidate_an_inflight_assessment_or_grant_authority()
     let mut store = store();
     let snapshot = store.begin_steering("shared", "steer-note").unwrap();
     store
-        .record_initiative_status("shared", "The verification worker is running", Utc::now())
+        .record_initiative_status(
+            "shared",
+            "The verification worker is running",
+            UtcDateTime::now(),
+        )
         .unwrap();
     store.validate_steering(&snapshot).unwrap();
     assert_eq!(
@@ -1250,7 +1264,7 @@ fn recovering_campaign_blocks_only_its_member_and_decisions_cannot_clear_it() {
             "missing-macos",
             RecoveryKind::CapabilityUnavailable,
             "macOS runner missing",
-            Utc::now(),
+            UtcDateTime::now(),
         )
         .unwrap();
     assert!(store.enforce_member_eligibility("shared", "one", &[]).is_err());
@@ -1258,7 +1272,7 @@ fn recovering_campaign_blocks_only_its_member_and_decisions_cannot_clear_it() {
     store
         .find_mut("one")
         .unwrap()
-        .record_owner_decision("Keep current scope".into(), Utc::now(), 0)
+        .record_owner_decision("Keep current scope".into(), UtcDateTime::now(), 0)
         .unwrap();
     assert!(store.find("one").unwrap().recovery.as_ref().unwrap().is_pending());
     assert!(store.enforce_member_eligibility("shared", "one", &[]).is_err());

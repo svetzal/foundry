@@ -297,7 +297,11 @@ mod tests {
         let fixture = super::super::tests::Fixture::new();
         let mut store = CampaignStore::load(&fixture.store).unwrap();
         store
-            .record_initiative_status("shared", "Verification is running", chrono::Utc::now())
+            .record_initiative_status(
+                "shared",
+                "Verification is running",
+                foundry_sdk::time::UtcDateTime::now(),
+            )
             .unwrap();
         let snapshot = store.begin_steering("shared", "contract-guidance").unwrap();
         assert!(snapshot.initiative.brief.is_none());

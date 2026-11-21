@@ -271,7 +271,8 @@ async fn skipped_and_stale_passes_request_no_follow_up() {
                 reason: "Workers run".into(),
             },
             provider: Some(AgentProvider::Claude),
-            recorded_at: chrono::Utc::now() - chrono::Duration::hours(1),
+            recorded_at: foundry_sdk::time::UtcDateTime::now()
+                - foundry_sdk::time::SignedDuration::from_hours(1),
             follow_up_of: None,
             integration_skipped: None,
         },
@@ -332,7 +333,7 @@ async fn an_assessment_already_queued_suppresses_the_follow_up() {
             Throttle::Full,
             serde_json::json!({"initiative":"shared","trigger_id":"evt_other_fact"}),
         ),
-        chrono::Utc::now(),
+        foundry_sdk::time::UtcDateTime::now(),
     );
     WorkItemStore {
         items: vec![queued],

@@ -3,10 +3,10 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use chrono::Utc;
 use clap::Subcommand;
 use foundry_sdk::campaign::CampaignStore;
 use foundry_sdk::initiative::{Finding, Initiative};
+use foundry_sdk::time::UtcDateTime;
 
 use crate::daemon::{connect_daemon_required, status_to_anyhow};
 use crate::{proto, render};
@@ -185,7 +185,7 @@ pub(crate) fn to_proto(
     value["readiness"] = serde_json::json!({
         "members": check.readiness, "dispatch_open":check.dispatch_open,
         "occupied":check.occupied, "max_active_members":check.max_active_members,
-        "observed_at":Utc::now().to_rfc3339(), "live":false
+        "observed_at":UtcDateTime::now().to_rfc3339(), "live":false
     });
     value["steering_history_count"] = serde_json::json!(initiative.steering_history.len());
     value["steering_history"] =
@@ -781,7 +781,7 @@ fn run_offline(command: Commands, path: &Path, registry: &Path) -> Result<String
                         &members,
                         &question_ids,
                         add_cycles,
-                        Utc::now(),
+                        UtcDateTime::now(),
                     )?;
                     render::initiative::decision_recorded(&to_proto(
                         &guard.store,
@@ -793,7 +793,7 @@ fn run_offline(command: Commands, path: &Path, registry: &Path) -> Result<String
                     text,
                     json: as_json,
                 } => {
-                    guard.store.record_initiative_status(&name, &text, Utc::now())?;
+                    guard.store.record_initiative_status(&name, &text, UtcDateTime::now())?;
                     if as_json {
                         json(&to_proto(&guard.store, &guard.store.initiative_view(&name)?)?)?
                     } else {
@@ -801,7 +801,7 @@ fn run_offline(command: Commands, path: &Path, registry: &Path) -> Result<String
                     }
                 }
                 Commands::Cancel { name, reason } => {
-                    let _transition = guard.store.cancel_initiative(&name, &reason, Utc::now())?;
+                    let _ = guard.store.cancel_initiative(&name, &reason, UtcDateTime::now())?;
                     format!("Cancelled initiative '{name}'.\n")
                 }
                 Commands::Brief(BriefCommands::Set { name, file }) => {
