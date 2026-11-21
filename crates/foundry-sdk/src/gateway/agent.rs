@@ -216,7 +216,7 @@ impl AgentFailureKind {
         match self {
             AgentFailureKind::AccountLimit => "agent account limit reached",
             AgentFailureKind::AccountDisabled => "agent account disabled",
-            AgentFailureKind::Authentication => "agent authentication revoked",
+            AgentFailureKind::Authentication => "agent authentication failed",
             AgentFailureKind::ProviderUnavailable => "provider unavailable",
         }
     }
@@ -404,8 +404,20 @@ fn terminal_failure_kind(normalized: &str, status: Option<u16>) -> Option<AgentF
             "access token revoked",
             "credentials revoked",
             "credentials expired",
+            // Claude Code's wording when its OAuth login has lapsed
+            // (mojility-ops-01, 2026-11-16): "Failed to authenticate: OAuth
+            // session expired and could not be refreshed".
+            "failed to authenticate",
+            "oauth session expired",
+            "oauth token expired",
+            "oauth token has expired",
+            "not logged in",
+            "please run /login",
+            "invalid api key",
+            "invalid x-api-key",
         ],
-    ) {
+    ) || status == Some(401)
+    {
         AgentFailureKind::Authentication
     } else if contains_any(
         normalized,
@@ -526,6 +538,191 @@ pub fn classify_claude_result_record(
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
+}
+
+/// Lines kept from the end of a failed session's output by [`failure_detail`].
+const FAILURE_DETAIL_LINES: usize = 20;
+
+/// Characters kept from the end of a failed session's output by
+/// [`failure_detail`].
+const FAILURE_DETAIL_CHARS: usize = 2000;
+
+/// A bounded, redacted tail of what a failed agent session printed, for the
+/// durable record, or `None` when it printed nothing.
+///
+/// Keeps the last 20 non-blank lines, at most 2,000 characters, with obvious
+/// secrets replaced by `[redacted]` (see [`redact_secrets`]).
+#[must_use]
+pub fn failure_detail(output: &str) -> Option<String> {
+    let lines: Vec<&str> =
+        output.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let tail = lines[lines.len().saturating_sub(FAILURE_DETAIL_LINES)..].join("\n");
+    let tail = redact_secrets(&tail);
+    let count = tail.chars().count();
+    Some(if count > FAILURE_DETAIL_CHARS {
+        tail.chars().skip(count - FAILURE_DETAIL_CHARS).collect()
+    } else {
+        tail
+    })
+}
+
+/// Token prefixes that mark a credential: API keys, GitHub and Slack tokens,
+/// AWS access keys and JWTs.
+const SECRET_PREFIXES: &[&str] = &[
+    "sk-",
+    "sk_",
+    "ghp_",
+    "gho_",
+    "ghs_",
+    "ghu_",
+    "github_pat_",
+    "xoxb-",
+    "xoxp-",
+    "AKIA",
+    "eyJ",
+];
+
+/// Key names whose value is a secret in `key=value`, `key: value`,
+/// `key = value`, `"key":"value"` or `--key value` text.
+const SECRET_KEYS: &[&str] = &[
+    "token", "secret", "password", "api_key", "apikey", "api-key",
+];
+
+/// `text` with obvious secrets replaced by `[redacted]`: tokens with a
+/// credential prefix, the word after `Bearer`, and the value given to a key
+/// that names a token, secret, password or API key.
+///
+/// A heuristic for agent output bound for events and the ledger, not a
+/// guarantee. It errs toward redacting, so `max_token=5` loses its value too.
+#[must_use]
+pub fn redact_secrets(text: &str) -> String {
+    text.lines().map(redact_line).collect::<Vec<_>>().join("\n")
+}
+
+/// Characters stripped from a word's ends before it is examined.
+fn is_wrapper(c: char) -> bool {
+    matches!(c, '"' | '\'' | ',' | ';' | '(' | ')' | '{' | '}' | '[' | ']')
+}
+
+/// Whether `key` names a secret, ignoring case, wrappers and leading dashes.
+fn is_secret_key(key: &str) -> bool {
+    let key = key.trim_matches(is_wrapper).trim_start_matches('-').to_ascii_lowercase();
+    !key.is_empty() && SECRET_KEYS.iter().any(|k| key.ends_with(k))
+}
+
+/// How one word of a line is treated.
+enum Word {
+    Keep,
+    /// The whole word is a credential.
+    Secret,
+    /// Keep the first `n` bytes (a key and its separator); the rest is the value.
+    SecretAfter(usize),
+    /// The next word is the value: `Bearer`, `token:`, `--token`.
+    ValueFollows,
+    /// A bare key: the value follows a lone `=` or `:` (`token = abc`).
+    SeparatorFollows,
+}
+
+fn classify_word(word: &str) -> Word {
+    let bare = word.trim_matches(is_wrapper);
+    if SECRET_PREFIXES.iter().any(|p| bare.starts_with(p) && bare.len() > p.len() + 8) {
+        return Word::Secret;
+    }
+    if bare.eq_ignore_ascii_case("bearer") {
+        return Word::ValueFollows;
+    }
+    if let Some(at) = word.find(['=', ':']) {
+        if !is_secret_key(&word[..at]) {
+            return Word::Keep;
+        }
+        return if word[at + 1..].trim_matches(is_wrapper).is_empty() {
+            Word::ValueFollows
+        } else {
+            Word::SecretAfter(at + 1)
+        };
+    }
+    match (is_secret_key(word), bare.starts_with("--")) {
+        (true, true) => Word::ValueFollows,
+        (true, false) => Word::SeparatorFollows,
+        (false, _) => Word::Keep,
+    }
+}
+
+/// `word` with its value, after byte `at`, replaced; wrappers around the
+/// value (quotes, a trailing comma) are kept.
+fn redact_value(word: &str, at: usize) -> String {
+    let value = &word[at..];
+    let opening = value.len() - value.trim_start_matches(is_wrapper).len();
+    let closing = value.len() - value.trim_end_matches(is_wrapper).len();
+    let closing_at = value.len() - closing;
+    format!(
+        "{}{}[redacted]{}",
+        &word[..at],
+        &value[..opening],
+        &value[closing_at.max(opening)..]
+    )
+}
+
+fn redact_line(line: &str) -> String {
+    enum Expect {
+        Nothing,
+        Value,
+        Separator,
+    }
+    let mut out = String::with_capacity(line.len());
+    let mut expect = Expect::Nothing;
+    for piece in line.split_inclusive(char::is_whitespace) {
+        let word = piece.trim_end_matches(char::is_whitespace);
+        let gap = &piece[word.len()..];
+        if word.is_empty() {
+            out.push_str(gap);
+            continue;
+        }
+        let redacted = match (&expect, classify_word(word)) {
+            (Expect::Separator, _) if word == "=" || word == ":" => {
+                expect = Expect::Value;
+                word.to_string()
+            }
+            (Expect::Value, _) | (_, Word::Secret) => {
+                expect = Expect::Nothing;
+                "[redacted]".to_string()
+            }
+            (_, Word::SecretAfter(at)) => {
+                expect = Expect::Nothing;
+                redact_value(word, at)
+            }
+            // A compact object or list (`{"a":"b","token":"c"}`) is one word:
+            // examine each comma-separated field.
+            (_, Word::Keep) if word.contains(',') => {
+                expect = Expect::Nothing;
+                word.split_inclusive(',')
+                    .map(|field| match classify_word(field) {
+                        Word::Secret => "[redacted]".to_string(),
+                        Word::SecretAfter(at) => redact_value(field, at),
+                        _ => field.to_string(),
+                    })
+                    .collect()
+            }
+            (_, Word::ValueFollows) => {
+                expect = Expect::Value;
+                word.to_string()
+            }
+            (_, Word::SeparatorFollows) => {
+                expect = Expect::Separator;
+                word.to_string()
+            }
+            (_, Word::Keep) => {
+                expect = Expect::Nothing;
+                word.to_string()
+            }
+        };
+        out.push_str(&redacted);
+        out.push_str(gap);
+    }
+    out
 }
 
 /// Access level for an agent invocation.
@@ -1074,5 +1271,77 @@ mod agent_failure_classifier_tests {
         assert_eq!(json, "provider_unavailable");
         assert!(!AgentFailureKind::ProviderUnavailable.is_terminal());
         assert!(AgentFailureKind::AccountLimit.is_terminal());
+    }
+}
+
+#[cfg(test)]
+mod authentication_failure_tests {
+    use super::{
+        AgentFailureKind, AgentProvider, classify_claude_result_record, classify_provider_failure,
+        failure_detail, redact_secrets,
+    };
+
+    /// The result record Claude Code wrote on mojility-ops-01 on 2026-11-20,
+    /// with the fields classification reads.
+    const EXPIRED_OAUTH_RESULT: &str = r#"{"type":"result","subtype":"success","is_error":true,"api_error_status":null,"terminal_reason":"api_error","result":"Failed to authenticate: OAuth session expired and could not be refreshed"}"#;
+
+    #[test]
+    fn an_expired_claude_oauth_session_is_a_terminal_authentication_failure() {
+        let failure = classify_claude_result_record(EXPIRED_OAUTH_RESULT, None, None)
+            .expect("an expired login classifies");
+        assert_eq!(failure.failure_kind, Some(AgentFailureKind::Authentication));
+        assert!(failure.is_terminal_provider_failure(), "a retry cannot fix a login");
+        assert_eq!(
+            failure.execution_summary(),
+            "agent authentication failed: Failed to authenticate: OAuth session expired and could not be refreshed"
+        );
+    }
+
+    #[test]
+    fn an_http_401_is_an_authentication_failure_whatever_the_wording() {
+        let failure = classify_provider_failure(
+            AgentProvider::Codex,
+            Some(401),
+            "request rejected",
+            None,
+            None,
+        )
+        .expect("401 classifies");
+        assert_eq!(failure.failure_kind, Some(AgentFailureKind::Authentication));
+    }
+
+    #[test]
+    fn failure_detail_keeps_a_bounded_tail_and_skips_blank_output() {
+        assert_eq!(failure_detail("  \n\n"), None);
+        let long = (1..=50).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n");
+        let detail = failure_detail(&long).unwrap();
+        assert!(detail.starts_with("line 31"), "{detail}");
+        assert!(detail.ends_with("line 50"), "{detail}");
+        let wide = "x".repeat(5000);
+        assert_eq!(failure_detail(&wide).unwrap().chars().count(), 2000);
+    }
+
+    #[test]
+    fn obvious_secrets_are_redacted() {
+        let text = "auth Bearer abc.def.ghi failed for sk-ant-api03-abcdefghijkl\n\
+                    token=s3cr3tvalue password: hunter2 ok=fine";
+        let redacted = redact_secrets(text);
+        assert!(!redacted.contains("abc.def.ghi"), "{redacted}");
+        assert!(!redacted.contains("sk-ant-api03"), "{redacted}");
+        assert!(!redacted.contains("s3cr3tvalue"), "{redacted}");
+        assert!(!redacted.contains("hunter2"), "{redacted}");
+        assert!(redacted.contains("ok=fine"), "{redacted}");
+        assert!(redacted.contains("token=[redacted]"), "{redacted}");
+        assert_eq!(
+            redact_secrets("Failed to authenticate: OAuth session expired"),
+            "Failed to authenticate: OAuth session expired"
+        );
+        assert_eq!(
+            redact_secrets(r#"{"error":"denied","api_key":"abc123", "ok":"yes"}"#),
+            r#"{"error":"denied","api_key":"[redacted]", "ok":"yes"}"#
+        );
+        assert_eq!(redact_secrets("cli --token abc123 run"), "cli --token [redacted] run");
+        assert_eq!(redact_secrets("password = hunter2 done"), "password = [redacted] done");
+        assert_eq!(redact_secrets("Bearer  abc\tnext"), "Bearer  [redacted]\tnext");
     }
 }

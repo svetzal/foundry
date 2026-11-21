@@ -154,7 +154,8 @@ provider failure kind (`provider_unavailable` after `ExecutePlan`'s retries at
 30 s, 2 min and 5 min, or a terminal account kind), `ReviewTask` emits
 `runner_error` naming it without a review session or proof check, and
 `FinalizeTask` carries `failure_kind` onto `TaskRunCompleted`. Any other failed
-session reaches `ReviewTask` as `session_failure` (`message`, `left_work`) on
+session reaches `ReviewTask` as `session_failure` (`message`, `left_work`, and
+`detail`, a redacted tail of the CLI's output) on
 `GateVerificationCompleted`; with `left_work: false` and no early evidence in
 the worktree it also settles `runner_error` with that message. `FinalizeTask` commits all work. It
 lands `complete`, and also lands a converging `remainder` when at least one

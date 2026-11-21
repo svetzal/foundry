@@ -91,6 +91,18 @@ pub(crate) fn build_agent_execution_result(
     let success_label = ctx.label;
     let retry_count = ctx.retry_count;
     let correction_needed = ctx.correction_needed;
+    let detail = match &outcome {
+        AgentOutcome::AgentFailed { stderr, failure } => {
+            foundry_sdk::gateway::failure_detail(stderr).or_else(|| {
+                failure
+                    .as_ref()
+                    .and_then(|failure| failure.message.as_deref())
+                    .and_then(foundry_sdk::gateway::failure_detail)
+            })
+        }
+        AgentOutcome::Unavailable { error } => foundry_sdk::gateway::failure_detail(error),
+        AgentOutcome::Success { .. } => None,
+    };
     let (raw_output, mut success, mut summary, execution_output, failure) = match outcome {
         AgentOutcome::Success { stdout } => {
             let out = stdout.trim().to_string();
@@ -105,30 +117,7 @@ pub(crate) fn build_agent_execution_result(
             (Some(out), true, format!("{success_label} completed"), exec_out, None)
         }
         AgentOutcome::AgentFailed { stderr, failure } => {
-            // A classified provider failure (terminal, or provider
-            // unavailable) names itself: "provider unavailable: <message>".
-            let summary =
-                failure.as_ref().filter(|failure| failure.failure_kind.is_some()).map_or_else(
-                    || {
-                        // Prefer a provider-reported failure message (e.g. codex's
-                        // parsed `turn.failed`/`error` diagnostic) over stderr's
-                        // first line: some CLIs (codex) write the same harmless,
-                        // content-free line to stderr on every run regardless of
-                        // outcome, so stderr alone can be worse than useless for a
-                        // non-terminal failure.
-                        let first_line = failure
-                            .as_ref()
-                            .and_then(|f| f.message.as_deref())
-                            .map(str::trim)
-                            .filter(|m| !m.is_empty())
-                            .map_or_else(
-                                || stderr.lines().next().unwrap_or("agent failed").to_string(),
-                                str::to_string,
-                            );
-                        format!("{success_label} failed: {first_line}")
-                    },
-                    AgentFailureMetadata::execution_summary,
-                );
+            let summary = failed_session_summary(success_label, &stderr, failure.as_ref());
             (Some(stderr), false, summary, None, failure)
         }
         AgentOutcome::Unavailable { error } => {
@@ -166,6 +155,7 @@ pub(crate) fn build_agent_execution_result(
     let session_failure = (session == SessionEnd::Failed).then(|| ExecutionSessionFailure {
         message: summary.clone(),
         left_work: changes_detected && changes_project_files(&files_changed),
+        detail,
     });
     let context = LoopContext::extract_from(trigger_payload);
     TaskBlockResult {
@@ -192,6 +182,38 @@ pub(crate) fn build_agent_execution_result(
         raw_output,
         ..Default::default()
     }
+}
+
+/// The summary of a session that ended `AgentFailed`.
+///
+/// A classified provider failure (terminal, or provider unavailable) names
+/// itself: "provider unavailable: <message>". Otherwise a provider-reported
+/// message (codex's parsed `turn.failed`/`error` diagnostic) is preferred over
+/// the first line the CLI printed: some CLIs (codex) write the same harmless,
+/// content-free line to stderr on every run, so stderr alone can be worse than
+/// useless. The printed line is redacted, since the summary is durable.
+fn failed_session_summary(
+    label: &str,
+    printed: &str,
+    failure: Option<&AgentFailureMetadata>,
+) -> String {
+    if let Some(classified) = failure.filter(|failure| failure.failure_kind.is_some()) {
+        return classified.execution_summary();
+    }
+    let first_line = failure
+        .and_then(|f| f.message.as_deref())
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map_or_else(
+            || {
+                printed.lines().find(|line| !line.trim().is_empty()).map_or_else(
+                    || "agent failed".to_string(),
+                    |line| foundry_sdk::gateway::redact_secrets(line.trim()),
+                )
+            },
+            str::to_string,
+        );
+    format!("{label} failed: {first_line}")
 }
 
 /// Detect post-execution changes and build an `ExecutionCompleted` result.
@@ -802,7 +824,11 @@ mod tests {
         );
         assert_eq!(
             signal(&scratch_only),
-            Some(serde_json::json!({"message": "plan execution failed: boom", "left_work": false}))
+            Some(serde_json::json!({
+                "message": "plan execution failed: boom",
+                "left_work": false,
+                "detail": "boom",
+            }))
         );
 
         let edited = build_agent_execution_result(

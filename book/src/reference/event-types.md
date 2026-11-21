@@ -210,7 +210,7 @@ before it started, and the local commits it did not push.
 | `workspace_base`   | object (optional)  | Where the task worktree started: `commit` (its first `HEAD`) and `trunk` (the trunk commit observed while preparing it). Absent for runs that failed before preparation and for runs that predate it |
 | `campaign`         | string (optional)  | Campaign that dispatched the task                                                          |
 | `campaign_cycle`   | integer (optional) | Campaign cycle that dispatched the task                                                    |
-| `failure_kind`     | string (optional)  | The provider failure that ended execution: `provider_unavailable` (transient: the session did not start), or the terminal `account_limit`, `account_disabled` or `authentication`. With `provider`, `message`, `api_error_status` and `terminal`. Absent when the provider did not refuse the session |
+| `failure_kind`     | string (optional)  | The provider failure that ended execution: `provider_unavailable` (transient: the session did not start), or the terminal `account_limit`, `account_disabled` or `authentication` (a revoked or expired login, such as Claude Code's `Failed to authenticate: OAuth session expired`, or an HTTP 401). With `provider`, `message`, `api_error_status` and `terminal`. Absent when the provider did not refuse the session |
 
 Verdict-specific fields are `gaps[]`, `diagnosis`, `finding` plus `options[]`,
 or `detail`.
@@ -399,7 +399,7 @@ See [Gate output and full logs](../guide/iteration-workflow.md#gate-output-and-f
 | `required_passed` | bool   | Whether all required gates passed                                                                 |
 | `retry_count`     | number | Current retry count (0 on first attempt)                                                          |
 | `results`         | array  | Per-gate results (name, command, passed, required, output, exit_code, duration_ms?, fix_applied?, logs?) |
-| `session_failure` | object (optional) | Present when the execution agent session itself failed: `message` (the execution summary, such as `plan execution failed: <message>` or `agent unavailable: <error>`) and `left_work` (whether the session changed files outside `.foundry/` and auxiliary worktree paths). Forwarded from `execution_completed`, which carries the same field. Absent when the session finished, including iterate's silent no-op, and on events persisted before the field was added |
+| `session_failure` | object (optional) | Present when the execution agent session itself failed: `message` (the execution summary, such as `plan execution failed: <message>` or `agent unavailable: <error>`), `left_work` (whether the session changed files outside `.foundry/` and auxiliary worktree paths) and `detail` (the last 20 lines, at most 2,000 characters, of the agent CLI's stderr, or of the provider's error message when stderr was empty, with obvious secrets replaced by `[redacted]`; absent when there was neither). Forwarded from `execution_completed`, which carries the same field. Absent when the session finished, including iterate's silent no-op, and on events persisted before the field was added |
 
 Each `results[]` entry includes an optional `duration_ms` field (unsigned
 integer) recording how long the gate command took in milliseconds. This field is

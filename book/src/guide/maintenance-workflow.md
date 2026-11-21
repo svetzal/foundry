@@ -44,6 +44,17 @@ flowchart TD
     C2 --> Y([dependency_updates_classified, phase after])
 ```
 
+A failed maintain or retry session records why it failed. `execution_completed`
+carries `session_failure` with the summary and a `detail` tail of the agent
+CLI's stderr, or of the provider's error message when stderr was empty. `Route Gate Result` does not retry a terminal provider failure: an
+account limit, a disabled account, or failed authentication (a revoked or
+expired login, or an HTTP 401). Another attempt gets the same refusal until a
+person acts. The project completes at once with
+`agent authentication failed; workflow stopped`, and its work item settles
+`failed` with the cause, for example `workflow failed: agent authentication
+failed: Failed to authenticate: OAuth session expired and could not be
+refreshed`.
+
 `Classify Dependency Updates` decides, in code, which dependency moves
 maintenance may make, under the project's update policy. `Execute Maintain`
 gets that list as its brief. The step runs again when maintenance completes, so

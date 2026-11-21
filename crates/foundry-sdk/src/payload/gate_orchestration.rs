@@ -81,6 +81,12 @@ pub struct ExecutionSessionFailure {
     /// (`.foundry/`) and auxiliary worktree paths. A session that changed
     /// project files is reviewed as usual, even though it failed.
     pub left_work: bool,
+    /// A bounded, redacted tail of what the agent CLI printed when it failed
+    /// (its stderr, or its stdout when stderr was empty), so the record names
+    /// the cause without anyone re-running the CLI. Absent when it printed
+    /// nothing, and on events recorded before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// Payload for `GateVerificationCompleted`.
@@ -161,6 +167,7 @@ mod tests {
         let failure = ExecutionSessionFailure {
             message: "agent unavailable: codex stream timed out".into(),
             left_work: false,
+            detail: None,
         };
         let verified: GateVerificationCompletedPayload =
             serde_json::from_value(serde_json::json!({

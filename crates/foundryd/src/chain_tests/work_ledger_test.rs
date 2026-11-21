@@ -1985,3 +1985,6 @@ mod follow_up_test;
 
 #[path = "trunk_ci_test.rs"]
 mod trunk_ci_test;
+
+#[path = "agent_failure_cause_test.rs"]
+mod agent_failure_cause_test;

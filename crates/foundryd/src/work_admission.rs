@@ -677,7 +677,7 @@ impl WorkAdmission for DurableWorkAdmission {
                 } else if workflow_succeeded(root, result) {
                     item.settle_landed(&succeeded_reason(root, result), Utc::now());
                 } else {
-                    item.settle_failed("workflow failed; inspect its trace", Utc::now());
+                    item.settle_failed(&failed_reason(result), Utc::now());
                 }
                 let event = lifecycle(EventType::WorkItemSettled, item)?;
                 store.save(&self.path)?;
@@ -811,6 +811,39 @@ fn succeeded_reason(root: &Event, result: &ProcessResult) -> String {
         reason
     } else {
         "workflow completed".to_string()
+    }
+}
+
+/// Characters of an agent failure kept in a failed work item's reason.
+const FAILED_REASON_CAUSE_CHARS: usize = 300;
+
+/// Why a workflow failed, for its work item: the last agent session's own
+/// summary when that session failed (`workflow failed: agent
+/// authentication failed: Failed to authenticate: ...`), so `foundry queue
+/// show` names the cause; otherwise a pointer to the trace.
+fn failed_reason(result: &ProcessResult) -> String {
+    // Only the last execution: an earlier attempt's failure does not explain
+    // a run whose retry finished and then failed its gates.
+    let cause = result
+        .events
+        .iter()
+        .rfind(|event| event.event_type == EventType::ExecutionCompleted)
+        .and_then(|event| {
+            event
+                .parse_payload::<foundry_sdk::payload::ExecutionCompletedPayload>()
+                .ok()?
+                .session_failure
+                .map(|failure| failure.message)
+        })
+        .map(|message| message.trim().to_string())
+        .filter(|message| !message.is_empty());
+    match cause {
+        Some(cause) if cause.chars().count() > FAILED_REASON_CAUSE_CHARS => {
+            let kept: String = cause.chars().take(FAILED_REASON_CAUSE_CHARS).collect();
+            format!("workflow failed: {kept}…")
+        }
+        Some(cause) => format!("workflow failed: {cause}"),
+        None => "workflow failed; inspect its trace".to_string(),
     }
 }
 
@@ -2062,6 +2095,44 @@ mod tests {
             workflow_succeeded(&request, &result),
             "a retried gate failure is not the run's verdict"
         );
+    }
+
+    fn execution(session_failure: Option<&str>) -> Event {
+        let mut payload = serde_json::json!({
+            "project": "p", "workflow": "maintain", "success": session_failure.is_none(),
+            "summary": session_failure.unwrap_or("maintenance completed"),
+        });
+        if let Some(message) = session_failure {
+            payload["session_failure"] =
+                serde_json::json!({"message": message, "left_work": false});
+        }
+        Event::new(EventType::ExecutionCompleted, "p".into(), Throttle::Full, payload)
+    }
+
+    #[test]
+    fn a_failed_run_names_its_last_sessions_failure() {
+        let result = |events| ProcessResult {
+            events,
+            block_executions: vec![],
+            total_duration_ms: 0,
+        };
+        assert_eq!(
+            failed_reason(&result(vec![execution(Some("agent authentication failed: expired"))])),
+            "workflow failed: agent authentication failed: expired"
+        );
+        assert_eq!(
+            failed_reason(&result(vec![
+                execution(Some("maintenance failed: boom")),
+                execution(None)
+            ])),
+            "workflow failed; inspect its trace",
+            "a retry that finished is not explained by the first attempt's failure"
+        );
+        assert_eq!(failed_reason(&result(vec![])), "workflow failed; inspect its trace");
+        let long = "x".repeat(400);
+        let reason = failed_reason(&result(vec![execution(Some(&long))]));
+        assert_eq!(reason.chars().count(), "workflow failed: ".len() + 300 + 1);
+        assert!(reason.ends_with('…'));
     }
 
     #[test]

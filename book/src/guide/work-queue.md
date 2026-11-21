@@ -159,6 +159,12 @@ which is why the ledger says an item **settles** rather than completes.
 | `landed` | The work reached trunk | Terminal |
 | `cancelled` | An operator stopped the work | Terminal |
 
+A workflow that fails settles `failed` with the last failed agent session's
+summary as its reason (`workflow failed: <summary>`, at most 300 characters of
+summary), so `foundry queue open` and `foundry queue show` name the cause. A
+failure that no agent session explains keeps the reason `workflow failed;
+inspect its trace`.
+
 `landed` and `cancelled` are **terminal** — nothing more is owed.
 `preserved`, `needs_decision` and `failed` are **open** — settled, but still
 carrying something for you to discharge. `foundry queue open` is that set, plus

@@ -236,6 +236,16 @@ impl CliAgentAdapter for ClaudeAdapter {
                 extract_final_text(&outcome.lines)
             };
             let success = outcome.success && failure.is_none();
+            // A failed session whose error result no rule classifies still
+            // reports the provider's words as its failure message. Claude
+            // Code prints them as its result text, with nothing on stderr.
+            let failure = if success || failure.is_some() {
+                failure
+            } else {
+                read_claude_error_result(session.log_path).await.ok().flatten().map(|message| {
+                    AgentFailureMetadata::new(AgentProvider::Claude).with_message(message)
+                })
+            };
             let exit_code = if outcome.success && failure.is_some() {
                 1
             } else {
@@ -640,6 +650,19 @@ async fn extract_result_text_from_log(log_path: &Path) -> std::io::Result<Option
     Ok(None)
 }
 
+/// The text of the last error result record in a Claude session log, if any.
+async fn read_claude_error_result(log_path: &Path) -> std::io::Result<Option<String>> {
+    let log = tokio::fs::read_to_string(log_path).await?;
+    Ok(log.lines().rev().find_map(|line| {
+        let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
+        (value.get("type").and_then(serde_json::Value::as_str) == Some("result")
+            && value.get("is_error").and_then(serde_json::Value::as_bool) == Some(true))
+        .then(|| value.get("result").and_then(serde_json::Value::as_str).map(str::to_string))
+        .flatten()
+        .filter(|text| !text.trim().is_empty())
+    }))
+}
+
 async fn read_claude_terminal_failure(
     log_path: &Path,
     session_id: &str,
@@ -888,6 +911,110 @@ mod claude_agent_gateway_streaming_tests {
             ended.payload["message"],
             "You've hit your monthly spend limit - raise it at claude.ai/settings/usage"
         );
+    }
+
+    /// An expired Claude Code login (mojility-ops-01, 2026-11-16) exits 1
+    /// with an error result record and nothing on stderr. It reaches the
+    /// caller as a terminal authentication failure carrying the CLI's words,
+    /// and the session-ended event says so.
+    #[tokio::test]
+    async fn invoke_classifies_an_expired_oauth_login_as_terminal_authentication() {
+        let session_log_dir = super::test_support::tmp_dir("foundry-expired-login");
+        let (tx, mut rx) = broadcast::channel(16);
+        let expired = "Failed to authenticate: OAuth session expired and could not be refreshed";
+        let runner = Arc::new(FakeAgentStreamRunner {
+            transcript: vec![format!(
+                r#"{{"type":"result","subtype":"success","is_error":true,"api_error_status":null,"terminal_reason":"api_error","result":"{expired}"}}"#
+            )],
+            outcome_template: AgentStreamOutcome {
+                exit_code: 1,
+                success: false,
+                stderr: String::new(),
+                bytes_written: 0,
+                lines: vec![],
+            },
+        });
+        let gateway = ClaudeAgentGateway::new_with_streaming(
+            FakeShellGateway::success(),
+            runner,
+            session_log_dir,
+            tx,
+        );
+        let request = AgentRequest {
+            prompt: "maintain".to_string(),
+            project: "demo-project".to_string(),
+            working_dir: PathBuf::from("/tmp"),
+            access: AgentAccess::Full,
+            tier: ModelTier::Balanced,
+            effort: ReasoningEffort::Medium,
+            agent_file: None,
+            provider: None,
+            env: Vec::new(),
+            timeout: Duration::from_secs(5),
+            trace_id: None,
+            requires_json: false,
+        };
+
+        let response = gateway.invoke(&request).await.expect("invoke ok");
+
+        assert!(!response.success);
+        assert_eq!(response.stdout, expired, "the CLI's words survive on stdout");
+        let failure = response.failure.expect("classified");
+        assert_eq!(failure.failure_kind, Some(AgentFailureKind::Authentication));
+        assert!(failure.terminal);
+        assert_eq!(failure.message.as_deref(), Some(expired));
+        let _started = rx.recv().await.unwrap();
+        let ended = rx.recv().await.unwrap();
+        assert_eq!(ended.payload["failure_kind"], "authentication");
+        assert_eq!(ended.payload["message"], expired);
+    }
+
+    /// A Claude error result that no rule classifies still reaches the caller
+    /// as the failure's message, without a failure kind.
+    #[tokio::test]
+    async fn invoke_reports_an_unclassified_claude_error_result_as_its_message() {
+        let session_log_dir = super::test_support::tmp_dir("foundry-unclassified-error");
+        let (tx, _rx) = broadcast::channel(16);
+        let runner = Arc::new(FakeAgentStreamRunner {
+            transcript: vec![
+                r#"{"type":"result","is_error":true,"result":"Workspace is locked by another session"}"#
+                    .to_string(),
+            ],
+            outcome_template: AgentStreamOutcome {
+                exit_code: 1,
+                success: false,
+                stderr: String::new(),
+                bytes_written: 0,
+                lines: vec![],
+            },
+        });
+        let gateway = ClaudeAgentGateway::new_with_streaming(
+            FakeShellGateway::success(),
+            runner,
+            session_log_dir,
+            tx,
+        );
+        let request = AgentRequest {
+            prompt: "maintain".to_string(),
+            project: "demo-project".to_string(),
+            working_dir: PathBuf::from("/tmp"),
+            access: AgentAccess::Full,
+            tier: ModelTier::Balanced,
+            effort: ReasoningEffort::Medium,
+            agent_file: None,
+            provider: None,
+            env: Vec::new(),
+            timeout: Duration::from_secs(5),
+            trace_id: None,
+            requires_json: false,
+        };
+
+        let response = gateway.invoke(&request).await.expect("invoke ok");
+
+        assert!(!response.success);
+        let failure = response.failure.expect("the error result is reported");
+        assert_eq!(failure.failure_kind, None);
+        assert_eq!(failure.message.as_deref(), Some("Workspace is locked by another session"));
     }
 
     /// An overloaded API reaches the caller as `provider_unavailable`, not

@@ -7,6 +7,25 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A failed agent session now records what the agent CLI said. `session_failure`
+  on `execution_completed` and `gate_verification_completed` gains `detail`, a
+  bounded, redacted tail of the CLI's stderr, or of the provider's error
+  message when stderr was empty. A Claude error result that no rule classifies
+  becomes the failure's message, so the execution summary names it instead of
+  a bare `agent failed` (Claude Code prints its errors as the result text,
+  with nothing on stderr). A failed workflow's work item settles with its last
+  session's failure (`workflow failed: agent authentication failed: Failed to
+  authenticate: ...`) instead of `workflow failed; inspect its trace`. On 2026-11-16 an expired
+  Claude login on mojility-ops-01 failed every nightly for five nights, and the
+  cause was in no record.
+- An expired or revoked agent login is a terminal `authentication` failure:
+  Claude Code's `Failed to authenticate` and `OAuth session expired` wording,
+  `not logged in`, an invalid API key, and any HTTP 401. Maintenance no longer
+  retries it three times. The summary label is now `agent authentication
+  failed` (it said `revoked`).
+
 ## [0.59.0] - 2026-10-28
 
 ### Added
