@@ -34,6 +34,27 @@ project adheres to [Semantic Versioning](https://semver.org/).
   directories, 1,338 of them older than 30 days. The first prune after
   upgrading deletes the backlog.
 
+### Changed
+
+- Foundry's own crates use jiff 1 instead of chrono, which RUSTSEC-2026-0543
+  marks unmaintained. Instants are `foundry_sdk::time::UtcDateTime`, which
+  writes exactly what chrono wrote: `2026-11-20T07:00:01.798036936Z` through
+  serde, `+00:00` from `to_rfc3339`, with chrono's 3, 6 or 9 digit fractions.
+  Every persisted file (event JSONL, work-item ledger, campaigns with
+  initiatives and findings, registry, sentinels, pacing, traces) written by
+  the chrono build loads unchanged and saves back byte-for-byte; fixtures in
+  `crates/foundry-sdk/tests/fixtures/chrono-era/` prove it.
+- The sentinel scheduler evaluates cron expressions with its own parser
+  (`foundryd::cron_schedule`) instead of the `cron` crate, which depends on
+  chrono. It keeps the `cron` 0.17 rules, including day-of-week 1 = Sunday,
+  day-of-month AND day-of-week, and the daylight-saving behaviour under the
+  local zone: on the spring-forward day a 02:00 schedule fires at 03:00
+  daylight time, and a time in the repeated fall-back hour fires at its
+  standard-time occurrence. It no longer accepts a seventh (year) field,
+  `@daily`-style shorthands or spaces inside a list. The `scheduler armed`
+  log line now writes `fire_at` as `2026-11-21T02:00:00-05:00[America/Toronto]`.
+- chrono remains in the tree only through cmx-core 0.4.
+
 ### Fixed
 
 - Finalize Task no longer copies build output and dependency trees into the
@@ -46,6 +67,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `.foundry` had grown `~/.foundry/evidence` to 37G; single traces held 10G.
   When only build output was left unlanded, `uncommitted_artifacts` now names
   an empty mirror instead of being absent.
+- The sentinel guide said day-of-week `1` is Monday. The scheduler has always
+  read it as Sunday (Quartz numbering, from the `cron` crate). The guide now
+  says so; behaviour is unchanged.
 - A failed agent session now records what the agent CLI said. `session_failure`
   on `execution_completed` and `gate_verification_completed` gains `detail`, a
   bounded, redacted tail of the CLI's stderr, or of the provider's error
